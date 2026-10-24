@@ -584,6 +584,34 @@ function renderOpponentHand(pos, seat, snap) {
   $(`hand${pos}`).innerHTML = html;
 }
 
+function formatActionDisplay(c, sizeClass = "t-mini") {
+  const act = c.action || {};
+  const t = act.type || (c.label <= 36 ? "dahai" : "none");
+  const pai = act.pai || c.pai;
+  if (t === "dahai") {
+    return pai ? renderTileHtml(pai, sizeClass) : "<span>切</span>";
+  }
+  if (t === "chi") {
+    return `<span class="ab-tag">吃</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "pon") {
+    return `<span class="ab-tag">碰</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "daiminkan" || t === "ankan" || t === "kakan" || t === "kan") {
+    return `<span class="ab-tag">杠</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "reach") {
+    return `<span class="ab-tag">立直</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "hora") {
+    return `<span class="ab-tag">${act.actor === act.target ? "自摸" : "荣和"}</span>`;
+  }
+  if (t === "none" || c.label === 45) {
+    return `<span class="ab-tag">跳过</span>`;
+  }
+  return `<span class="ab-tag">${escapeHtml(c.action_cn || "")}</span>`;
+}
+
 // Render Hero Hand with NAGA Probability Bars overlaid directly on top of each tile!
 function renderHeroHand(seat, snap, activeDecision) {
   const wrap = $("handBottom");
@@ -619,10 +647,9 @@ function renderHeroHand(seat, snap, activeDecision) {
       .map((c) => {
         const isBest = c.rank === 1;
         const isAct = c.action_cn === activeDecision.actual_cn;
-        const isDiscardAction = c.pai && c.label <= 36;
         return `
           <span class="ab-chip ${isBest ? "is-best" : ""} ${isAct ? "is-actual" : ""}">
-            ${isDiscardAction ? renderTileHtml(c.pai, "t-mini") : `<span>${escapeHtml(c.action_cn)}</span>`}
+            ${formatActionDisplay(c, "t-mini")}
             <span class="ab-prob">${fmtPct(c.prob)}</span>
             ${isBest ? `<span class="mini-badge ai">AI</span>` : ""}
             ${isAct ? `<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">玩家</span>` : ""}
@@ -685,10 +712,30 @@ function renderHeroHand(seat, snap, activeDecision) {
 // ============================================================================
 function renderActionWithTile(actObj, actionCn, sizeClass = "t-hmeld") {
   if (!actObj) return `<span>${escapeHtml(actionCn || "--")}</span>`;
-  if (actObj.type === "dahai" && actObj.pai) {
-    return renderTileHtml(actObj.pai, sizeClass);
+  const t = actObj.type;
+  const pai = actObj.pai;
+  if (t === "dahai") {
+    return pai ? renderTileHtml(pai, sizeClass) : "<span>切</span>";
   }
-  return `<span>${escapeHtml(actionCn)}</span>`;
+  if (t === "chi") {
+    return `<span class="ab-tag">吃</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "pon") {
+    return `<span class="ab-tag">碰</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "daiminkan" || t === "ankan" || t === "kakan" || t === "kan") {
+    return `<span class="ab-tag">杠</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "reach") {
+    return `<span class="ab-tag">立直</span>${pai ? renderTileHtml(pai, sizeClass) : ""}`;
+  }
+  if (t === "hora") {
+    return `<span class="ab-tag">${actObj.actor === actObj.target ? "自摸" : "荣和"}</span>`;
+  }
+  if (t === "none") {
+    return `<span class="ab-tag">跳过</span>`;
+  }
+  return `<span class="ab-tag">${escapeHtml(actionCn)}</span>`;
 }
 
 function tagClass(t) {
@@ -834,7 +881,7 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
           <div class="cand-main">
             <span class="cand-rank">#${c.rank}</span>
             <div class="cand-action">
-              ${isDiscard ? renderTileHtml(c.pai, "t-inline") : `<span>${escapeHtml(c.action_cn)}</span>`}
+              ${formatActionDisplay(c, "t-inline")}
               <span class="cand-badges">${badges.join("")}</span>
             </div>
             <div>
