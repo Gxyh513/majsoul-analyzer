@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=2.3" />
+  <link rel="stylesheet" href="/styles.css?v=2.5" />
 </head>
 <body>
   <header class="app-header">
@@ -170,7 +170,6 @@
         </div>
 
         <div id="tabDecision" class="tab-body">
-          <p id="decHeadline" class="dec-headline">载入牌谱之后，这里用一句话说明你和 AI 差在哪里。</p>
           <div class="dec-head">
             <span id="decVerdictBadge" class="verdict-pill neutral">还没有</span>
             <div id="decMetaRow" class="dec-meta">
@@ -183,11 +182,11 @@
 
           <div id="decCompareBox" class="compare">
             <div class="compare-side ai">
-              <div class="compare-label">AI 想下</div>
+              <div id="compareAiLabel" class="compare-label">AI切</div>
               <div id="compareAiContent" class="compare-content">--</div>
             </div>
             <div class="compare-side actual">
-              <div class="compare-label">你下的</div>
+              <div id="compareActualLabel" class="compare-label">玩家切</div>
               <div id="compareActualContent" class="compare-content">--</div>
             </div>
           </div>
@@ -332,6 +331,7 @@
           <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>上一手 / 下一手该你决定的地方</td></tr>
           <tr><td><kbd>B</kbd></td><td>下一处有问题的手</td></tr>
           <tr><td><kbd>H</kbd></td><td>显示或隐藏对手手牌</td></tr>
+          <tr><td>滚轮</td><td>上一步 / 下一步。按住 <kbd>Shift</kbd> 再滚，跳到上一手或下一手</td></tr>
           <tr><td><kbd>Home</kbd></td><td>回到本局开头</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>关闭窗口</td></tr>
         </table>
@@ -339,6 +339,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=2.3"></script>
+  <script src="/app.js?v=2.5"></script>
 </body>
 </html>
