@@ -51,7 +51,7 @@ RUN if [ ! -f data/models/mortal.pth ]; then \
     fi
 
 ENV HOST=0.0.0.0
-ENV PORT=10000
-EXPOSE 10000
+ENV PORT=7860
+EXPOSE 7860
 
 CMD ["python", "run.py", "--host", "0.0.0.0", "--no-browser"]
