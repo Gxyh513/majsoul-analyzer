@@ -1,6 +1,6 @@
 /**
  * 雀魂牌谱 AI 检讨系统 — NAGA / Mortal 风格前端控制器
- * v2.0 UI: rotated mahjong table, scale-to-fit stage, tabbed analysis panel.
+ * v2.1 UI: the table stays; the side sheet says in one sentence where you differed.
  */
 
 const state = {
@@ -49,6 +49,22 @@ function shantenText(s) {
   return `${s} 向听`;
 }
 
+const VERDICT_NOTE = { best: "和 AI 一样", ok: "差得不多", question: "值得再看", blunder: "差很多" };
+
+function decisionSentence(dec) {
+  const discard = (ev) => ev?.type === "dahai" && ev.pai;
+  if (discard(dec.actual) && discard(dec.expected)) {
+    const you = tileCn(dec.actual.pai);
+    const ai = tileCn(dec.expected.pai);
+    if (dec.is_equal) return `这一手和 AI 一样，打了${you}。`;
+    return `你打了${you}，AI 更想打${ai}。`;
+  }
+  const you = String(dec.actual_cn || "").replace(" (Pass)", "");
+  const ai = String(dec.expected_cn || "").replace(" (Pass)", "");
+  if (dec.is_equal) return `这一手和 AI 一样：${you}。`;
+  return `你选了${you}，AI 更建议${ai}。`;
+}
+
 function fmtPct(v, digits = 1) {
   return `${(v ?? 0).toFixed(digits)}%`;
 }
@@ -56,7 +72,8 @@ function fmtPct(v, digits = 1) {
 // Render an SVG mahjong tile HTML string
 function renderTileHtml(pai, sizeClass = "t-opp", extraClass = "", title = "") {
   if (!pai || pai === "?") {
-    return `<div class="mj-tile tile-back ${sizeClass} ${extraClass}"></div>`;
+    const face = sizeClass === "t-dora" ? "tile-slot" : "tile-back";
+    return `<div class="mj-tile ${face} ${sizeClass} ${extraClass}"></div>`;
   }
   const tip = escapeHtml(title || tileCn(pai));
   return `<div class="mj-tile ${sizeClass} ${extraClass}" title="${tip}" data-pai="${escapeHtml(pai)}"><img src="/tiles/${encodeURIComponent(pai)}.svg" alt="${tip}" draggable="false" /></div>`;
@@ -137,17 +154,17 @@ function updateTopbarStatus(st) {
   }
 
   const eng = st.engine || {};
-  $("engineStatusText").textContent = eng.has_mortal_weights ? `Mortal · ${eng.device || "CPU"}` : "内置引擎";
+  $("engineStatusText").textContent = eng.has_mortal_weights ? "神经网络" : "牌效";
 
   $("engineModalDetail").innerHTML = `
-    <div><span class="k">当前引擎</span>${escapeHtml(eng.model_tag || "-")}</div>
-    <div><span class="k">Mortal 权重</span>${
+    <div><span class="k">现在用的</span>${escapeHtml(eng.model_tag || "-")}</div>
+    <div><span class="k">神经网络</span>${
       eng.has_mortal_weights
-        ? `<span class="good">已加载 (${escapeHtml(eng.model_path)})</span>`
-        : `<span class="warn">未检测到 mortal.pth，正在使用内置引擎</span>`
+        ? `<span class="good">已载入（${escapeHtml(eng.model_path)}）</span>`
+        : `<span class="warn">没找到权重文件，所以用牌效和防守</span>`
     }</div>
-    <div><span class="k">计算设备</span>${escapeHtml(eng.device || "CPU")}</div>
-    ${eng.load_error ? `<div><span class="k">加载提示</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
+    <div><span class="k">跑在</span>${escapeHtml(eng.device || "CPU")}</div>
+    ${eng.load_error ? `<div><span class="k">没载入的原因</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
   `;
 }
 
@@ -259,7 +276,9 @@ function renderSummaryDashboard() {
   $("metricMatchBar").style.width = `${Math.min(100, sum.match_rate || 0)}%`;
   $("metricBlunders").textContent = sum.blunders || 0;
   $("metricInaccuracies").textContent = sum.inaccuracies || 0;
-  $("metricEngineTag").textContent = `分析引擎：${res.engine?.type === "mortal" ? "Mortal 神经网络" : "内置引擎"}（${res.engine?.tag || "-"}）`;
+  $("metricEngineTag").textContent = res.engine?.type === "mortal"
+    ? "这次用神经网络做的判断"
+    : "这次用牌效和防守做的判断";
 
   // 3. Kyoku pills
   renderKyokuPills();
@@ -642,25 +661,30 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
   const list = $("candidatesList");
   const actualSide = actBox.parentElement;
 
+  const headline = $("decHeadline");
   if (!dec) {
     badge.className = "verdict-pill neutral";
-    badge.textContent = "还没有决策";
+    badge.textContent = "还没有";
     $("decTurnChip").textContent = "第 - 巡";
     $("decShantenChip").textContent = "-";
-    $("decQLossChip").textContent = "损失 -";
+    $("decQLossChip").textContent = "还没比较";
+    $("decQLossChip").title = "和 AI 最想下的那一手比，差多少。";
     $("decFuritenChip").classList.add("hidden");
+    if (headline) headline.textContent = "还没轮到这个玩家做决定。按 ↓ 跳到第一手。";
     aiBox.innerHTML = "--";
     actBox.innerHTML = "--";
     actualSide.classList.remove("is-diff");
-    list.innerHTML = `<div class="empty">本局还没轮到该玩家决策。<br />按 <kbd>↓</kbd> 或点击「下一手」跳到第一个决策点。</div>`;
+    list.innerHTML = `<div class="empty">这一局还没轮到这个玩家做决定。<br />按 <kbd>↓</kbd>，或点「下一手」。</div>`;
     return;
   }
 
   badge.className = `verdict-pill ${dec.verdict}`;
-  badge.textContent = isExactStep ? dec.verdict_cn : `${dec.verdict_cn} · 上一手`;
+  badge.textContent = isExactStep ? dec.verdict_cn : `${dec.verdict_cn}，上一手`;
+  if (headline) headline.textContent = isExactStep ? decisionSentence(dec) : `上一手。${decisionSentence(dec)}`;
   $("decTurnChip").textContent = `第 ${dec.junme} 巡 · 余 ${dec.tiles_left} 张`;
   $("decShantenChip").textContent = shantenText(dec.shanten);
-  $("decQLossChip").textContent = `损失 ${dec.q_loss.toFixed(3)}`;
+  $("decQLossChip").textContent = VERDICT_NOTE[dec.verdict] || "已比较";
+  $("decQLossChip").title = `和 AI 最想下的那一手比，差距是 ${dec.q_loss.toFixed(3)}。数字越大，差得越远。`;
   $("decFuritenChip").classList.toggle("hidden", !dec.at_furiten);
 
   aiBox.innerHTML = `${renderActionWithTile(dec.expected, dec.expected_cn)}<span class="cc-sub good">${fmtPct(dec.best_prob)}</span>`;
@@ -694,7 +718,7 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
 
       const isDiscard = c.label <= 36 && c.pai;
       return `
-        <div class="${cls.join(" ")}" data-label="${c.label}" title="Q 值 ${c.q_value.toFixed(3)}">
+        <div class="${cls.join(" ")}" data-label="${c.label}">
           <div class="cand-main">
             <span class="cand-rank">#${c.rank}</span>
             <div class="cand-action">
@@ -767,7 +791,7 @@ function renderKyokuDecisionList(kyoku) {
 
   const decs = state.decisionFilter === "issues" ? issues : all;
   if (!decs.length) {
-    container.innerHTML = `<div class="empty">${state.decisionFilter === "issues" ? "本局没有恶手或疑问手 🎉" : "本局没有该玩家的决策记录"}</div>`;
+    container.innerHTML = `<div class="empty">${state.decisionFilter === "issues" ? "这一局没有需要回头看的手。" : "这一局没有这个玩家做决定的地方。"}</div>`;
     return;
   }
 
@@ -855,7 +879,7 @@ function jumpNextBlunder() {
       return;
     }
   }
-  showToast("没有发现恶手或疑问手 🎉", "success");
+  showToast("这一局里没有需要回头看的手", "success");
 }
 
 // ============================================================================
@@ -885,6 +909,7 @@ function fitStage() {
 }
 
 function openModal(id) {
+  $("moreMenu")?.removeAttribute("open");
   $(id).classList.remove("hidden");
   $(id).querySelector("input, textarea, select, button.btn")?.focus();
 }
@@ -1016,6 +1041,10 @@ function bindEvents() {
     bd.addEventListener("mousedown", (e) => {
       if (e.target === bd) bd.classList.add("hidden");
     });
+  });
+  document.addEventListener("mousedown", (e) => {
+    const more = $("moreMenu");
+    if (more?.open && !more.contains(e.target)) more.removeAttribute("open");
   });
 
   // Account Login / Logout / Recent games
