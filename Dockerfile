@@ -54,8 +54,12 @@ COPY --from=builder /build/vendor/Mortal/target/release/libriichi.so /app/server
 # Ensure data directories exist
 RUN mkdir -p data/models data/records data/cache
 
-# Download default Mortal (v3) lightweight model weights if not provided (with hf-mirror fallback)
-RUN if [ ! -f data/models/mortal.pth ]; then \
+# Download Akagi (v4 582k) weights and Mortal (v3) weights
+RUN if [ ! -f data/models/akagi.pth ]; then \
+      curl -L -o data/models/akagi.pth https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth || \
+      curl -L -o data/models/akagi.pth https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth; \
+    fi && \
+    if [ ! -f data/models/mortal.pth ]; then \
       curl -L -o data/models/mortal.pth https://hf-mirror.com/VoidShine/mortal-298k/resolve/main/mortal_298k.pth || \
       curl -L -o data/models/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth; \
     fi
