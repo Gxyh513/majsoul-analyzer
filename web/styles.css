@@ -40,7 +40,16 @@
   --pill-blunder-bg: rgba(244, 63, 94, 0.18);
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* {
+  box-sizing: border-box; margin: 0; padding: 0;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+*::selection { background: transparent !important; color: inherit !important; }
+*::-moz-selection { background: transparent !important; color: inherit !important; }
+input, textarea { -webkit-user-select: text; user-select: text; }
+.mj-tile, .hero-slot, .opp-row, .opp-hand {
+  outline: none !important; -webkit-tap-highlight-color: transparent !important;
+}
 html, body { height: 100%; }
 body {
   font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
