@@ -463,7 +463,7 @@ function renderBoard(kyoku, snap, activeDecision) {
   REL_POS.forEach((pos, rel) => {
     const seat = (hero + rel) % 4;
     renderCenterSeat(pos, seat, kyoku, snap);
-    renderPlayerHeader(pos, seat, kyoku, snap, names);
+    renderPlayerHeader(pos, seat, kyoku, snap);
     renderPlayerRiver(pos, seat, snap);
     renderPlayerMelds(pos, seat, snap);
     if (pos === "Bottom") {
