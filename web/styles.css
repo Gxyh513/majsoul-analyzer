@@ -820,10 +820,11 @@ button {
 .pov-p3 .tileDiv > .rotate, .pov-p3 > div > .rotate { transform-origin: center center; transform: rotate(0deg); }
 .pov-p3 .tileDiv > .float, .pov-p3 > div > .float { transform: translate(var(--tile-width), calc(-1 * var(--tile-height))); }
 
-.pov-p0 .tileDiv:has(.last-discard), .pov-p0 .tileDiv.has-last-discard, .pov-p0 > div:has(.last-discard), .pov-p0 > div.has-last-discard { transform: translate(6px, 6px); }
-.pov-p1 .tileDiv:has(.last-discard), .pov-p1 .tileDiv.has-last-discard, .pov-p1 > div:has(.last-discard), .pov-p1 > div.has-last-discard { transform: translate(6px, -6px); }
-.pov-p2 .tileDiv:has(.last-discard), .pov-p2 .tileDiv.has-last-discard, .pov-p2 > div:has(.last-discard), .pov-p2 > div.has-last-discard { transform: translate(-6px, -6px); }
-.pov-p3 .tileDiv:has(.last-discard), .pov-p3 .tileDiv.has-last-discard, .pov-p3 > div:has(.last-discard), .pov-p3 > div.has-last-discard { transform: translate(-6px, 6px); }
+.tileImg.last-discard,
+.tileDiv.has-last-discard .tileImg {
+  box-shadow: 0 0 0 2px #30d158, 0 2px 8px rgba(48, 209, 88, 0.45);
+  border-radius: 3px;
+}
 
 /* ============================================================================
    Discard Ponds (Rivers) — Strictly 6 tiles per row, exactly 3 rows
@@ -866,14 +867,14 @@ button {
 .grid-discard-p2 {
   grid-area: ad-p2;
   display: flex;
-  flex-direction: column-reverse;
-  justify-self: end;
-  align-items: flex-end;
-  justify-content: flex-end;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: center;
 }
 .grid-discard-p2 .river-row {
   display: flex;
-  flex-direction: row-reverse;
+  flex-direction: row;
+  justify-content: flex-start;
   align-items: flex-end;
   height: var(--tile-height);
 }
