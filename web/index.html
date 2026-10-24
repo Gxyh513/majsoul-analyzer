@@ -77,13 +77,10 @@
       <div class="kd-header-row kd-header-bottom">
         <div class="kd-step-left">
           <select id="kyokuSelect" class="kd-kyoku-select" title="直接切换局数"></select>
-          <button id="btnRoundScoreHeader" class="kd-chip-btn" title="查看全庄得点变动与 AI 一致率表">全庄得点</button>
         </div>
 
         <div class="kd-step-mid">
-          <button id="btnPrevStepTop" class="kd-step-btn" title="后退一步 (←)">后退</button>
           <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
-          <button id="btnNextStepTop" class="kd-step-btn" title="前进一步 (→)">前进</button>
           <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
           <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
         </div>
@@ -152,17 +149,6 @@
 
         <!-- Right Sidebar (Controls, Decision Details, Shortcuts) -->
         <div class="sidebar">
-          <!-- 8 Navigation Buttons -->
-          <div class="controls">
-            <button id="btnPrevKyoku">&lt; 上一局</button>
-            <button id="btnNextKyoku">下一局 &gt;</button>
-            <button id="btnPrevDec">&lt; 上一切牌</button>
-            <button id="btnNextDec">下一切牌 &gt;</button>
-            <button id="btnPrevBlunder">&lt; 上一错误</button>
-            <button id="btnNextBlunder">下一错误 &gt;</button>
-            <button id="btnPrevStep">&lt; 后退</button>
-            <button id="btnNextStep">前进 &gt;</button>
-          </div>
 
           <!-- Active Decision Details Card -->
           <div class="kd-decision-card" id="decisionCard">
