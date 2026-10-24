@@ -574,7 +574,7 @@ def analyze_candidates_and_heuristic_q(
         meta_by_action[a] = {
             "shanten_after": shanten_after,
             "ukeire": uk_count,
-            "ukeire_tiles": uk_tiles[:10],
+            "ukeire_tiles": uk_tiles,
             "ev": round(ev, 0),
             "win_prob": round(win_prob * 100, 1),
             "tenpai_prob": round(tenpai_prob * 100, 1),
@@ -901,6 +901,8 @@ def review_game(
             continue
 
         if etype == "end_kyoku":
+            cur_kyoku["end_scores"] = list(scores)
+            cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
             kyokus.append(cur_kyoku)
             cur_kyoku = None
             continue
@@ -915,6 +917,8 @@ def review_game(
             r_seat = int(ev["actor"])
             scores[r_seat] -= 1000
             kyotaku += 1
+            cur_kyoku["end_scores"] = list(scores)
+            cur_kyoku["score_deltas"][r_seat] -= 1000
             if cur_kyoku["steps"]:
                 cur_kyoku["steps"][-1]["scores"] = list(scores)
                 cur_kyoku["steps"][-1]["kyotaku"] = kyotaku
@@ -1124,6 +1128,8 @@ def review_game(
             mortal_mask_batch.append(mask_4)
 
     if cur_kyoku is not None:
+        cur_kyoku["end_scores"] = list(scores)
+        cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
         kyokus.append(cur_kyoku)
 
     # Run Mortal neural network batch inference if loaded
@@ -1298,18 +1304,43 @@ def review_game(
         k_match = sum(1 for d in decs if d["is_equal"])
         k_blunder = sum(1 for d in decs if d["verdict"] == "blunder")
         k_raw = sum(d["rel_score"] / 100.0 for d in decs)
+        match_rate = round((k_match / k_tot) * 100.0, 1) if k_tot else None
+        rating = round(((k_raw / k_tot) ** 2) * 100.0, 1) if k_tot else 100.0
+
+        # Discard decisions vs Call response decisions breakdown
+        discard_decs = [d for d in decs if d.get("decision_type") in ("self_turn", "discard_after_call", "riichi_discard")]
+        call_decs = [d for d in decs if d.get("decision_type") == "call_response"]
+        d_tot = len(discard_decs)
+        d_match = sum(1 for d in discard_decs if d["is_equal"])
+        c_tot = len(call_decs)
+        c_match = sum(1 for d in call_decs if d["is_equal"])
+
+        k["decision_count"] = k_tot
+        k["match_count"] = k_match
+        k["match_rate"] = match_rate
+        k["blunder_count"] = k_blunder
+        k["points_delta"] = k["score_deltas"][target_actor] if len(k["score_deltas"]) > target_actor else 0
+        k["discard_count"] = d_tot
+        k["discard_matches"] = d_match
+        k["call_count"] = c_tot
+        k["call_matches"] = c_match
         k["stats"] = {
             "total": k_tot,
             "matches": k_match,
-            "match_rate": round((k_match / k_tot) * 100.0, 1) if k_tot else 100.0,
+            "match_rate": match_rate if match_rate is not None else 100.0,
             "blunders": k_blunder,
-            "rating": round(((k_raw / k_tot) ** 2) * 100.0, 1) if k_tot else 100.0,
+            "rating": rating,
+            "discard_total": d_tot,
+            "discard_matches": d_match,
+            "call_total": c_tot,
+            "call_matches": c_match,
         }
 
     return {
         "target_actor": target_actor,
         "player_name": names[target_actor],
         "names": names,
+        "player_names": names,
         "meta": meta or {},
         "engine": {
             "type": "mortal" if mortal is not None else "builtin",
