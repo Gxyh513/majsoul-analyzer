@@ -5,6 +5,7 @@
 
 const state = window.state = {
   reviewData: null,
+  perspectiveCache: {},
   gameId: "demo",
   targetActor: 0,
   kyokuIdx: 0,
@@ -12,6 +13,8 @@ const state = window.state = {
   openHands: true,
   selectedModel: "akagi",
   serverStatus: null,
+  isPlaying: false,
+  playTimer: null,
 };
 
 const WIND_CN = ["东", "南", "西", "北"];
@@ -207,13 +210,58 @@ function showTier(tierNum) {
   const t1 = $("tier1Screen");
   const t2 = $("tier2Screen");
   if (tierNum === 1) {
+    if (state.isPlaying) togglePlay(false);
     t1.classList.remove("hidden");
     t2.classList.add("hidden");
+    const input = $("homePaipuInput");
+    if (input) input.value = "";
     window.scrollTo(0, 0);
   } else {
     t1.classList.add("hidden");
     t2.classList.remove("hidden");
     window.scrollTo(0, 0);
+  }
+}
+
+const inFlightRequests = {};
+
+function preloadOtherPerspectives(gameId, model, currentSeat) {
+  if (!gameId) return;
+  const runner = async () => {
+    const totalSeats = state.reviewData?.names?.length || 4;
+    for (let seat = 0; seat < totalSeats; seat++) {
+      if (seat === currentSeat) continue;
+      // 若用户在后台预加载期间已切换牌谱或模型，终止当前牌谱的后台预加载
+      if (state.gameId !== gameId || state.selectedModel !== model) break;
+
+      const cacheKey = `${gameId}_${model}_${seat}`;
+      if ((state.perspectiveCache && state.perspectiveCache[cacheKey]) || inFlightRequests[cacheKey]) {
+        continue;
+      }
+
+      try {
+        const p = apiFetch("/api/analyze/paipu", {
+          method: "POST",
+          body: JSON.stringify({ paipu: gameId, target_actor: seat, engine: model }),
+        });
+        inFlightRequests[cacheKey] = p;
+        const res = await p;
+        if (res) {
+          if (!state.perspectiveCache) state.perspectiveCache = {};
+          state.perspectiveCache[cacheKey] = res;
+        }
+      } catch (e) {
+        console.warn(`[Preload] 静默预加载视角 ${seat} 失败:`, e);
+      } finally {
+        delete inFlightRequests[cacheKey];
+      }
+    }
+  };
+
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => { runner(); }, { timeout: 2000 });
+  } else {
+    setTimeout(runner, 400);
   }
 }
 
@@ -223,17 +271,15 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = 0) {
     return;
   }
   const paipuId = parsePaipuUuid(rawInput);
-  setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
+  state.selectedModel = model;
 
-  try {
-    const res = await apiFetch("/api/analyze/paipu", {
-      method: "POST",
-      body: JSON.stringify({ paipu: paipuId, target_actor: seat, engine: model }),
-    });
-
-    state.reviewData = res;
-    state.gameId = res.game_id || paipuId;
-    state.targetActor = res.target_actor;
+  // 检查是否已有缓存
+  const cacheKey = `${paipuId}_${model}_${seat}`;
+  if (state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+    const cachedRes = state.perspectiveCache[cacheKey];
+    state.reviewData = cachedRes;
+    state.gameId = cachedRes.game_id || paipuId;
+    state.targetActor = cachedRes.target_actor !== undefined ? cachedRes.target_actor : seat;
     state.kyokuIdx = 0;
 
     showTier(2);
@@ -244,7 +290,38 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = 0) {
 
     renderSummaryDashboard();
     selectKyoku(0, true);
+    showToast(`分析完成：共检讨 ${cachedRes.kyokus?.length || 0} 局`, "success");
+    preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+    return;
+  }
+
+  setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
+
+  try {
+    const res = await apiFetch("/api/analyze/paipu", {
+      method: "POST",
+      body: JSON.stringify({ paipu: paipuId, target_actor: seat, engine: model }),
+    });
+
+    state.reviewData = res;
+    state.gameId = res.game_id || paipuId;
+    state.targetActor = res.target_actor !== undefined ? res.target_actor : seat;
+    state.kyokuIdx = 0;
+
+    if (!state.perspectiveCache) state.perspectiveCache = {};
+    state.perspectiveCache[`${state.gameId}_${state.selectedModel}_${state.targetActor}`] = res;
+
+    showTier(2);
+
+    const newUrl = new URL(window.location.href);
+    newUrl.searchParams.set("paipu", paipuId);
+    window.history.pushState(null, "", newUrl.toString());
+
+    renderSummaryDashboard();
+    selectKyoku(0, true);
     showToast(`分析完成：共检讨 ${res.kyokus?.length || 0} 局`, "success");
+
+    preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
   } catch (err) {
     showToast(`分析失败：${err.message}`, "error");
   } finally {
@@ -256,19 +333,44 @@ async function switchSeatPerspective(newSeat) {
   if (!state.reviewData || newSeat === state.targetActor) return;
   const paipuId = state.gameId;
   if (!paipuId) return;
-  setLoading(true, `切换到「${state.reviewData.names[newSeat]}」视角...`);
-  try {
-    const res = await apiFetch("/api/analyze/paipu", {
-      method: "POST",
-      body: JSON.stringify({ paipu: paipuId, target_actor: newSeat, engine: state.selectedModel }),
-    });
-    state.reviewData = res;
-    state.targetActor = res.target_actor;
+
+  const cacheKey = `${paipuId}_${state.selectedModel}_${newSeat}`;
+
+  // 1. 若已命中缓存：直接同步切换，0 毫秒瞬间秒切！
+  if (state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+    const cachedRes = state.perspectiveCache[cacheKey];
+    state.reviewData = cachedRes;
+    state.targetActor = newSeat;
     renderSummaryDashboard();
-    selectKyoku(state.kyokuIdx, true);
+    selectKyoku(state.kyokuIdx);
+    return;
+  }
+
+  // 2. 若未命中缓存：仅在首次请求该视角时向后端请求
+  const seatName = state.reviewData?.names?.[newSeat] ?? `${newSeat}`;
+  setLoading(true, `切换到「${seatName}」视角...`);
+  try {
+    let res;
+    if (inFlightRequests[cacheKey]) {
+      res = await inFlightRequests[cacheKey];
+    } else {
+      const p = apiFetch("/api/analyze/paipu", {
+        method: "POST",
+        body: JSON.stringify({ paipu: paipuId, target_actor: newSeat, engine: state.selectedModel }),
+      });
+      inFlightRequests[cacheKey] = p;
+      res = await p;
+    }
+    if (!state.perspectiveCache) state.perspectiveCache = {};
+    state.perspectiveCache[cacheKey] = res;
+    state.reviewData = res;
+    state.targetActor = res.target_actor !== undefined ? res.target_actor : newSeat;
+    renderSummaryDashboard();
+    selectKyoku(state.kyokuIdx);
   } catch (err) {
     showToast(`切换视角失败：${err.message}`, "error");
   } finally {
+    delete inFlightRequests[cacheKey];
     setLoading(false);
   }
 }
@@ -282,6 +384,15 @@ function renderSummaryDashboard() {
   if (!res) return;
 
   renderSeatTabs();
+
+  // Populate Kyoku Select Dropdown (东场/南场局数直接选择)
+  const kyokuSelect = $("kyokuSelect");
+  if (kyokuSelect && res.kyokus) {
+    kyokuSelect.innerHTML = res.kyokus
+      .map((k, i) => `<option value="${i}">${escapeHtml(k.label || `第 ${i + 1} 局`)}</option>`)
+      .join("");
+    kyokuSelect.value = state.kyokuIdx;
+  }
 
   const sum = res.summary || {};
   const pill = $("gameSummaryPill");
@@ -316,6 +427,8 @@ function selectKyoku(kIdx, jumpToFirstDecision = false) {
   state.kyokuIdx = kIdx;
   renderSeatTabs();
 
+  if ($("kyokuSelect")) $("kyokuSelect").value = kIdx;
+
   const kyoku = res.kyokus[kIdx];
   const slider = $("stepSlider");
   if (slider) slider.max = Math.max(0, kyoku.steps.length - 1);
@@ -340,9 +453,68 @@ function stepDelta(delta) {
   } else if (target >= kyoku.steps.length) {
     if (state.kyokuIdx < state.reviewData.kyokus.length - 1) {
       selectKyoku(state.kyokuIdx + 1, true);
+    } else {
+      if (state.isPlaying) togglePlay(false);
     }
   } else {
     setStep(target);
+  }
+}
+
+function togglePlay(forcePlay) {
+  const btn = $("btnPlayPause");
+  const shouldPlay = typeof forcePlay === "boolean" ? forcePlay : !state.isPlaying;
+
+  if (shouldPlay) {
+    if (!state.reviewData) {
+      showToast("请先加载或分析牌谱", "info");
+      return;
+    }
+    state.isPlaying = true;
+    if (btn) {
+      btn.textContent = "⏸ 暂停";
+      btn.classList.add("playing");
+    }
+    if (state.playTimer) {
+      clearInterval(state.playTimer);
+      state.playTimer = null;
+    }
+    state.playTimer = setInterval(() => {
+      const kyoku = state.reviewData?.kyokus[state.kyokuIdx];
+      if (!kyoku) {
+        togglePlay(false);
+        return;
+      }
+      const isLastKyoku = state.kyokuIdx >= (state.reviewData.kyokus.length - 1);
+      const isLastStep = state.stepIdx >= (kyoku.steps.length - 1);
+      if (isLastKyoku && isLastStep) {
+        togglePlay(false);
+        return;
+      }
+      stepDelta(1);
+    }, 850);
+  } else {
+    state.isPlaying = false;
+    if (state.playTimer) {
+      clearInterval(state.playTimer);
+      state.playTimer = null;
+    }
+    if (btn) {
+      btn.textContent = "▶ 播放";
+      btn.classList.remove("playing");
+    }
+  }
+}
+
+function toggleHandsVisibility() {
+  state.openHands = !state.openHands;
+  const textEl = $("toggleHandsText");
+  if (textEl) {
+    textEl.textContent = state.openHands ? "明牌" : "暗牌";
+  }
+  showToast(state.openHands ? "已开启全场明牌" : "已切换为别家暗牌", "info");
+  if (state.reviewData) {
+    setStep(state.stepIdx);
   }
 }
 
@@ -438,32 +610,34 @@ function renderPlayerRiver(pos, seat, snap) {
   const river = snap.rivers[seat] || [];
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
 
-  let html = "";
-  let slotCount = 0;
-
+  // Exactly 6 tiles per row horizontal, exactly 3 rows vertical
+  const rows = [[], [], []];
   river.forEach((r, idx) => {
-    // KillerDucky 6-tile row wrap: insert 4 invisible placeholder tiles after tile 6 and tile 12
-    if (slotCount === 6 || slotCount === 16) {
-      for (let j = 0; j < 4; j++) {
-        html += `<div class="tileDiv" style="opacity:0; pointer-events:none;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-        slotCount++;
-      }
-    }
+    const rowIdx = idx < 6 ? 0 : idx < 12 ? 1 : 2;
+    rows[rowIdx].push({ ...r, origIdx: idx });
+  });
 
-    const isLast = isLastDiscardActor && idx === river.length - 1;
-    const cls = ["tileImg"];
-    if (r.tsumogiri) cls.push("tsumogiri");
-    if (r.riichi) cls.push("rotate");
-    if (r.called) cls.push("called");
-    if (isLast) cls.push("last-discard");
+  let html = "";
+  rows.forEach((rowTiles) => {
+    if (!rowTiles.length) return;
+    let rowHtml = `<div class="river-row">`;
+    rowTiles.forEach((r) => {
+      const isLast = isLastDiscardActor && r.origIdx === river.length - 1;
+      const cls = ["tileImg"];
+      if (r.tsumogiri) cls.push("tsumogiri");
+      if (r.riichi) cls.push("rotate");
+      if (r.called) cls.push("called");
+      if (isLast) cls.push("last-discard");
 
-    const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}）`;
-    const divCls = ["tileDiv"];
-    if (r.riichi) divCls.push("has-rotate");
-    if (isLast) divCls.push("has-last-discard");
+      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}）`;
+      const divCls = ["tileDiv"];
+      if (r.riichi) divCls.push("has-rotate");
+      if (isLast) divCls.push("has-last-discard");
 
-    html += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
-    slotCount++;
+      rowHtml += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
+    });
+    rowHtml += `</div>`;
+    html += rowHtml;
   });
 
   container.innerHTML = html;
@@ -498,7 +672,7 @@ function renderHeroHand(seat, snap, activeDecision) {
     if (prob > 0) {
       const height = Math.max(3, Math.round((prob / 100) * 45));
       const y = 50 - height;
-      svgHtml += `<rect x="${xloc - 5}" y="${y}" width="10" height="${height}" fill="hsl(120, 70%, 34%)" rx="1"></rect>`;
+      svgHtml += `<rect x="${xloc - 5}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
     }
     if (actualPai === pai && highlightedIdx === -1) {
       highlightedIdx = idx;
@@ -595,67 +769,147 @@ function renderDecisionCard(dec, isExactStep) {
 
   const turnEl = $("decTurnText");
   const badgeEl = $("decVerdictBadge");
-  const aiEl = $("decAiChoice");
-  const actEl = $("decActualChoice");
+  const aiTileWrap = $("decAiTileWrap");
+  const aiTileName = $("decAiTileName");
+  const aiProbBadge = $("decAiProbBadge");
+  const aiShantenBadge = $("decAiShantenBadge");
+  const aiUkeireBadge = $("decAiUkeireBadge");
+
+  const actualTileWrap = $("decActualTileWrap");
+  const actualTileName = $("decActualTileName");
+  const actualProbBadge = $("decActualProbBadge");
+  const actualVerdictText = $("decActualVerdictText");
+  const actualBlock = card.querySelector(".kd-choice-actual");
+
   const tableBody = $("decCandTableBody");
 
   if (!dec) {
-    turnEl.textContent = "当前巡目";
-    badgeEl.textContent = "巡航中";
-    badgeEl.className = "kd-dec-verdict best";
-    aiEl.textContent = "--";
-    actEl.textContent = "--";
-    tableBody.innerHTML = `<tr><td colspan="5" style="padding:10px; opacity:0.6;">暂无 AI 决策打法建议</td></tr>`;
+    if (turnEl) turnEl.textContent = "当前巡目";
+    if (badgeEl) {
+      badgeEl.textContent = "巡航中";
+      badgeEl.className = "kd-dec-verdict best";
+    }
+    if (aiTileWrap) aiTileWrap.innerHTML = `<img src="/tiles/back.svg" class="tileImg">`;
+    if (aiTileName) aiTileName.textContent = "暂无建议";
+    if (aiProbBadge) aiProbBadge.textContent = "--%";
+    if (aiShantenBadge) aiShantenBadge.textContent = "--";
+    if (aiUkeireBadge) aiUkeireBadge.textContent = "进张 --";
+
+    if (actualTileWrap) actualTileWrap.innerHTML = `<img src="/tiles/back.svg" class="tileImg">`;
+    if (actualTileName) actualTileName.textContent = "等待切牌";
+    if (actualProbBadge) actualProbBadge.textContent = "--%";
+    if (actualVerdictText) {
+      actualVerdictText.textContent = "巡航";
+      actualVerdictText.className = "kd-tag-verdict best";
+    }
+    if (actualBlock) actualBlock.classList.remove("is-blunder");
+
+    if (tableBody) tableBody.innerHTML = `<tr><td colspan="5" style="padding:12px; opacity:0.6;">暂无 AI 决策打法建议</td></tr>`;
     return;
   }
 
   const isMatch = dec.is_equal;
   const currentKyoku = state.reviewData?.kyokus[state.kyokuIdx];
-  turnEl.textContent = `${currentKyoku ? handWind(dec.actor ?? 0, currentKyoku) : ""}家切牌`;
+  if (turnEl) turnEl.textContent = `${currentKyoku ? handWind(dec.actor ?? 0, currentKyoku) : ""}家切牌决策`;
 
-  if (isMatch) {
-    badgeEl.textContent = "与 AI 一致";
-    badgeEl.className = "kd-dec-verdict best";
-  } else if (dec.verdict === "blunder") {
-    badgeEl.textContent = "恶手";
-    badgeEl.className = "kd-dec-verdict blunder";
-  } else {
-    badgeEl.textContent = dec.verdict_cn || "微差";
-    badgeEl.className = "kd-dec-verdict question";
+  if (badgeEl) {
+    if (isMatch) {
+      badgeEl.textContent = "✓ 与 AI 一致";
+      badgeEl.className = "kd-dec-verdict best";
+    } else if (dec.verdict === "blunder") {
+      badgeEl.textContent = "⚠️ 恶手";
+      badgeEl.className = "kd-dec-verdict blunder";
+    } else {
+      badgeEl.textContent = `❓ ${dec.verdict_cn || "微差"}`;
+      badgeEl.className = "kd-dec-verdict question";
+    }
   }
 
-  const expPai = dec.expected?.pai;
+  // AI Recommended Choice (Top, Big Tile)
+  const expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
+  const bestCand = dec.candidates?.[0];
+  if (aiTileWrap) {
+    aiTileWrap.innerHTML = expPai
+      ? `<img src="/tiles/${encodeURIComponent(expPai)}.svg" class="tileImg">`
+      : `<img src="/tiles/back.svg" class="tileImg">`;
+  }
+  if (aiTileName) {
+    aiTileName.textContent = expPai ? `${tileCn(expPai)}` : (dec.expected_cn || "--");
+  }
+  if (aiProbBadge) {
+    aiProbBadge.textContent = `${fmtPct(dec.expected?.prob ?? bestCand?.prob)} 推荐度`;
+  }
+  if (aiShantenBadge) {
+    const sVal = bestCand?.shanten_after ?? bestCand?.shanten ?? dec.shanten;
+    aiShantenBadge.textContent = shantenText(sVal);
+  }
+  if (aiUkeireBadge) {
+    const uk = bestCand?.ukeire ?? dec.expected?.ukeire;
+    aiUkeireBadge.textContent = uk !== undefined && uk !== null ? `进张 ${uk} 张` : "进张 --";
+  }
+
+  // Actual Choice (Bottom, Big Tile)
   const actPai = dec.actual?.pai;
-  aiEl.innerHTML = expPai
-    ? `<img src="/tiles/${encodeURIComponent(expPai)}.svg" class="tileImg" style="width:16px;height:22px;display:inline-block;vertical-align:middle;"> ${tileCn(expPai)} (${fmtPct(dec.expected?.prob)})`
-    : escapeHtml(dec.expected_cn || "-");
+  const actCand = dec.candidates?.find((c) => (c.pai && c.pai === actPai) || c.action_cn === dec.actual_cn);
+  if (actualTileWrap) {
+    actualTileWrap.innerHTML = actPai
+      ? `<img src="/tiles/${encodeURIComponent(actPai)}.svg" class="tileImg">`
+      : `<img src="/tiles/back.svg" class="tileImg">`;
+  }
+  if (actualTileName) {
+    actualTileName.textContent = actPai ? `${tileCn(actPai)}` : (dec.actual_cn || "--");
+  }
+  if (actualProbBadge) {
+    actualProbBadge.textContent = `${fmtPct(actCand?.prob ?? 0)}`;
+  }
+  if (actualVerdictText) {
+    if (isMatch) {
+      actualVerdictText.textContent = "AI 一致";
+      actualVerdictText.className = "kd-tag-verdict best";
+    } else if (dec.verdict === "blunder") {
+      actualVerdictText.textContent = "恶手";
+      actualVerdictText.className = "kd-tag-verdict blunder";
+    } else {
+      actualVerdictText.textContent = dec.verdict_cn || "微差";
+      actualVerdictText.className = "kd-tag-verdict question";
+    }
+  }
+  if (actualBlock) {
+    if (dec.verdict === "blunder") actualBlock.classList.add("is-blunder");
+    else actualBlock.classList.remove("is-blunder");
+  }
 
-  actEl.innerHTML = actPai
-    ? `<img src="/tiles/${encodeURIComponent(actPai)}.svg" class="tileImg" style="width:16px;height:22px;display:inline-block;vertical-align:middle;"> ${tileCn(actPai)}`
-    : escapeHtml(dec.actual_cn || "-");
-
+  // Top Candidates Table with Large 28x38 Tiles
   const cands = (dec.candidates || []).slice(0, 5);
-  tableBody.innerHTML = cands
-    .map((c, i) => {
-      const pai = c.pai || c.action?.pai;
-      const prob = fmtPct(c.prob);
-      const isAct = c.action_cn === dec.actual_cn || (pai && pai === dec.actual?.pai);
-      const isAi = c.rank === 1;
-      const tileDisplay = pai
-        ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg" style="width:16px;height:22px;display:inline-block;vertical-align:middle;">`
-        : escapeHtml(c.action_cn || "-");
-      const style = isAct ? "background:rgba(255, 68, 68, 0.25);" : isAi ? "background:rgba(34, 197, 94, 0.15);" : "";
-      return `
-        <tr style="${style}">
-          <td>#${i + 1}</td>
-          <td>${tileDisplay}</td>
-          <td style="font-weight:bold; color:${isAi ? "hsl(120,70%,45%)" : "inherit"}">${prob}</td>
-          <td>${shantenText(c.shanten)}</td>
-          <td>${c.ukeire ?? "-"}</td>
-        </tr>
-      `;
-    })
-    .join("");
+  if (tableBody) {
+    tableBody.innerHTML = cands
+      .map((c, i) => {
+        const pai = c.pai || c.action?.pai;
+        const prob = fmtPct(c.prob);
+        const isAct = (pai && pai === actPai) || c.action_cn === dec.actual_cn;
+        const isAi = c.rank === 1;
+        const tileDisplay = pai
+          ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="kd-cand-tile-img"> <b>${tileCn(pai)}</b>`
+          : `<b>${escapeHtml(c.action_cn || "-")}</b>`;
+        const rowBg = isAct
+          ? "background:rgba(255, 69, 58, 0.16);"
+          : isAi
+          ? "background:rgba(48, 209, 88, 0.14);"
+          : "";
+        const sVal = c.shanten_after ?? c.shanten ?? dec.shanten;
+        const uVal = c.ukeire !== undefined && c.ukeire !== null ? `${c.ukeire} 张` : "-";
+        return `
+          <tr style="${rowBg}">
+            <td style="font-weight:bold; color:var(--color-text);">${i + 1}</td>
+            <td style="text-align:left; padding-left:8px;">${tileDisplay}</td>
+            <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
+            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal)}</span></td>
+            <td>${uVal}</td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
 }
 
 // ============================================================================
@@ -788,8 +1042,8 @@ function openRoundScoresModal() {
           <td>${oyaWind}家</td>
           <td>${resultText}</td>
           <td>${k.points_delta !== undefined ? k.points_delta : "--"}</td>
-          <td style="color:hsl(120,70%,45%); font-weight:bold;">${matchPct}</td>
-          <td style="color:${blunders > 0 ? "hsl(0,70%,60%)" : "inherit"}; font-weight:${blunders > 0 ? "bold" : "normal"};">${blunders}</td>
+          <td style="color:#30d158; font-weight:bold;">${matchPct}</td>
+          <td style="color:${blunders > 0 ? "#ff453a" : "inherit"}; font-weight:${blunders > 0 ? "bold" : "normal"};">${blunders}</td>
         </tr>
       `;
     })
@@ -838,25 +1092,76 @@ function bindEvents() {
 
   // Tier 2 Back to Home
   $("btnBackToHome")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
     showTier(1);
+    const input = $("homePaipuInput");
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
     const newUrl = new URL(window.location.href);
     newUrl.searchParams.delete("paipu");
     window.history.pushState(null, "", newUrl.toString());
-    $("homePaipuInput")?.focus();
   });
 
+  // Kyoku Select Dropdown (东场/南场局数直接选择)
+  $("kyokuSelect")?.addEventListener("change", (e) => {
+    if (state.isPlaying) togglePlay(false);
+    const kidx = parseInt(e.target.value, 10);
+    if (!isNaN(kidx)) {
+      selectKyoku(kidx, true);
+    }
+  });
+
+  // Play/Pause Auto Step
+  $("btnPlayPause")?.addEventListener("click", () => togglePlay());
+
+  // Toggle Hands Visibility
+  $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
+  $("handBottomClosed")?.addEventListener("click", toggleHandsVisibility);
+  $("handRightClosed")?.addEventListener("click", toggleHandsVisibility);
+  $("handTopClosed")?.addEventListener("click", toggleHandsVisibility);
+  $("handLeftClosed")?.addEventListener("click", toggleHandsVisibility);
+
   // Step timeline slider
-  $("stepSlider")?.addEventListener("input", (e) => setStep(parseInt(e.target.value, 10)));
+  $("stepSlider")?.addEventListener("input", (e) => {
+    if (state.isPlaying) togglePlay(false);
+    setStep(parseInt(e.target.value, 10));
+  });
 
   // Navigation controls
-  $("btnPrevKyoku")?.addEventListener("click", jumpPrevKyoku);
-  $("btnNextKyoku")?.addEventListener("click", jumpNextKyoku);
-  $("btnPrevBlunder")?.addEventListener("click", jumpPrevBlunder);
-  $("btnNextBlunder")?.addEventListener("click", jumpNextBlunder);
-  $("btnPrevDec")?.addEventListener("click", jumpPrevDecision);
-  $("btnNextDec")?.addEventListener("click", jumpNextDecision);
-  $("btnPrevStep")?.addEventListener("click", () => stepDelta(-1));
-  $("btnNextStep")?.addEventListener("click", () => stepDelta(1));
+  $("btnPrevKyoku")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpPrevKyoku();
+  });
+  $("btnNextKyoku")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpNextKyoku();
+  });
+  $("btnPrevBlunder")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpPrevBlunder();
+  });
+  $("btnNextBlunder")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpNextBlunder();
+  });
+  $("btnPrevDec")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpPrevDecision();
+  });
+  $("btnNextDec")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    jumpNextDecision();
+  });
+  $("btnPrevStep")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    stepDelta(-1);
+  });
+  $("btnNextStep")?.addEventListener("click", () => {
+    if (state.isPlaying) togglePlay(false);
+    stepDelta(1);
+  });
 
   // Round modal
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);
@@ -893,6 +1198,12 @@ function bindEvents() {
     if (document.querySelector(".modal:not(.hidden)")) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      togglePlay();
+      return;
+    }
+
     const actions = {
       ArrowLeft: () => stepDelta(-1),
       ArrowRight: () => stepDelta(1),
@@ -909,14 +1220,9 @@ function bindEvents() {
       },
       "[": jumpPrevKyoku,
       "]": jumpNextKyoku,
-      h: () => {
-        state.openHands = !state.openHands;
-        if (state.reviewData) setStep(state.stepIdx);
-      },
-      H: () => {
-        state.openHands = !state.openHands;
-        if (state.reviewData) setStep(state.stepIdx);
-      },
+      h: toggleHandsVisibility,
+      H: toggleHandsVisibility,
+      " ": togglePlay,
     };
 
     if (actions[e.key]) {
@@ -945,9 +1251,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   const urlParams = new URLSearchParams(window.location.search);
   const paipuParam = urlParams.get("paipu");
   if (paipuParam) {
-    $("homePaipuInput").value = paipuParam;
+    const input = $("homePaipuInput");
+    if (input) input.value = paipuParam;
     await startAnalysisFromInput(paipuParam, "akagi", 0);
   } else {
+    const input = $("homePaipuInput");
+    if (input) input.value = "";
     showTier(1);
   }
 });
