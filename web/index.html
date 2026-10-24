@@ -3,367 +3,232 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>雀魂复盘</title>
+  <title>牌谱检讨 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=22.0" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="app-header">
-    <div class="import-bar">
-      <div class="import-input">
-        <input id="paipuInput" type="text" autocomplete="off" spellcheck="false"
-          placeholder="把雀魂牌谱链接或牌谱号贴在这里，回车开始" aria-label="牌谱链接或牌谱号" />
+  <!-- ========================================================================
+       Tier 1: Minimal Landing Page
+       ======================================================================== -->
+  <section id="tier1Screen" class="kd-tier1">
+    <div class="kd-landing-card">
+      <div class="kd-avatar-wrap">
+        <img src="/avatar.png" alt="GitHub Avatar" class="kd-avatar" />
       </div>
-      <button id="btnAnalyzePaipu" class="btn btn-primary">开始复盘</button>
-      <button id="btnLoadDemo" class="btn btn-ghost">看示例牌谱</button>
+
+      <div>
+        <h1 class="kd-landing-title">雀魂牌谱 AI 检讨</h1>
+        <p class="kd-landing-sub">Mjai-Reviewer · 赤木 Akagi / Mortal 核心神经网络</p>
+      </div>
+
+      <div class="kd-landing-form">
+        <input id="homePaipuInput" class="kd-landing-input" type="text"
+          placeholder="粘贴雀魂牌谱链接或牌谱号，回车即可开始..."
+          autocomplete="off" spellcheck="false" aria-label="牌谱链接" />
+
+        <div class="kd-model-group">
+          <button type="button" class="kd-model-btn active" data-model="akagi" id="btnModelAkagi">
+            <span>🔥 赤木 Akagi (v4)</span>
+            <span style="font-size:11px; opacity:0.75;">582k步 进攻强化</span>
+          </button>
+          <button type="button" class="kd-model-btn" data-model="mortal" id="btnModelMortal">
+            <span>🍃 Mortal 核心 (v3)</span>
+            <span style="font-size:11px; opacity:0.75;">天凤十段 平衡型</span>
+          </button>
+        </div>
+
+        <button id="btnHomeAnalyze" class="kd-landing-submit">开始分析</button>
+      </div>
     </div>
+  </section>
 
-    <div class="header-actions">
-      <button id="btnOpenBackendModal" class="chip-btn" title="后端 AI 服务连接设置">
-        <span class="chip-ico">🔌</span>
-        <span id="backendStatusText">检测服务...</span>
-      </button>
-      <button id="btnOpenEngineModal" class="chip-btn" title="点击切换 AI 分析模型与设置">
-        <span class="chip-ico">⚙</span>
-        <span id="engineStatusText">赤木 Akagi · CUDA</span>
-      </button>
-      <button id="btnOpenJsonModal" class="chip-btn" title="导入本地牌谱文件 (JSON / MJAI)">导入文件</button>
-      <button id="btnOpenHelp" class="chip-btn chip-icon-only" title="使用说明与快捷键">?</button>
-    </div>
-  </header>
+  <!-- ========================================================================
+       Tier 2: Review Screen (KillerDucky Mahjong Board)
+       ======================================================================== -->
+  <section id="tier2Screen" class="kd-tier2 hidden">
+    <!-- Top Header -->
+    <header class="kd-header">
+      <div class="kd-header-left">
+        <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
+        <div id="seatTabs" class="kd-seat-tabs"></div>
+      </div>
 
-  <nav class="subbar">
-    <div class="subbar-group">
-      
-      <div id="seatTabs" class="seg-control" role="tablist"></div>
-    </div>
-    <div class="subbar-group subbar-kyoku">
-      
-      <div id="kyokuPills" class="kyoku-pills"></div>
-    </div>
-    <div id="gameTitle" class="game-title" title=""></div>
-  </nav>
+      <div class="kd-header-mid">
+        <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
+        <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
+      </div>
 
-  <main class="workspace">
-    <section class="stage-col">
-      <div id="stageWrap" class="stage-wrap">
-        <div id="stage" class="stage">
-          <!-- 对家 (上方) 独立手牌区，点击切换隐藏/显示 -->
-          <div id="dockTop" class="opp-dock opp-dock-top" title="点击隐藏/显示对手手牌">
-            <div id="meldsTop" class="melds opp-melds"></div>
-            <div id="handTop" class="opp-hand"></div>
+      <div class="kd-header-right">
+        <button id="btnOpenEngineModal" class="kd-chip-btn" title="点击切换分析模型">
+          <span>⚙</span>
+          <span id="engineStatusText">赤木 Akagi · CPU</span>
+        </button>
+        <div id="gameSummaryPill" class="kd-match-badge">AI 一致率: --%</div>
+      </div>
+    </header>
+
+    <!-- Main Board & Sidebar -->
+    <main>
+      <div class="outer">
+        <!-- 655x735 Mahjong Board Grid -->
+        <div class="grid-main" id="gridMain">
+          <!-- P0 (Bottom / Hero) Hand Container with Discard Probability Bars -->
+          <span class="grid-hand-p0-container">
+            <span id="discard-bars" class="discard-bars">
+              <svg id="discardBarsSvg" class="discard-bars-svg"></svg>
+            </span>
+            <span class="grid-hand pov-p0 grid-hand-p0">
+              <span class="pov-p0 hand-closed-p0" id="handBottomClosed"></span>
+              <span class="pov-p0 hand-calls-p0" id="handBottomCalls"></span>
+            </span>
+          </span>
+
+          <!-- P3 (Left / Kami) Hand -->
+          <span class="grid-hand pov-p3 grid-hand-p3">
+            <span class="pov-p3 hand-closed-p3" id="handLeftClosed"></span>
+            <span class="pov-p3 hand-calls-p3" id="handLeftCalls"></span>
+          </span>
+
+          <!-- P2 (Top / Toimen) Hand -->
+          <span class="grid-hand pov-p2 grid-hand-p2">
+            <span class="pov-p2 hand-closed-p2" id="handTopClosed"></span>
+            <span class="pov-p2 hand-calls-p2" id="handTopCalls"></span>
+          </span>
+
+          <!-- P1 (Right / Shimo) Hand -->
+          <span class="grid-hand pov-p1 grid-hand-p1">
+            <span class="pov-p1 hand-closed-p1" id="handRightClosed"></span>
+            <span class="pov-p1 hand-calls-p1" id="handRightCalls"></span>
+          </span>
+
+          <!-- 4 Discard Rivers -->
+          <span class="grid-discard pov-p0 grid-discard-p0" id="riverBottom"></span>
+          <span class="grid-discard pov-p1 grid-discard-p1" id="riverRight"></span>
+          <span class="grid-discard pov-p2 grid-discard-p2" id="riverTop"></span>
+          <span class="grid-discard pov-p3 grid-discard-p3" id="riverLeft"></span>
+
+          <!-- Center 200x200 Info Square -->
+          <div class="grid-info" id="gridInfo">
+            <button class="info-round" id="btnRoundScore" title="点击查看局数得点表">东1</button>
+            <span class="info-tiles-left" id="centerTilesLeft">x69</span>
+            <span class="info-honbas" id="centerHonba"></span>
+            <span class="info-doras" id="centerDoras"></span>
+            <span class="gi-p0-outer"><span class="gi-p0" id="giP0">西 25000</span></span>
+            <span class="gi-p1-outer"><span class="gi-p1" id="giP1">北 25000</span></span>
+            <span class="gi-p2-outer"><span class="gi-p2" id="giP2">东 25000</span></span>
+            <span class="gi-p3-outer"><span class="gi-p3" id="giP3">南 25000</span></span>
+          </div>
+        </div>
+
+        <!-- Right Sidebar (Controls, Decision Details, Shortcuts) -->
+        <div class="sidebar">
+          <!-- 8 Navigation Buttons -->
+          <div class="controls">
+            <button id="btnPrevKyoku">&lt; 上一局</button>
+            <button id="btnNextKyoku">下一局 &gt;</button>
+            <button id="btnPrevBlunder">&lt; 上一错误</button>
+            <button id="btnNextBlunder">下一错误 &gt;</button>
+            <button id="btnPrevDec">&lt; 上一切牌</button>
+            <button id="btnNextDec">下一切牌 &gt;</button>
+            <button id="btnPrevStep">&lt; 后退</button>
+            <button id="btnNextStep">前进 &gt;</button>
           </div>
 
-          <!-- 中庭竞技场: 左侧上家手牌 + 中央纯牌河场况桌 + 右侧下家手牌 -->
-          <div class="middle-arena">
-            <div id="dockLeft" class="opp-dock opp-dock-left" title="点击隐藏/显示对手手牌">
-              <div id="meldsLeft" class="melds opp-melds opp-melds-v"></div>
-              <div id="handLeft" class="opp-hand opp-hand-v"></div>
+          <!-- Active Decision Details Card -->
+          <div class="kd-decision-card" id="decisionCard">
+            <div class="kd-dec-header">
+              <span id="decTurnText" style="font-size:12px; font-weight:bold; color:var(--color-text-bright);">当前手牌</span>
+              <span id="decVerdictBadge" class="kd-dec-verdict best">与 AI 一致</span>
             </div>
 
-            <!-- 牌桌中庭: 仅保留四方牌河与中央场况框，绝无手牌干扰 -->
-            <div id="board" class="board">
-              <div class="seat-layer pos-bottom"><div id="riverBottom" class="river"></div></div>
-              <div class="seat-layer pos-right"><div id="riverRight" class="river"></div></div>
-              <div class="seat-layer pos-top"><div id="riverTop" class="river"></div></div>
-              <div class="seat-layer pos-left"><div id="riverLeft" class="river"></div></div>
-
-              <div class="center-box">
-                <div id="cseatTop" class="cseat cseat-top"></div>
-                <div id="cseatLeft" class="cseat cseat-left"></div>
-                <div id="cseatRight" class="cseat cseat-right"></div>
-                <div id="cseatBottom" class="cseat cseat-bottom"></div>
-                <div class="center-mid">
-                  <div id="centerRoundLabel" class="round-label">东1局</div>
-                  <div class="center-sub">
-                    <span id="centerHonba">0 本场</span>
-                    <span id="centerKyotaku">供托 0</span>
-                  </div>
-                  <div id="centerDoraMarkers" class="dora-row" title="宝牌指示牌"></div>
-                  <div class="center-sub">
-                    <span id="centerTilesLeft">余 70</span>
-                    <span id="centerJunme">第 0 巡</span>
-                  </div>
-                </div>
-              </div>
+            <div class="kd-dec-compare" id="decCompareBox">
+              <div><b>AI 建议：</b><span id="decAiChoice">--</span></div>
+              <div><b>实战打出：</b><span id="decActualChoice">--</span></div>
             </div>
 
-            <div id="dockRight" class="opp-dock opp-dock-right" title="点击隐藏/显示对手手牌">
-              <div id="meldsRight" class="melds opp-melds opp-melds-v"></div>
-              <div id="handRight" class="opp-hand opp-hand-v"></div>
-            </div>
+            <!-- Top Candidates Table -->
+            <table class="kd-cand-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>牌</th>
+                  <th>推荐度</th>
+                  <th>向听</th>
+                  <th>进张</th>
+                </tr>
+              </thead>
+              <tbody id="decCandTableBody"></tbody>
+            </table>
           </div>
 
-          <!-- 玩家 (下方) 专属独立手牌托盘 -->
-          <div class="hero-dock">
-            <div class="dock-head">
-              
-              <div id="centerEventToast" class="event-text">先贴一局牌谱，或看示例</div>
-              <div id="heroVerdictPill" class="verdict-pill hidden"></div>
-            </div>
-            <div id="heroActionBanner" class="action-banner is-empty"></div>
-            <div class="hero-hand-row">
-              <div id="handBottom" class="hero-hand"></div>
-              <div id="meldsBottom" class="melds hero-melds"></div>
-            </div>
+          <!-- Extracted Keyboard Shortcuts Card -->
+          <div class="kd-shortcuts-card">
+            <div class="kd-shortcuts-title">⌨️ 快捷键速查</div>
+            <table class="kd-shortcuts-table">
+              <tbody>
+                <tr><td><code>←</code> <code>→</code></td><td>后退 / 前进一步</td></tr>
+                <tr><td><code>↑</code> <code>↓</code></td><td>上 / 下一切牌决策</td></tr>
+                <tr><td><code>,</code> <code>.</code></td><td>上 / 下一错误手</td></tr>
+                <tr><td><code>[</code> <code>]</code></td><td>上一局 / 下一局</td></tr>
+                <tr><td><code>h</code></td><td>开关别家明牌/暗牌</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
-    </section>
+    </main>
+  </section>
 
-    <aside class="panel-col">
-      <!-- NAGA / KillerDucky 经典双列控制盘 -->
-      <div class="card ctrl-card">
-        <div class="controls-grid">
-          <button id="btnPrevKyoku" class="ctrl-btn" title="上一局">&lt; 上一局</button>
-          <button id="btnNextKyoku" class="ctrl-btn" title="下一局">下一局 &gt;</button>
-          <button id="btnPrevDec" class="ctrl-btn" title="上一个决策点 (↑)">&lt; 上一手</button>
-          <button id="btnNextDec" class="ctrl-btn btn-focus" title="下一个决策点 (↓)">下一手 &gt;</button>
-          <button id="btnPrevBlunder" class="ctrl-btn" title="上一处恶手/疑问手">&lt; 上一问题</button>
-          <button id="btnNextBlunder" class="ctrl-btn btn-danger" title="下一处恶手/疑问手 (B)">下一问题 &gt;</button>
-          <button id="btnPrevStep" class="ctrl-btn" title="上一步 (←)">&lt; 后退</button>
-          <button id="btnNextStep" class="ctrl-btn" title="下一步 (→)">前进 &gt;</button>
-        </div>
-        <div class="timeline-row">
-          <span id="stepCounterText" class="step-counter">0 / 0</span>
-          <div class="timeline">
-            <div id="timelineTicks" class="timeline-ticks"></div>
-            <input id="stepSlider" type="range" min="0" max="0" value="0" class="step-slider" aria-label="回放进度" />
-          </div>
-        </div>
-      </div>
-
-      <div class="card overview">
-        <div class="ov-item ov-lead">
-          <div class="ov-label">值得回头看</div>
-          <div class="ov-value">
-            <span id="metricBlunders" class="c-blunder">0</span><small> 恶手</small>
-            <span id="metricInaccuracies" class="c-question ov-second">0</span><small> 疑问或微差</small>
-          </div>
-          <button id="btnQuickNextBlunder" class="link-btn">从下一处看起</button>
-        </div>
-        <div class="ov-item">
-          <div class="ov-label">和 AI 相同</div>
-          <div class="ov-value"><span id="metricMatchRate">--%</span></div>
-          <div class="ov-count" id="metricMatchCount"></div>
-          <div class="progress"><div id="metricMatchBar" class="progress-bar" style="width:0%"></div></div>
-        </div>
-        <div class="ov-grade">
-          <div id="metricGrade" class="grade-badge">-</div>
-          <div>
-            <div class="ov-label">整局</div>
-            <div class="ov-value ov-rating"><span id="metricRating">--</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card tab-card">
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="tabDecision" role="tab">这一手</button>
-          <button class="tab" data-tab="tabList" role="tab">本局每一手 <span id="decCountBadge" class="tab-badge">0</span></button>
-        </div>
-
-        <div id="tabDecision" class="tab-body">
-          <div class="dec-head">
-            <span id="decVerdictBadge" class="verdict-pill neutral">还没有</span>
-            <div id="decMetaRow" class="dec-meta">
-              <span id="decTurnChip" class="meta-chip">第 - 巡</span>
-              <span id="decShantenChip" class="meta-chip">-</span>
-              <span id="decQLossChip" class="meta-chip" title="和 AI 最想下的那一手比，差多少。">还没比较</span>
-              <span id="decFuritenChip" class="meta-chip chip-warn hidden">振听</span>
-            </div>
-          </div>
-
-          <div id="decDiffReason" class="diff-reason hidden"></div>
-          <div id="decCompareBox" class="compare">
-            <div class="compare-side ai">
-              <div id="compareAiLabel" class="compare-label">AI切</div>
-              <div id="compareAiContent" class="compare-content">--</div>
-            </div>
-            <div class="compare-side actual">
-              <div id="compareActualLabel" class="compare-label">玩家切</div>
-              <div id="compareActualContent" class="compare-content">--</div>
-            </div>
-          </div>
-
-          <div id="candidatesList" class="cand-list">
-            <div class="empty">载入牌谱后，每一手的打法会列在这里。</div>
-          </div>
-        </div>
-
-        <div id="tabList" class="tab-body hidden">
-          <div class="section-head">
-            <div class="seg-control seg-sm">
-              <button id="filterAllDecs" class="seg active">全部</button>
-              <button id="filterIssueDecs" class="seg">只看有问题的</button>
-            </div>
-            
-          </div>
-          <div id="decisionListContainer" class="dec-list"></div>
-        </div>
-      </div>
-    </aside>
-  </main>
-
-  <div id="loadingOverlay" class="loading-overlay hidden">
-    <div class="loading-card">
-      <div class="spinner"></div>
-      <div id="loadingTitle" class="loading-title">正在看这局牌...</div>
-      <div id="loadingSub" class="loading-sub"></div>
+  <!-- Modal: Round Scores Table -->
+  <div id="roundModalBackdrop" class="modal-backdrop hidden"></div>
+  <div id="roundModal" class="modal hidden">
+    <button id="roundModalClose" class="close">×</button>
+    <h3 style="margin-bottom:12px; font-size:16px;">全庄得点变动与 AI 一致率表</h3>
+    <div class="info-round-table">
+      <table>
+        <thead>
+          <tr>
+            <th>局</th>
+            <th>庄家</th>
+            <th>和牌 / 结算</th>
+            <th>得分变动</th>
+            <th>AI 一致率</th>
+            <th>恶手数</th>
+          </tr>
+        </thead>
+        <tbody id="roundTableBody"></tbody>
+      </table>
     </div>
   </div>
 
-  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
-
-  <div id="accountModal" class="modal-backdrop hidden">
-    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
-      <div class="modal-header">
-        <h3 id="accountTitle">登录雀魂，打开最近的牌</h3>
-        <button class="modal-close" data-close="accountModal" aria-label="关闭">关闭</button>
-      </div>
-      <div class="modal-body">
-        <div id="modalAccountStatusBanner" class="banner">还没登录。示例牌谱和导入的文件不需要登录。</div>
-        <div class="modal-columns">
-          <div class="modal-col">
-            <h4>国服账号</h4>
-            <p class="muted">网上的牌谱要登录才能打开。密码只留在这台电脑上，建议用小号。</p>
-            <label class="field"><span>手机号或邮箱</span><input id="loginAccount" type="text" placeholder="雀魂国服账号" /></label>
-            <label class="field"><span>密码</span><input id="loginPassword" type="password" placeholder="登录密码" /></label>
-            <div class="divider"><span>或者粘贴登录凭证</span></div>
-            <label class="field"><span>Access Token，填了就优先用它</span><input id="loginToken" type="text" placeholder="可以不填" /></label>
-            <div class="form-actions">
-              <button id="btnSubmitLogin" class="btn btn-primary">登录</button>
-              <button id="btnLogout" class="btn btn-ghost">清除这台电脑上的登录</button>
-            </div>
-          </div>
-          <div class="modal-col">
-            <div class="col-head">
-              <h4>最近的牌</h4>
-              <button id="btnFetchRecentGames" class="btn btn-sm btn-ghost">刷新</button>
-            </div>
-            <div id="recentGamesList" class="recent-list">
-              <div class="empty">登录后可以拉取最近 15 场。你分析过的牌也会出现在这里。</div>
-            </div>
-          </div>
-        </div>
+  <!-- Modal: Engine Switcher -->
+  <div id="engineModalBackdrop" class="modal-backdrop hidden"></div>
+  <div id="engineModal" class="modal hidden">
+    <button id="engineModalClose" class="close">×</button>
+    <h3 style="margin-bottom:12px; font-size:16px;">⚙ 切换 AI 推理模型</h3>
+    <div id="engineModalDetail" style="font-size:12px; line-height:1.8; margin-bottom:14px; background:var(--color-main); padding:10px; border-radius:4px;"></div>
+    <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
+      <label>
+        <div>选择分析模型：</div>
+        <select id="engineSelect" style="width:100%; margin-top:4px; padding:6px;"></select>
+      </label>
+      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button id="btnSaveEngineConfig" class="kd-back-btn" style="background:var(--color-bar-mortal);">保存并重新检讨</button>
       </div>
     </div>
   </div>
 
-  <div id="jsonModal" class="modal-backdrop hidden">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="jsonTitle">
-      <div class="modal-header">
-        <h3 id="jsonTitle">导入牌谱文件</h3>
-        <button class="modal-close" data-close="jsonModal" aria-label="关闭">关闭</button>
-      </div>
-      <div class="modal-body">
-        <p class="muted">可以是雀魂导出的牌谱，也可以是 MJAI 记录。</p>
-        <label id="fileDropZone" class="drop-zone">
-          <input id="jsonFileInput" type="file" accept=".json,.jsonl,.txt" />
-          <span id="dropText">把文件拖到这里，或点这里选择</span>
-        </label>
-        <label class="field">
-          <span>或把内容贴在下面</span>
-          <textarea id="jsonPasteArea" rows="6" placeholder="把牌谱内容贴在这里"></textarea>
-        </label>
-        <div class="form-actions">
-          <button id="btnAnalyzeJson" class="btn btn-primary">开始复盘</button>
-        </div>
-      </div>
-    </div>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="kd-loading-overlay hidden">
+    <div class="kd-spinner"></div>
+    <div id="loadingTitle" style="font-size:15px; font-weight:bold;">正在分析牌谱...</div>
+    <div id="loadingSub" style="font-size:12px; color:var(--color-text);">赤木神经网络正在检讨每一手决策</div>
   </div>
 
-  <div id="engineModal" class="modal-backdrop hidden">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="engineTitle">
-      <div class="modal-header">
-        <h3 id="engineTitle">分析方式</h3>
-        <button class="modal-close" data-close="engineModal" aria-label="关闭">关闭</button>
-      </div>
-      <div class="modal-body">
-        <div id="engineModalDetail" class="engine-detail"></div>
-        <label class="field">
-          <span>分析模型</span>
-          <select id="engineSelect">
-            <option value="auto">自动选择（优先使用最强模型）</option>
-            <option value="akagi">赤木 Akagi (v4 582k步 进攻强化)</option>
-            <option value="mortal">Mortal 官方核心 (v3 天凤十段)</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>模型权重文件路径（可选，默认自动识别 data/models/）</span>
-          <input id="modelPathInput" type="text" placeholder="默认自动检测 data/models/ 下的模型" />
-        </label>
-        <p class="muted small">
-          系统完全使用深度神经网络进行推理评估，支持赤木（Akagi v4）与 Mortal 官方核心模型，并已自动启用显卡硬件加速。
-        </p>
-        <div class="form-actions">
-          <button id="btnSaveEngineConfig" class="btn btn-primary">保存</button>
-          <button id="btnResetEngineConfig" class="btn btn-ghost">恢复默认位置</button>
-          <button id="btnReanalyze" class="btn btn-ghost">用现在的方式重看这局</button>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <div id="backendModal" class="modal-backdrop hidden">
-    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="backendTitle">
-      <div class="modal-header">
-        <h3 id="backendTitle">AI 分析服务连接</h3>
-        <button class="modal-close" data-close="backendModal" aria-label="关闭">关闭</button>
-      </div>
-      <div class="modal-body">
-        <p class="muted">
-          日麻 AI（赤木 / Mortal 神经网络模型）需要本地 Python 与 GPU 环境进行推理。云端页面通过连接后端来提供实时牌谱分析。
-        </p>
-        <div id="backendConnStatus" class="banner" style="margin-bottom:12px;font-size:13px;padding:8px 12px;border-radius:6px;background:rgba(255,255,255,0.06);">
-          检测中...
-        </div>
-        <label class="field">
-          <span>后端 API 地址</span>
-          <input id="backendUrlInput" type="text" placeholder="http://localhost:8000" />
-        </label>
-        <p class="muted small">
-          本地运行 <code>python run.py</code> 后默认地址为 <code>http://localhost:8000</code>。若通过局域网或远程服务器运行，请填写对应地址。
-        </p>
-        <div class="form-actions">
-          <button id="btnTestBackend" class="btn btn-ghost">测试连接</button>
-          <button id="btnSaveBackend" class="btn btn-primary">保存并连接</button>
-        </div>
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);text-align:center;">
-          <a href="https://colab.research.google.com/github/Gxyh513/majsoul-analyzer/blob/main/colab_run.ipynb" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;text-decoration:none;font-size:13px;font-weight:500;">
-            <img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab" style="height:20px;" />
-            <span>在 Google Colab 免费启动云端 GPU</span>
-          </a>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div id="helpModal" class="modal-backdrop hidden">
-    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
-      <div class="modal-header">
-        <h3 id="helpTitle">怎么用</h3>
-        <button class="modal-close" data-close="helpModal" aria-label="关闭">关闭</button>
-      </div>
-      <div class="modal-body">
-        <ol class="help-steps">
-          <li>把雀魂牌谱链接贴到顶部，点「开始复盘」。网上的牌谱要先登录。</li>
-          <li>「看谁的牌」选你自己，「第几局」切换东一局、东二局。</li>
-          <li>按 <kbd>↓</kbd> 一手一手看。右边第一句话就是你和 AI 差在哪。</li>
-        </ol>
-        <table class="kbd-table">
-          <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一步 / 下一步</td></tr>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>上一手 / 下一手该你决定的地方</td></tr>
-          <tr><td><kbd>B</kbd></td><td>下一处有问题的手</td></tr>
-          <tr><td><kbd>H</kbd></td><td>显示或隐藏对手手牌</td></tr>
-          <tr><td>滚轮</td><td>上一步 / 下一步。按住 <kbd>Shift</kbd> 再滚，跳到上一手或下一手</td></tr>
-          <tr><td><kbd>Home</kbd></td><td>回到本局开头</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>关闭窗口</td></tr>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <script src="/app.js?v=22.0"></script>
+  <script src="/app.js"></script>
 </body>
 </html>
