@@ -17,9 +17,14 @@ def main():
         except Exception:  # noqa: BLE001
             pass
 
+    import os
+
+    default_host = os.environ.get("HOST", "127.0.0.1")
+    default_port = int(os.environ.get("PORT", "8000"))
+
     parser = argparse.ArgumentParser(description="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)")
-    parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000, help="监听端口 (默认 8000)")
+    parser.add_argument("--host", default=default_host, help=f"监听地址 (默认 {default_host})")
+    parser.add_argument("--port", type=int, default=default_port, help=f"监听端口 (默认 {default_port})")
     parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
     args = parser.parse_args()
 
