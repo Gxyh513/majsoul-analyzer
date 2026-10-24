@@ -221,23 +221,44 @@ async function refreshServerStatus() {
   }
 }
 
-function updateTopbarStatus(st) {
-  const eng = st.engine || {};
-  const btn = $("engineStatusText");
-  if (btn) {
-    if (eng.active_engine === "mortal" || eng.has_mortal_weights) {
-      btn.textContent = `${eng.model_name || "赤木 Akagi"} · ${eng.device || "CPU"}`;
+function updateEngineStatusDisplay(modelId, device) {
+  const targetModel = (modelId || state.selectedModel || "akagi").toLowerCase();
+  const dev = device || state.serverStatus?.engine?.device || "CPU";
+  let friendlyName = "赤木 Akagi";
+  if (targetModel.includes("mortal")) {
+    friendlyName = "Mortal";
+  } else if (targetModel.includes("akagi")) {
+    friendlyName = "赤木 Akagi";
+  } else {
+    const available = state.serverStatus?.engine?.available_models || [];
+    const found = available.find((m) => m.id && m.id.toLowerCase() === targetModel);
+    if (found && found.name) {
+      friendlyName = found.name.split("(")[0].trim() || found.name;
     } else {
-      btn.textContent = "无神经网络权重";
+      friendlyName = modelId || state.selectedModel || "赤木 Akagi";
     }
   }
+
+  const btn = $("engineStatusText");
+  if (btn) {
+    btn.textContent = `${friendlyName} · ${dev}`;
+  }
+}
+
+function updateTopbarStatus(st) {
+  const eng = st.engine || {};
+  updateEngineStatusDisplay(state.selectedModel || eng.selected_model, eng.device);
 
   const sel = $("engineSelect");
   if (sel && eng.available_models) {
     sel.innerHTML = eng.available_models
       .map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`)
       .join("");
-    if (eng.selected_model) sel.value = eng.selected_model;
+    if (state.selectedModel) {
+      sel.value = state.selectedModel;
+    } else if (eng.selected_model) {
+      sel.value = eng.selected_model;
+    }
   }
 
   const detail = $("engineModalDetail");
@@ -276,6 +297,7 @@ function showTier(tierNum) {
   } else {
     t1.classList.add("hidden");
     t2.classList.remove("hidden");
+    updateEngineStatusDisplay();
     window.scrollTo(0, 0);
   }
 }
@@ -329,6 +351,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   }
   const paipuId = parsePaipuUuid(rawInput);
   state.selectedModel = model;
+  updateEngineStatusDisplay(model);
 
   // 检查是否已有缓存
   const cacheKey = seat !== null && seat !== undefined ? `${paipuId}_${model}_${seat}` : null;
@@ -920,31 +943,31 @@ function renderMeldHtml(m, ownerSeat, pov = "bottom") {
 function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   const actType = (actionObj?.type || actionObj?.action || actionCn || (pai ? "dahai" : "pass")).toLowerCase();
 
-  if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过")) {
+  if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过") || actType.includes("不鸣")) {
     return `
-      <div class="action-badge action-badge-pass" title="跳过 / 不鸣">
-        <span class="action-badge-text">跳过</span>
+      <div class="action-badge action-badge-pass" title="PASS">
+        <span class="action-badge-text">PASS</span>
       </div>
     `;
   }
   if (actType.includes("chi") || actType.includes("吃")) {
     return `
-      <div class="action-badge action-badge-chi" title="吃牌">
-        <span class="action-badge-text">吃</span>
+      <div class="action-badge action-badge-chi" title="Chi">
+        <span class="action-badge-text">Chi</span>
       </div>
     `;
   }
   if (actType.includes("pon") || actType.includes("碰")) {
     return `
-      <div class="action-badge action-badge-pon" title="碰牌">
-        <span class="action-badge-text">碰</span>
+      <div class="action-badge action-badge-pon" title="Pon">
+        <span class="action-badge-text">Pon</span>
       </div>
     `;
   }
   if (actType.includes("kan") || actType.includes("杠")) {
     return `
-      <div class="action-badge action-badge-kan" title="杠牌">
-        <span class="action-badge-text">杠</span>
+      <div class="action-badge action-badge-kan" title="Kan">
+        <span class="action-badge-text">Kan</span>
       </div>
     `;
   }
@@ -956,7 +979,8 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     `;
   }
   if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
-    const label = (actType.includes("ron") || actType.includes("荣")) ? "荣和" : "自摸";
+    const isRon = actType.includes("ron") || actType.includes("荣") || actionCn.includes("荣");
+    const label = isRon ? "Ron" : "自摸";
     return `
       <div class="action-badge action-badge-hora" title="${label}">
         <span class="action-badge-text">${label}</span>
@@ -1249,7 +1273,29 @@ function renderDecisionCard(dec, isExactStep, snap) {
       actualTileName.style.display = "none";
     } else {
       actualTileName.style.display = "block";
-      const actText = (dec.actual_cn || "跳过 (Pass)").replace(/和牌/g, isCallDec ? "荣和" : "自摸");
+      const actType = (dec.actual?.type || "").toLowerCase();
+      let actText = dec.actual_cn || "";
+      if (
+        actType === "pass" ||
+        actType === "none" ||
+        !actText ||
+        actText.includes("跳过") ||
+        actText.toLowerCase().includes("pass") ||
+        actText.includes("不鸣") ||
+        actText.includes("过")
+      ) {
+        actText = "PASS";
+      } else if (actType.includes("chi") || actText.includes("吃")) {
+        actText = "Chi";
+      } else if (actType.includes("pon") || actText.includes("碰")) {
+        actText = "Pon";
+      } else if (actType.includes("kan") || actText.includes("杠")) {
+        actText = "Kan";
+      } else if (actType.includes("ron") || (isCallDec && (actType.includes("hora") || actText.includes("和")))) {
+        actText = "Ron";
+      } else {
+        actText = actText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
+      }
       actualTileName.textContent = actText;
     }
   }
@@ -1289,7 +1335,29 @@ function renderDecisionCard(dec, isExactStep, snap) {
       aiTileName.style.display = "none";
     } else {
       aiTileName.style.display = "block";
-      const expText = (dec.expected_cn || "跳过 (Pass)").replace(/和牌/g, isCallDec ? "荣和" : "自摸");
+      const expType = (dec.expected?.type || "").toLowerCase();
+      let expText = dec.expected_cn || "";
+      if (
+        expType === "pass" ||
+        expType === "none" ||
+        !expText ||
+        expText.includes("跳过") ||
+        expText.toLowerCase().includes("pass") ||
+        expText.includes("不鸣") ||
+        expText.includes("过")
+      ) {
+        expText = "PASS";
+      } else if (expType.includes("chi") || expText.includes("吃")) {
+        expText = "Chi";
+      } else if (expType.includes("pon") || expText.includes("碰")) {
+        expText = "Pon";
+      } else if (expType.includes("kan") || expText.includes("杠")) {
+        expText = "Kan";
+      } else if (expType.includes("ron") || (isCallDec && (expType.includes("hora") || expText.includes("和")))) {
+        expText = "Ron";
+      } else {
+        expText = expText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
+      }
       aiTileName.textContent = expText;
     }
   }
@@ -1321,19 +1389,19 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
         if (rawType.includes("chi") || cn.includes("吃")) {
           actionType = "chi";
-          actionLabel = "吃";
+          actionLabel = "Chi";
           badgeClass = "action-chi";
         } else if (rawType.includes("pon") || cn.includes("碰")) {
           actionType = "pon";
-          actionLabel = "碰";
+          actionLabel = "Pon";
           badgeClass = "action-pon";
         } else if (rawType.includes("kan") || cn.includes("杠")) {
           actionType = "kan";
-          actionLabel = "杠";
+          actionLabel = "Kan";
           badgeClass = "action-kan";
         } else if (rawType.includes("ron") || cn.includes("荣") || (isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
           actionType = "ron";
-          actionLabel = "荣和";
+          actionLabel = "Ron";
           badgeClass = "action-hora";
         } else if (rawType.includes("tsumo") || cn.includes("自摸") || (!isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
           actionType = "tsumo";
@@ -1345,12 +1413,12 @@ function renderDecisionCard(dec, isExactStep, snap) {
           badgeClass = "action-riichi";
         } else if (rawType.includes("none") || rawType.includes("pass") || cn.includes("pass") || cn.includes("跳过") || cn.includes("过") || cn.includes("不鸣")) {
           actionType = "pass";
-          actionLabel = "切";
-          badgeClass = "action-dahai";
+          actionLabel = "PASS";
+          badgeClass = "action-pass";
         } else if (isCallDec) {
           actionType = "pass";
-          actionLabel = "切";
-          badgeClass = "action-dahai";
+          actionLabel = "PASS";
+          badgeClass = "action-pass";
         } else {
           actionType = "dahai";
           actionLabel = "切";
@@ -1381,14 +1449,14 @@ function renderDecisionCard(dec, isExactStep, snap) {
           if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
             tileDisplay = `<img src="/tiles/${encodeURIComponent(mainPai)}.svg" class="kd-cand-tile-img" title="${tileCn(mainPai)}">`;
           } else {
-            tileDisplay = `<span class="kd-cand-pass-text">跳过</span>`;
+            tileDisplay = `<span class="kd-cand-pass-text">PASS</span>`;
           }
         } else if (actionType === "ron" || actionType === "tsumo") {
           const agariTile = mainPai || dec.context_tile || dec.actual?.pai || dec.expected?.pai;
           if (agariTile && agariTile !== "none" && agariTile !== "pass") {
-            tileDisplay = `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="kd-cand-tile-img agari-tile" title="${actionType === "ron" ? "荣和" : "自摸"}: ${tileCn(agariTile)}">`;
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="kd-cand-tile-img agari-tile" title="${actionType === "ron" ? "Ron" : "自摸"}: ${tileCn(agariTile)}">`;
           } else {
-            tileDisplay = `<span class="kd-cand-pass-text" style="color:#30d158; font-weight:700;">${actionType === "ron" ? "荣和" : "自摸"}</span>`;
+            tileDisplay = `<span class="kd-cand-pass-text" style="color:#30d158; font-weight:700;">${actionType === "ron" ? "Ron" : "自摸"}</span>`;
           }
         } else {
           if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
@@ -1436,7 +1504,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
         const detailRow = hasUkeireTiles
           ? `
           <tr class="kd-cand-detail-row ${isExpanded ? '' : 'hidden'}" id="candDetail_${i}">
-            <td colspan="5" style="padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);" onclick="event.stopPropagation()">
+            <td colspan="5" style="box-sizing:border-box; width:100%; padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);" onclick="event.stopPropagation()">
               <div class="kd-ukeire-container">
                 <div class="kd-ukeire-grid">
                   ${ukeireList.map(u => `
@@ -1457,7 +1525,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
             <td><span class="kd-cand-action ${badgeClass}">${escapeHtml(actionLabel)}</span></td>
             <td style="text-align:center;">${tileDisplay}</td>
             <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
-            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal, actionType === "ron" ? "荣和" : "自摸")}</span></td>
+            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal, actionType === "ron" ? "Ron" : "自摸")}</span></td>
             <td>${uCell}</td>
           </tr>
           ${detailRow}
@@ -1836,11 +1904,15 @@ function bindEvents() {
     state.selectedModel = "akagi";
     btnAkagi.classList.add("active");
     btnMortal.classList.remove("active");
+    if ($("engineSelect")) $("engineSelect").value = "akagi";
+    updateEngineStatusDisplay("akagi");
   });
   btnMortal?.addEventListener("click", () => {
     state.selectedModel = "mortal";
     btnMortal.classList.add("active");
     btnAkagi.classList.remove("active");
+    if ($("engineSelect")) $("engineSelect").value = "mortal";
+    updateEngineStatusDisplay("mortal");
   });
 
   // Tier 1 Submit
@@ -1887,11 +1959,14 @@ function bindEvents() {
   // Toggle Hide/Show Player ID
   $("btnToggleHideId")?.addEventListener("click", toggleHidePlayerId);
 
-  // Global robust delegation for clicking anywhere on hands / tiles / back tiles / blank area:
+  // Global robust delegation for clicking anywhere on opponent hands / tiles / back tiles:
   document.addEventListener("click", (e) => {
-    const handTarget = e.target.closest(".grid-hand, .grid-hand-p0-container, [id^='hand'], .hand-closed-p0, .hand-closed-p1, .hand-closed-p2, .hand-closed-p3");
-    if (handTarget) {
-      if (e.target.closest("button, a, select, input")) return;
+    if (e.target.closest("button, a, select, input")) return;
+    // 如果点击的是自家（p0/底端）手牌或相关区域，坚决不触发别家明牌/暗牌切换！
+    if (e.target.closest(".grid-hand-p0-container, #hand0, .hand-closed-p0, .grid-hand-p0")) return;
+    // 只有点击其他三家（p1, p2, p3）的手牌区域时，才执行 toggleHandsVisibility()
+    const otherHandTarget = e.target.closest(".grid-hand-p1, .grid-hand-p2, .grid-hand-p3, #hand1, #hand2, #hand3, .hand-closed-p1, .hand-closed-p2, .hand-closed-p3");
+    if (otherHandTarget) {
       toggleHandsVisibility();
     }
   });
@@ -1931,6 +2006,15 @@ function bindEvents() {
   $("btnSaveEngineConfig")?.addEventListener("click", async () => {
     const model = $("engineSelect")?.value || "akagi";
     state.selectedModel = model;
+    updateEngineStatusDisplay(model);
+    try {
+      await apiFetch("/api/engine/config", {
+        method: "POST",
+        body: JSON.stringify({ selected_model: model }),
+      });
+    } catch (e) {
+      console.warn("Failed to sync engine config with backend:", e);
+    }
     closeModal("engineModal");
     if (state.reviewData && state.gameId) {
       await startAnalysisFromInput(state.gameId, model, state.targetActor);

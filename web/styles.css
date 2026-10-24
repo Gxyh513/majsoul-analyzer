@@ -1046,7 +1046,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  width: 320px;
+  width: 350px;
   flex-shrink: 0;
 }
 
@@ -1093,7 +1093,7 @@ button {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: var(--apple-border);
-  padding: 16px;
+  padding: 14px 10px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1402,6 +1402,7 @@ button {
 
 .kd-cand-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
@@ -1409,13 +1410,15 @@ button {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(0, 0, 0, 0.25);
+  box-sizing: border-box;
 }
 
 .kd-cand-table th, .kd-cand-table td {
-  padding: 6px 8px;
+  padding: 6px 4px;
   text-align: center;
   vertical-align: middle;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  box-sizing: border-box;
 }
 
 .kd-cand-table th {
@@ -1426,13 +1429,19 @@ button {
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+.kd-cand-table th:nth-child(1) { width: 48px; text-align: center; }
+.kd-cand-table th:nth-child(2) { width: 64px; text-align: center; }
+.kd-cand-table th:nth-child(3) { width: 80px; text-align: center; }
+.kd-cand-table th:nth-child(4) { width: 66px; text-align: center; }
+.kd-cand-table th:nth-child(5) { width: 72px; text-align: center; }
+
 .kd-cand-table tr:last-child td {
   border-bottom: none;
 }
 
 .kd-cand-action {
   display: inline-block;
-  padding: 2px 6px;
+  padding: 2px 4px;
   font-size: 11px;
   font-weight: 700;
   border-radius: 4px;
@@ -1481,6 +1490,12 @@ button {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+.kd-cand-action.action-pass {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(235, 235, 245, 0.75);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
 .kd-cand-tile-combo {
   display: inline-flex;
   align-items: center;
@@ -1496,9 +1511,9 @@ button {
 
 .kd-cand-pass-text {
   display: inline-block;
-  color: rgba(235, 235, 245, 0.5);
+  color: rgba(235, 235, 245, 0.65);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
   letter-spacing: 0.5px;
 }
 
@@ -1553,7 +1568,19 @@ button {
   display: none !important;
 }
 
+.kd-cand-detail-row td {
+  box-sizing: border-box;
+  width: 100% !important;
+  padding: 4px 8px 8px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.22);
+}
+
 .kd-ukeire-container {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   padding: 6px 8px;
   background: rgba(18, 18, 20, 0.85);
   border-radius: 8px;
@@ -1566,6 +1593,8 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .kd-ukeire-item {
