@@ -29,6 +29,32 @@
 
 ---
 
+## ☁️ 云端运行 AI 引擎（脱离本地电脑）
+
+如果您希望不依赖本地电脑，完全在云端 24 小时运行 AI 分析后端：
+
+### 方案 A：Hugging Face Spaces（24小时全天候免费托管）
+
+1. 登录 [Hugging Face](https://huggingface.co/) 并进入 [Spaces](https://huggingface.co/spaces)。
+2. 点击 **Create new Space**：
+   - **Space SDK**: 选择 **Docker** -> **Blank**
+   - **Hardware**: 选择免费的 **CPU Basic (2 vCPU, 16GB RAM)**（或按需选择 T4 GPU）
+3. 将本项目推送到该 Space（或在 Space 设置中直接关联 GitHub 仓库 `Gxyh513/majsoul-analyzer`）。
+4. 项目内已配置自动化 [Dockerfile](file:///c:/Users/22/.gemini/antigravity/scratch/majsoul-analyzer/Dockerfile)，构建完成后将生成公开 API 域名（如 `https://<用户名>-majsoul.hf.space`）。
+5. 打开 [https://majsoul-analyzer.pages.dev](https://majsoul-analyzer.pages.dev)，点击右上角 **🔌 服务状态**，填入该域名即可！
+
+### 方案 B：Google Colab（免费 T4 GPU 算力一键启动）
+
+1. 打开 [Google Colab](https://colab.research.google.com/)，在菜单选择 **修改 -> 笔记本设置 -> 硬件加速器选择 T4 GPU**。
+2. 在新建代码块中粘贴并执行以下命令：
+   ```bash
+   !curl -sSL https://raw.githubusercontent.com/Gxyh513/majsoul-analyzer/main/colab_launcher.py | python
+   ```
+3. 运行完成后终端会打印出临时专属域名（形如 `https://xxxx.trycloudflare.com`）。
+4. 将该地址填入网页右上角的 **🔌 后端服务**，即可直接享受免费云端 GPU 的秒级推理！
+
+---
+
 ## 💻 本地运行后端分析服务
 
 由于 AI 模型推理（PyTorch + CUDA）及雀魂协议握手运行在 Python 后端：
