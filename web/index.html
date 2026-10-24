@@ -102,31 +102,30 @@
           </div>
         </div>
       </div>
-
-      <div class="replay">
-        <div class="timeline">
-          <div id="timelineTicks" class="timeline-ticks"></div>
-          <input id="stepSlider" type="range" min="0" max="0" value="0" class="step-slider" aria-label="回放进度" />
-        </div>
-        <div class="replay-row">
-          <span id="stepCounterText" class="step-counter">0 / 0</span>
-          <div class="ctrl-group">
-            <button id="btnStepStart" class="ctrl" title="回到本局开头 (Home)">开头</button>
-            <button id="btnPrevStep" class="ctrl" title="上一步 (←)">上一步</button>
-            <button id="btnNextStep" class="ctrl" title="下一步 (→)">下一步</button>
-            <span class="ctrl-sep"></span>
-            <button id="btnPrevDec" class="ctrl ctrl-wide" title="上一个该你做决定的地方 (↑)">上一手</button>
-            <button id="btnNextDec" class="ctrl ctrl-wide ctrl-primary" title="下一个该你做决定的地方 (↓)">下一手</button>
-            <button id="btnNextBlunder" class="ctrl ctrl-wide ctrl-danger" title="跳到下一处恶手或疑问手 (B)">下一处问题</button>
-          </div>
-          <span class="legend">
-            <i class="dot best"></i>一致 <i class="dot ok"></i>微差 <i class="dot question"></i>疑问 <i class="dot blunder"></i>恶手
-          </span>
-        </div>
-      </div>
     </section>
 
     <aside class="panel-col">
+      <!-- NAGA / KillerDucky 经典双列控制盘 -->
+      <div class="card ctrl-card">
+        <div class="controls-grid">
+          <button id="btnPrevKyoku" class="ctrl-btn" title="上一局">&lt; 上一局</button>
+          <button id="btnNextKyoku" class="ctrl-btn" title="下一局">下一局 &gt;</button>
+          <button id="btnPrevDec" class="ctrl-btn" title="上一个决策点 (↑)">&lt; 上一手</button>
+          <button id="btnNextDec" class="ctrl-btn btn-focus" title="下一个决策点 (↓)">下一手 &gt;</button>
+          <button id="btnPrevBlunder" class="ctrl-btn" title="上一处恶手/疑问手">&lt; 上一问题</button>
+          <button id="btnNextBlunder" class="ctrl-btn btn-danger" title="下一处恶手/疑问手 (B)">下一问题 &gt;</button>
+          <button id="btnPrevStep" class="ctrl-btn" title="上一步 (←)">&lt; 后退</button>
+          <button id="btnNextStep" class="ctrl-btn" title="下一步 (→)">前进 &gt;</button>
+        </div>
+        <div class="timeline-row">
+          <span id="stepCounterText" class="step-counter">0 / 0</span>
+          <div class="timeline">
+            <div id="timelineTicks" class="timeline-ticks"></div>
+            <input id="stepSlider" type="range" min="0" max="0" value="0" class="step-slider" aria-label="回放进度" />
+          </div>
+        </div>
+      </div>
+
       <div class="card overview">
         <div class="ov-item ov-lead">
           <div class="ov-label">值得回头看</div>
