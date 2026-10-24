@@ -56,12 +56,6 @@
         </div>
 
         <div class="kd-header-right">
-          <select id="themeSelect" class="kd-kyoku-select" title="切换界面与牌桌主题" style="padding:5px 8px; font-size:12px; background:rgba(255,255,255,0.08); border-radius:18px;">
-            <option value="apple-dark">深空暗黑</option>
-            <option value="majsoul-green">雀庄翠绿</option>
-            <option value="midnight-navy">深海藏青</option>
-            <option value="true-black">极夜纯黑</option>
-          </select>
           <button id="btnToggleHideId" class="kd-chip-btn" title="切换是否隐藏玩家ID与昵称">隐藏ID</button>
           <button id="btnToggleHands" class="kd-chip-btn" title="切换别家明牌/暗牌 (快捷键 H)">
             <span id="toggleHandsText">明牌</span>
@@ -198,7 +192,7 @@
           </div>
         </div>
 
-        <!-- Right Column 2: Secondary Sidebar (Shortcuts & Theme Cards on the Right) -->
+        <!-- Right Column 2: Secondary Sidebar (Shortcuts Card on the Right) -->
         <div class="sidebar-secondary">
           <!-- Standalone Prominent Keyboard Shortcuts Card on the Right -->
           <div class="kd-shortcuts-card" id="shortcutsCard">
@@ -213,26 +207,6 @@
                 <tr><td><code>h</code></td><td>开关别家明牌/暗牌</td></tr>
               </tbody>
             </table>
-          </div>
-
-          <!-- Appearance & Tile Back Customizer Card -->
-          <div class="kd-shortcuts-card kd-appearance-card">
-            <div class="kd-shortcuts-title">视觉主题与外观</div>
-            <div style="font-size:12px; margin-bottom:6px; color:var(--color-text-secondary);">牌桌主题配色</div>
-            <select id="themeSelectCard" class="kd-kyoku-select" style="width:100%; margin-bottom:12px; padding:6px 10px; font-size:12px;">
-              <option value="apple-dark">深空暗黑 (Apple Dark 默认)</option>
-              <option value="majsoul-green">经典雀庄翠绿 (Majsoul Green)</option>
-              <option value="midnight-navy">深海藏青 (Midnight Navy)</option>
-              <option value="true-black">极夜 OLED 纯黑 (True Black)</option>
-            </select>
-            <div style="font-size:12px; margin-bottom:6px; color:var(--color-text-secondary);">暗牌背面颜色</div>
-            <select id="backSelectCard" class="kd-kyoku-select" style="width:100%; padding:6px 10px; font-size:12px;">
-              <option value="auto">随主题自动适配 (推荐)</option>
-              <option value="back-red">经典赤红 (保留原版)</option>
-              <option value="back-navy">沉稳藏青 (低饱和深海)</option>
-              <option value="back-green">翡翠竹青 (雅致墨玉)</option>
-              <option value="back-dark">曜石深灰 (深空高级感)</option>
-            </select>
           </div>
         </div>
       </div>
