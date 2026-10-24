@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>雀魂牌谱 AI 检讨系统 — NAGA / Mortal 风格分析器</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Top Header Bar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo" title="雀魂 AI 牌谱检讨">🀄</div>
+      <div>
+        <div class="brand-title">MAJSOUL AI REVIEWER</div>
+        <div class="brand-sub">雀魂四麻牌谱检讨 · NAGA 风格可视化 &amp; Mortal 引擎</div>
+      </div>
+    </div>
+
+    <div class="paipu-bar">
+      <div class="input-group">
+        <span class="input-icon">🔗</span>
+        <input
+          id="paipuInput"
+          type="text"
+          placeholder="输入雀魂牌谱链接 (https://game.maj-soul.com/1/?paipu=...) 或牌谱 UUID..."
+          autocomplete="off"
+        />
+      </div>
+      <select id="engineSelect" class="select-ctrl" title="选择 AI 分析引擎">
+        <option value="auto">引擎: 自动 (优先 Mortal)</option>
+        <option value="builtin">引擎: 内置 SP+防守 (Rust)</option>
+      </select>
+      <button id="btnAnalyzePaipu" class="btn btn-primary">开始分析</button>
+      <button id="btnLoadDemo" class="btn btn-accent" title="一键加载内置四麻多局演示牌谱">✨ 演示牌谱</button>
+      <button id="btnOpenJsonModal" class="btn btn-ghost" title="上传或粘贴雀魂 JSON / MJAI 牌谱">📂 本地 JSON</button>
+    </div>
+
+    <div class="topbar-right">
+      <button id="btnOpenAccountModal" class="status-pill" title="配置雀魂国服账号或拉取最近对局">
+        <span id="msStatusDot" class="status-dot offline"></span>
+        <span id="msStatusText">雀魂账号 / 最近对局</span>
+      </button>
+      <button id="btnOpenEngineModal" class="status-pill engine-pill" title="查看或配置 AI 引擎与 Mortal 权重">
+        <span class="engine-icon">🧠</span>
+        <span id="engineStatusText">加载引擎中...</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="loading-overlay hidden">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <div id="loadingTitle" class="loading-title">正在进行 AI 牌谱检讨...</div>
+      <div id="loadingSub" class="loading-sub">计算每一巡向听、进张、局收支 EV、放铳率与最优动作分布</div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Summary & Kyoku Navigation Bar -->
+  <section id="summarySection" class="summary-section">
+    <div class="summary-top">
+      <!-- 4-Player Perspective Switcher -->
+      <div class="seat-tabs-wrap">
+        <div class="section-caption">分析视角 (点击切换玩家)</div>
+        <div id="seatTabs" class="seat-tabs">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- NAGA-style Rating & Match Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card rating-card">
+          <div class="metric-info">
+            <div class="metric-label">NAGA 风格综合评分</div>
+            <div class="metric-value-row">
+              <span id="metricRating" class="metric-value">--</span>
+              <span class="metric-unit">/ 100</span>
+            </div>
+            <div id="metricEngineTag" class="metric-sub">等待加载牌谱</div>
+          </div>
+          <div id="metricGrade" class="grade-badge">-</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-info">
+            <div class="metric-label">AI 最优一致率</div>
+            <div class="metric-value-row">
+              <span id="metricMatchRate" class="metric-value">--%</span>
+              <span id="metricMatchCount" class="metric-count">(0 / 0 手)</span>
+            </div>
+            <div class="mini-progress">
+              <div id="metricMatchBar" class="mini-progress-bar" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-info">
+            <div class="metric-label">恶手 / 疑问手统计</div>
+            <div class="metric-value-row">
+              <span id="metricBlunders" class="metric-value text-danger">0</span>
+              <span class="metric-unit">处恶手</span>
+              <span id="metricBlunderRate" class="metric-count">(0.0%)</span>
+            </div>
+            <div class="metric-sub-row">
+              <span id="metricInaccuracies" class="metric-sub">微差/疑问: 0 处</span>
+              <button id="btnQuickNextBlunder" class="btn-mini-danger" title="直接跳转到下一处恶手 (快捷键 B)">跳至恶手 ⏭</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Kyoku Pills Bar -->
+    <div class="kyoku-bar-wrap">
+      <div class="kyoku-bar-label">对局小局:</div>
+      <div id="kyokuPills" class="kyoku-pills">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+  </section>
+
+  <!-- Main 2-Column Workspace -->
+  <main class="workspace">
+    <!-- Left Column: 4-Player Board Replay + Controls -->
+    <section class="board-column">
+      <div class="mahjong-table" id="mahjongTable">
+        <!-- Top Player (Kamicha/Toimen relative: seat (hero+2)%4) -->
+        <div class="player-zone zone-top" id="zoneTop">
+          <div class="zone-header" id="headerTop"></div>
+          <div class="zone-hand-row">
+            <div class="hand-tiles opponent-hand" id="handTop"></div>
+            <div class="meld-tiles" id="meldsTop"></div>
+          </div>
+        </div>
+
+        <!-- Middle Area: Left Player + Rivers/Center + Right Player -->
+        <div class="table-middle">
+          <!-- Left Player (Kamicha: seat (hero+3)%4) -->
+          <div class="player-zone zone-left" id="zoneLeft">
+            <div class="zone-header" id="headerLeft"></div>
+            <div class="zone-hand-col">
+              <div class="hand-tiles opponent-hand vertical-hand" id="handLeft"></div>
+              <div class="meld-tiles vertical-melds" id="meldsLeft"></div>
+            </div>
+          </div>
+
+          <!-- Center Combat Field (4 Rivers + Center Info Box) -->
+          <div class="field-center">
+            <div class="river-box river-top" id="riverTop"></div>
+
+            <div class="field-mid-row">
+              <div class="river-box river-left" id="riverLeft"></div>
+
+              <!-- Center Status Box -->
+              <div class="center-info-box">
+                <div class="center-top-row">
+                  <span id="centerRoundLabel" class="round-badge">东1局</span>
+                  <span id="centerTilesLeft" class="tiles-left-badge">余 70 枚</span>
+                </div>
+
+                <div class="dora-bar" title="当前宝牌指示牌">
+                  <span class="dora-label">宝牌指示</span>
+                  <div id="centerDoraMarkers" class="dora-tiles"></div>
+                </div>
+
+                <div class="sticks-row">
+                  <span id="centerKyotaku" class="stick-item" title="立直供托棒 (1000点)">供托 0</span>
+                  <span id="centerHonba" class="stick-item" title="本场棒 (300点)">本场 0</span>
+                  <span id="centerJunme" class="stick-item">第 0 巡</span>
+                </div>
+
+                <div class="compass-scores" id="compassScores">
+                  <!-- 4-way score display -->
+                </div>
+
+                <div id="centerEventToast" class="event-toast">等待开始</div>
+              </div>
+
+              <div class="river-box river-right" id="riverRight"></div>
+            </div>
+
+            <div class="river-box river-bottom" id="riverBottom"></div>
+          </div>
+
+          <!-- Right Player (Shimocha: seat (hero+1)%4) -->
+          <div class="player-zone zone-right" id="zoneRight">
+            <div class="zone-header" id="headerRight"></div>
+            <div class="zone-hand-col">
+              <div class="hand-tiles opponent-hand vertical-hand" id="handRight"></div>
+              <div class="meld-tiles vertical-melds" id="meldsRight"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Player (Hero / Target Actor) -->
+        <div class="player-zone zone-bottom" id="zoneBottom">
+          <!-- Floating NAGA Non-Discard Action Bar (Riichi / Call / Pass / Agari) -->
+          <div id="heroActionBanner" class="hero-action-banner hidden"></div>
+
+          <div class="hero-info-bar">
+            <div id="headerBottom" class="zone-header hero-header"></div>
+            <div id="heroVerdictPill" class="hero-verdict-pill hidden"></div>
+          </div>
+
+          <!-- Hero Hand with Overlaid NAGA Probability Bars -->
+          <div class="hero-hand-container">
+            <div class="hero-tehai-wrap" id="handBottom"></div>
+            <div class="meld-tiles hero-melds" id="meldsBottom"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Replay Timeline Scrubber & Control Buttons -->
+      <div class="replay-controls">
+        <div class="timeline-wrap">
+          <div id="timelineTicks" class="timeline-ticks"></div>
+          <input id="stepSlider" type="range" min="0" max="0" value="0" class="step-slider" />
+          <div class="timeline-labels">
+            <span id="stepCounterText">步骤 0 / 0</span>
+            <span id="timelineLegend" class="timeline-legend">
+              <i class="dot-legend best"></i>一致
+              <i class="dot-legend ok"></i>微差
+              <i class="dot-legend question"></i>疑问手
+              <i class="dot-legend blunder"></i>恶手
+            </span>
+          </div>
+        </div>
+
+        <div class="control-buttons">
+          <button id="btnStepStart" class="btn btn-ctrl" title="回到本局开头 (Home)">⏮ 开局</button>
+          <button id="btnPrevStep" class="btn btn-ctrl" title="上一步动作 (←)">◀ 上一动</button>
+          <button id="btnNextStep" class="btn btn-ctrl" title="下一步动作 (→)">下一动 ▶</button>
+          <div class="ctrl-divider"></div>
+          <button id="btnPrevDec" class="btn btn-ctrl btn-ctrl-primary" title="上一处我方决策 (↑)">⏫ 上一决策</button>
+          <button id="btnNextDec" class="btn btn-ctrl btn-ctrl-primary" title="下一处我方决策 (↓)">下一决策 ⏬</button>
+          <button id="btnNextBlunder" class="btn btn-ctrl btn-ctrl-danger" title="跳至下一处恶手/疑问手 (B)">⚠️ 下一恶手</button>
+          <div class="ctrl-divider"></div>
+          <button id="btnToggleOpenHands" class="btn btn-ctrl" title="切换三家对手手牌明牌/暗牌 (H)">👁️ 三家明牌: 开</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: NAGA / Mortal Detailed Analysis Panel -->
+    <aside class="analysis-column">
+      <!-- Current Decision Summary Card -->
+      <div class="panel-card decision-card">
+        <div class="panel-card-header">
+          <div class="panel-title-group">
+            <span class="panel-icon">📊</span>
+            <h2 id="decPanelTitle" class="panel-title">当前手牌 AI 检讨</h2>
+          </div>
+          <span id="decVerdictBadge" class="verdict-badge neutral">无决策</span>
+        </div>
+
+        <div id="decMetaRow" class="dec-meta-row">
+          <span class="meta-chip" id="decTurnChip">第 - 巡</span>
+          <span class="meta-chip" id="decShantenChip">向听: -</span>
+          <span class="meta-chip" id="decQLossChip">ΔQ: 0.000</span>
+          <span class="meta-chip furiten-chip hidden" id="decFuritenChip">⚠️ 振听</span>
+        </div>
+
+        <!-- AI vs Actual Comparison Box -->
+        <div id="decCompareBox" class="dec-compare-box">
+          <div class="compare-side ai-side">
+            <div class="compare-label">🤖 AI 最优推荐</div>
+            <div id="compareAiContent" class="compare-content">--</div>
+          </div>
+          <div class="compare-vs">VS</div>
+          <div class="compare-side actual-side">
+            <div class="compare-label">🖐️ 实战选择</div>
+            <div id="compareActualContent" class="compare-content">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Candidate Actions Table (NAGA Bars + EV + Ukeire + Danger) -->
+      <div class="panel-card candidates-card">
+        <div class="panel-card-header">
+          <div class="panel-title-group">
+            <span class="panel-icon">🎯</span>
+            <h3 class="panel-title">候选动作评估详表 (NAGA 权重分布)</h3>
+          </div>
+          <span id="candCountText" class="panel-hint">点击行可查看进张详情</span>
+        </div>
+
+        <div id="ukeireDetailBox" class="ukeire-detail-box hidden"></div>
+
+        <div class="candidates-table-wrap">
+          <table class="candidates-table">
+            <thead>
+              <tr>
+                <th style="width: 44px">#</th>
+                <th style="width: 110px">候选动作</th>
+                <th>AI 推荐度 (Prob / Q)</th>
+                <th style="width: 86px">向听 / 进张</th>
+                <th style="width: 105px">局收支 / 和率</th>
+                <th style="width: 96px">放铳率 / 标签</th>
+              </tr>
+            </thead>
+            <tbody id="candidatesTableBody">
+              <tr>
+                <td colspan="6" class="empty-cell">请点击「加载演示牌谱」或输入牌谱开始分析</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- All Decisions in Current Kyoku -->
+      <div class="panel-card kyoku-decisions-card">
+        <div class="panel-card-header">
+          <div class="panel-title-group">
+            <span class="panel-icon">🧭</span>
+            <h3 class="panel-title">本局我方决策列表</h3>
+          </div>
+          <div class="filter-pills">
+            <button id="filterAllDecs" class="filter-pill active">全部</button>
+            <button id="filterIssueDecs" class="filter-pill">仅看恶手/疑问</button>
+          </div>
+        </div>
+
+        <div id="decisionListContainer" class="decision-list">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Modal 1: Mahjong Soul CN Account & Recent Games -->
+  <div id="accountModal" class="modal-backdrop hidden">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-header">
+        <h3>🀄 雀魂国服账号连接 &amp; 最近对局抓取</h3>
+        <button class="modal-close" data-close="accountModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="account-status-banner" id="modalAccountStatusBanner">
+          当前状态：未登录雀魂国服网关
+        </div>
+
+        <div class="modal-columns">
+          <!-- Left: Login Form -->
+          <div class="modal-col">
+            <h4>1. 登录雀魂国服 (`game.maj-soul.com/1`)</h4>
+            <p class="modal-desc">
+              由于雀魂服务器协议要求，拉取在线牌谱需经过网关认证。建议使用小号或 Access Token 登录，凭证仅保存在本地 <code>data/config.json</code>。
+            </p>
+            <div class="form-group">
+              <label>手机号 / 邮箱账号</label>
+              <input id="loginAccount" type="text" placeholder="输入雀魂国服手机号或邮箱" />
+            </div>
+            <div class="form-group">
+              <label>登录密码</label>
+              <input id="loginPassword" type="password" placeholder="输入密码 (本地 HMAC-SHA256 签名)" />
+            </div>
+            <div class="form-divider"><span>或者使用 Access Token</span></div>
+            <div class="form-group">
+              <label>Access Token (可选)</label>
+              <input id="loginToken" type="text" placeholder="若填写 Token 则优先使用 Token 登录" />
+            </div>
+            <div class="form-actions">
+              <button id="btnSubmitLogin" class="btn btn-primary">连接并登录国服</button>
+              <button id="btnLogout" class="btn btn-ghost">清除本地凭证</button>
+            </div>
+          </div>
+
+          <!-- Right: Recent Games & Local Cache -->
+          <div class="modal-col">
+            <div class="col-header-row">
+              <h4>2. 最近对局与本地已缓存牌谱</h4>
+              <button id="btnFetchRecentGames" class="btn btn-sm btn-accent">🔄 拉取账号最近对局</button>
+            </div>
+            <div id="recentGamesList" class="recent-games-list">
+              <div class="empty-hint">登录后可拉取最近 15 场对局，或直接显示本地已缓存的牌谱记录。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Upload / Paste Local JSON / MJAI -->
+  <div id="jsonModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>📂 导入本地牌谱 JSON / MJAI 事件流</h3>
+        <button class="modal-close" data-close="jsonModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          支持导入：① 雀魂原始牌谱 JSON（含 <code>head</code> 与 <code>actions</code>）；② 标准 <code>mjai</code> JSON 数组或按行分隔的 JSONL 格式。
+        </p>
+        <div class="file-drop-zone" id="fileDropZone">
+          <input id="jsonFileInput" type="file" accept=".json,.jsonl,.txt" />
+          <div class="drop-text">📄 点击选择文件，或将 <code>.json / .jsonl</code> 牌谱文件拖拽到此处</div>
+        </div>
+        <div class="form-group" style="margin-top: 12px">
+          <label>或直接粘贴 JSON / JSONL 内容：</label>
+          <textarea
+            id="jsonPasteArea"
+            rows="7"
+            placeholder='[{"type":"start_game","names":["东","南","西","北"]}, ...]'
+          ></textarea>
+        </div>
+        <div class="form-actions">
+          <button id="btnAnalyzeJson" class="btn btn-primary">开始分析 JSON</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: AI Engine & Mortal Model Configuration -->
+  <div id="engineModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>🧠 AI 检讨引擎与 Mortal 神经网络配置</h3>
+        <button class="modal-close" data-close="engineModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="engineModalDetail" class="engine-detail-box"></div>
+        <div class="form-group" style="margin-top: 14px">
+          <label>自定义 Mortal 权重文件路径 (<code>mortal.pth</code>)</label>
+          <input
+            id="modelPathInput"
+            type="text"
+            placeholder="默认自动检测: data/models/mortal.pth (支持 Mortal v1/v2/v3/v4 .pth)"
+          />
+          <div class="modal-desc" style="margin-top: 6px">
+            💡 <strong>双引擎无缝切换说明：</strong><br />
+            1. <strong>内置 SP+防守引擎 (Rust)</strong>：开箱即用，直接调用编译好的 <code>libriichi</code> Rust 核心计算精确多巡局收支 EV、听牌率、和牌率、向听进张与副露/立直防守危险度。<br />
+            2. <strong>Mortal 神经网络引擎</strong>：只需将训练好的 <code>mortal.pth</code> 放入项目目录 <code>data/models/mortal.pth</code> 或在上方指定路径，系统即自动启用 GPU/CPU 神经网络推理。
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="btnSaveEngineConfig" class="btn btn-primary">保存并重新检测权重</button>
+          <button id="btnResetEngineConfig" class="btn btn-ghost">恢复默认路径</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
