@@ -85,11 +85,10 @@
           <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
         </div>
 
-        <div class="kd-step-right">
-          <button id="btnPrevDecTop" class="kd-step-btn" title="上一切牌决策 (↑)">&lt; 决策</button>
-          <button id="btnNextDecTop" class="kd-step-btn" title="下一切牌决策 (↓)">决策 &gt;</button>
-          <button id="btnPrevBlunderTop" class="kd-step-btn blunder" title="上一错误手 (,)">&lt; 错误</button>
-          <button id="btnNextBlunderTop" class="kd-step-btn blunder" title="下一错误手 (.)">错误 &gt;</button>
+          <div class="kd-step-group">
+            <button id="btnPrevBlunderTop" class="kd-step-btn blunder" title="跳转上一恶手/失误 (快捷键 ,)">&lt; 恶手</button>
+            <button id="btnNextBlunderTop" class="kd-step-btn blunder" title="跳转下一恶手/失误 (快捷键 .)">恶手 &gt;</button>
+          </div>
         </div>
       </div>
     </header>
@@ -149,6 +148,18 @@
 
         <!-- Right Sidebar (Controls, Decision Details, Shortcuts) -->
         <div class="sidebar">
+
+          <!-- 8 Navigation Buttons -->
+          <div class="controls">
+            <button id="btnPrevKyoku">&lt; 上一局</button>
+            <button id="btnNextKyoku">下一局 &gt;</button>
+            <button id="btnPrevDec">&lt; 上一切牌</button>
+            <button id="btnNextDec">下一切牌 &gt;</button>
+            <button id="btnPrevBlunder">&lt; 上一错误</button>
+            <button id="btnNextBlunder">下一错误 &gt;</button>
+            <button id="btnPrevStep">&lt; 后退</button>
+            <button id="btnNextStep">前进 &gt;</button>
+          </div>
 
           <!-- Active Decision Details Card -->
           <div class="kd-decision-card" id="decisionCard">
