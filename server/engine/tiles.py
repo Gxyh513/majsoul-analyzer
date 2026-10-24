@@ -8,7 +8,8 @@ from __future__ import annotations
 
 HONORS = ["E", "S", "W", "N", "P", "F", "C"]
 HONOR_CN = {"E": "东", "S": "南", "W": "西", "N": "北", "P": "白", "F": "发", "C": "中"}
-SUIT_CN = {"m": "万", "p": "饼", "s": "索"}
+SUIT_CN = {"m": "万", "p": "筒", "s": "索"}
+NUM_CN = "零一二三四五六七八九"
 
 ALL_TILES_34 = [f"{n}{s}" for s in "mps" for n in range(1, 10)] + HONORS
 
@@ -63,7 +64,8 @@ def tile_cn(t: str) -> str:
     if t in HONOR_CN:
         return HONOR_CN[t]
     s = SUIT_CN[t[1]]
-    return ("赤5" if is_aka(t) else t[0]) + s
+    n = "赤五" if is_aka(t) else NUM_CN[int(t[0])]
+    return n + s
 
 
 def ms_to_mjai(t: str) -> str:
