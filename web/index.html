@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=21.0" />
+  <link rel="stylesheet" href="/styles.css?v=22.0" />
 </head>
 <body>
   <header class="app-header">
@@ -19,6 +19,10 @@
     </div>
 
     <div class="header-actions">
+      <button id="btnOpenBackendModal" class="chip-btn" title="后端 AI 服务连接设置">
+        <span class="chip-ico">🔌</span>
+        <span id="backendStatusText">检测服务...</span>
+      </button>
       <button id="btnOpenEngineModal" class="chip-btn" title="点击切换 AI 分析模型与设置">
         <span class="chip-ico">⚙</span>
         <span id="engineStatusText">赤木 Akagi · CUDA</span>
@@ -301,6 +305,34 @@
     </div>
   </div>
 
+  <div id="backendModal" class="modal-backdrop hidden">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="backendTitle">
+      <div class="modal-header">
+        <h3 id="backendTitle">AI 分析服务连接</h3>
+        <button class="modal-close" data-close="backendModal" aria-label="关闭">关闭</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">
+          日麻 AI（赤木 / Mortal 神经网络模型）需要本地 Python 与 GPU 环境进行推理。云端页面通过连接后端来提供实时牌谱分析。
+        </p>
+        <div id="backendConnStatus" class="banner" style="margin-bottom:12px;font-size:13px;padding:8px 12px;border-radius:6px;background:rgba(255,255,255,0.06);">
+          检测中...
+        </div>
+        <label class="field">
+          <span>后端 API 地址</span>
+          <input id="backendUrlInput" type="text" placeholder="http://localhost:8000" />
+        </label>
+        <p class="muted small">
+          本地运行 <code>python run.py</code> 后默认地址为 <code>http://localhost:8000</code>。若通过局域网或远程服务器运行，请填写对应地址。
+        </p>
+        <div class="form-actions">
+          <button id="btnTestBackend" class="btn btn-ghost">测试连接</button>
+          <button id="btnSaveBackend" class="btn btn-primary">保存并连接</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="helpModal" class="modal-backdrop hidden">
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
       <div class="modal-header">
@@ -326,6 +358,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=20.0"></script>
+  <script src="/app.js?v=22.0"></script>
 </body>
 </html>

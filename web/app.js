@@ -104,13 +104,47 @@ function currentEngine() {
 }
 
 // ============================================================================
-// API Calls
+// API Calls & Backend Server Management
 // ============================================================================
-async function apiFetch(url, options = {}) {
+function getBackendUrl() {
+  const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+  const saved = localStorage.getItem("majsoul_backend_url");
+  if (saved !== null) return saved.trim().replace(/\/+$/, "");
+  return isLocal ? "" : "http://localhost:8000";
+}
+
+function setBackendUrl(url) {
+  const clean = (url || "").trim().replace(/\/+$/, "");
+  localStorage.setItem("majsoul_backend_url", clean);
+  return clean;
+}
+
+function updateBackendBadge(online, text) {
+  const el = $("backendStatusText");
+  const btn = $("btnOpenBackendModal");
+  if (el) {
+    el.textContent = online ? "已连接服务" : "未连接后端";
+  }
+  if (btn) {
+    btn.style.color = online ? "#10b981" : "#f59e0b";
+  }
+}
+
+async function apiFetch(path, options = {}) {
+  const isAbs = /^https?:\/\//i.test(path);
+  const backend = getBackendUrl();
+  const url = isAbs ? path : (backend ? `${backend}${path}` : path);
+
   const resp = await fetch(url, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+
+  const contentType = resp.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`后端未响应有效 JSON（返回类型: ${contentType || "HTML"}），请确认后端已运行`);
+  }
+
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(data.detail || `请求失败 (${resp.status})`);
@@ -119,14 +153,23 @@ async function apiFetch(url, options = {}) {
 }
 
 async function refreshServerStatus() {
+  const backend = getBackendUrl();
   try {
     const st = await apiFetch("/api/status");
     state.serverStatus = st;
+    updateBackendBadge(true, backend || "本地服务");
     updateTopbarStatus(st);
     renderSavedHistoryList(st.history || []);
   } catch (err) {
-    console.error("Failed to fetch status:", err);
-    showToast("无法连接本地服务，请确认程序正在运行", "error");
+    console.warn("Backend offline or unreachable:", err);
+    state.serverStatus = { ok: false, offline: true };
+    updateBackendBadge(false, backend || "未连接");
+    updateTopbarStatus({
+      ok: false,
+      offline: true,
+      engine: { model_name: "内置演示", device: "纯静态" },
+      majsoul: { logged_in: false }
+    });
   }
 }
 
@@ -212,12 +255,38 @@ async function runAnalysis(promise, { keepKyoku = 0, successMsg = null } = {}) {
 
 async function loadDemoGame(targetActor = 0) {
   setLoading(true, "正在加载示例牌谱...", "首次分析约需数秒");
-  const res = await runAnalysis(
-    apiFetch("/api/analyze/demo", {
-      method: "POST",
-      body: JSON.stringify({ target_actor: targetActor, engine: currentEngine(), temperature: 0.1 }),
-    })
-  );
+  let res = null;
+  // If backend is online, try fetching fresh analysis
+  if (state.serverStatus?.ok) {
+    try {
+      res = await runAnalysis(
+        apiFetch("/api/analyze/demo", {
+          method: "POST",
+          body: JSON.stringify({ target_actor: targetActor, engine: currentEngine(), temperature: 0.1 }),
+        })
+      );
+    } catch (e) {
+      console.warn("Backend demo analyze failed:", e);
+    }
+  }
+
+  // Fallback to pre-rendered static demo review
+  if (!res || !res.kyokus || !res.kyokus.length) {
+    try {
+      const resp = await fetch(`demo_review_${targetActor}.json`).catch(() => fetch("demo_review.json"));
+      if (resp && resp.ok) {
+        res = await resp.json();
+        applyReviewResult(res, 0);
+        showToast(`已载入示例牌谱（演示视角：${res.player_name || "一姬"}）`, "info");
+      }
+    } catch (fallbackErr) {
+      console.error("Static demo load failed:", fallbackErr);
+      showToast("载入演示牌谱失败: " + fallbackErr.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (res) $("paipuInput").value = "";
 }
 
@@ -226,6 +295,11 @@ async function analyzePaipuInput(targetActor = null) {
   if (!rawInput) {
     showToast("请先粘贴牌谱链接或牌谱 ID", "error");
     $("paipuInput").focus();
+    return;
+  }
+  if (!state.serverStatus?.ok) {
+    showToast("AI 牌谱分析需要本地 Python/GPU 服务支持。请先在本地启动 python run.py 并连接", "warn");
+    openModal("backendModal");
     return;
   }
   setLoading(true, "正在获取并分析牌谱...", rawInput);
@@ -241,6 +315,17 @@ async function analyzePaipuInput(targetActor = null) {
 
 async function reanalyzeCurrent(newSeat, keepKyoku) {
   if (!state.reviewData) return;
+  if (state.gameId === "demo" && (!state.serverStatus || !state.serverStatus.ok)) {
+    try {
+      const resp = await fetch(`demo_review_${newSeat}.json`).catch(() => fetch("demo_review.json"));
+      if (resp && resp.ok) {
+        const res = await resp.json();
+        applyReviewResult(res, keepKyoku);
+        setLoading(false);
+        return res;
+      }
+    } catch (e) {}
+  }
   return runAnalysis(
     apiFetch("/api/analyze/paipu", {
       method: "POST",
@@ -1269,6 +1354,47 @@ function bindEvents() {
   });
 
   // Modals open/close
+  $("btnOpenBackendModal")?.addEventListener("click", () => {
+    const input = $("backendUrlInput");
+    if (input) input.value = getBackendUrl();
+    testBackendConnection();
+    openModal("backendModal");
+  });
+
+  async function testBackendConnection() {
+    const statusBox = $("backendConnStatus");
+    const rawVal = ($("backendUrlInput")?.value || "").trim();
+    const cleanUrl = rawVal.replace(/\/+$/, "");
+    if (statusBox) statusBox.innerHTML = `正在测试连接 <code>${escapeHtml(cleanUrl || "同源 API")}</code> ...`;
+    try {
+      const target = cleanUrl ? `${cleanUrl}/api/status` : "/api/status";
+      const resp = await fetch(target, { mode: "cors" });
+      const ct = resp.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) throw new Error("返回类型为 " + ct + "，并非有效 API");
+      const data = await resp.json();
+      if (statusBox) {
+        statusBox.innerHTML = `<span style="color:#10b981;">● 服务在线</span> · 模型: ${escapeHtml(data.engine?.model_name || "神经网络")} (${escapeHtml(data.engine?.device || "CPU")})`;
+      }
+      return true;
+    } catch (e) {
+      if (statusBox) {
+        statusBox.innerHTML = `<span style="color:#ef4444;">● 连接失败</span> · ${escapeHtml(e.message || String(e))}。<br><span style="color:var(--muted);font-size:12px;">提示：若在本地运行，请在本地启动 <code>python run.py</code>。</span>`;
+      }
+      return false;
+    }
+  }
+
+  $("btnTestBackend")?.addEventListener("click", testBackendConnection);
+
+  $("btnSaveBackend")?.addEventListener("click", async () => {
+    const input = $("backendUrlInput");
+    const val = input ? input.value : "";
+    setBackendUrl(val);
+    showToast("后端配置已保存", "info");
+    await refreshServerStatus();
+    closeModal("backendModal");
+  });
+
   $("btnOpenAccountModal")?.addEventListener("click", () => openModal("accountModal"));
   $("btnOpenJsonModal").addEventListener("click", () => openModal("jsonModal"));
   $("btnOpenEngineModal").addEventListener("click", () => openModal("engineModal"));
