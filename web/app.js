@@ -838,31 +838,37 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     const isWinTile = seat === winActor;
     handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
     handHtml += `<div class="tileDiv ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
-  } else if (seat === winActor && isRon && agariTile) {
-    handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    handHtml += `<div class="tileDiv agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${tileCn(agariTile)}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
   }
 
   closedWrap.innerHTML = handHtml;
 
   // 2. Render Green Discard Recommendation Bars (SVG) — Absolutely Centered on Actual DOM Tiles
   let svgHtml = "";
-  const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
-  renderedTiles.forEach((tileEl, idx) => {
-    if (idx < allTiles.length) {
-      const pai = allTiles[idx].pai;
-      const barInfo = tileBars[pai];
-      const prob = barInfo ? barInfo.prob : 0;
-      if (prob > 0) {
-        const centerX = tileEl.offsetLeft + tileEl.offsetWidth / 2;
-        const height = Math.max(3, Math.round((prob / 100) * 45));
-        const y = 50 - height;
-        svgHtml += `<rect x="${centerX - 5}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
-      }
+  if (svgEl) {
+    const svgRect = svgEl.getBoundingClientRect();
+    if (svgRect.width > 0) {
+      svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} 50`);
     }
-  });
-
-  if (svgEl) svgEl.innerHTML = svgHtml;
+    const seenPai = new Set();
+    const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
+    renderedTiles.forEach((tileEl, idx) => {
+      if (idx < allTiles.length) {
+        const pai = allTiles[idx].pai;
+        if (seenPai.has(pai)) return;
+        seenPai.add(pai);
+        const barInfo = tileBars[pai];
+        const prob = barInfo ? barInfo.prob : 0;
+        if (prob > 0) {
+          const tileRect = tileEl.getBoundingClientRect();
+          const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
+          const height = Math.max(3, Math.round((prob / 100) * 45));
+          const y = 50 - height;
+          svgHtml += `<rect x="${Math.round(centerX - 5)}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
+        }
+      }
+    });
+    svgEl.innerHTML = svgHtml;
+  }
 
   // 3. Render Calls
   if (callsWrap) {
@@ -892,9 +898,6 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
     const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
     html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
     html += `<div class="tileDiv ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
-  } else if (isWinner && isRon && agariTile) {
-    html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    html += `<div class="tileDiv agari-tile"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" title="荣和: ${tileCn(agariTile)}"></div>`;
   }
 
   closedWrap.innerHTML = html;
@@ -1020,6 +1023,8 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const actualProbBadge = $("decActualProbBadge");
   const actualVerdictText = $("decActualVerdictText");
   const actualBlock = card.querySelector(".kd-choice-actual");
+  const actualLabel = card.querySelector(".kd-choice-actual .kd-choice-badge-label");
+  const aiLabel = card.querySelector(".kd-choice-ai .kd-choice-badge-label");
 
   const tableBody = $("decCandTableBody");
 
@@ -1029,6 +1034,11 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const names = state.reviewData?.names || [];
   const isHora = snap?.event?.type === "hora";
   const isRyuukyoku = snap?.event?.type === "ryuukyoku";
+
+  if (!isHora) {
+    if (actualLabel) actualLabel.textContent = "玩家";
+    if (aiLabel) aiLabel.textContent = "模型";
+  }
 
   // CASE 1: Round End (Hora / 自摸/荣和结算)
   if (isHora) {
@@ -1062,6 +1072,22 @@ function renderDecisionCard(dec, isExactStep, snap) {
       }
     }
 
+    // Dynamic Top Choice Block Header Badge (.kd-choice-actual .kd-choice-badge-label)
+    if (actualLabel) {
+      if (isHeroWin) {
+        actualLabel.textContent = `自家${isRon ? "荣和" : "自摸"}`;
+      } else if (isHeroLoser) {
+        actualLabel.textContent = "自家放铳";
+      } else {
+        actualLabel.textContent = `${winWind}家${isRon ? "荣和" : "自摸"}`;
+      }
+    }
+
+    // Dynamic Bottom Choice Block Header Badge (.kd-choice-ai .kd-choice-badge-label)
+    if (aiLabel) {
+      aiLabel.textContent = isRon ? "放铳者" : "和了形式";
+    }
+
     // Identify Winning Tile
     let agariTile = null;
     if (isRon && tgtActor !== null && tgtActor !== undefined) {
@@ -1074,11 +1100,11 @@ function renderDecisionCard(dec, isExactStep, snap) {
     if (actualTileWrap) {
       actualTileWrap.innerHTML = agariTile
         ? `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile">`
-        : renderDecisionTileOrBadge(null, { type: "hora" }, isRon ? "荣和" : "自摸");
+        : renderDecisionTileOrBadge(null, { type: isRon ? "ron" : "tsumo" }, isRon ? "荣和" : "自摸");
     }
     if (actualTileName) {
       actualTileName.style.display = "block";
-      actualTileName.textContent = isRon ? `荣和 ${agariTile ? tileCn(agariTile) : ""}` : `自摸 ${agariTile ? tileCn(agariTile) : ""}`;
+      actualTileName.textContent = `${winWind}家 ${isRon ? "荣和" : "自摸"} ${agariTile ? tileCn(agariTile) : ""}`;
     }
     if (actualProbBadge) actualProbBadge.textContent = `+${scoreDelta} 点`;
     if (actualVerdictText) {
@@ -1092,14 +1118,16 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
     // AI choice block: Settlement Details
     if (aiTileWrap) {
-      aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "hora" }, "WIN");
+      aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: isRon ? "ron" : "tsumo" }, isRon ? "荣和" : "自摸");
     }
     if (aiTileName) {
       aiTileName.style.display = "block";
-      aiTileName.textContent = isRon ? `放铳者: ${tgtWind}家 ${tgtName}` : "自摸终局";
+      aiTileName.textContent = isRon
+        ? `${tgtWind}家 ${tgtName} 放铳 (-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)`
+        : `${winWind}家 ${winName} 自摸 (+${scoreDelta}点)`;
     }
-    if (aiProbBadge) aiProbBadge.textContent = "终局结算";
-    if (aiShantenBadge) aiShantenBadge.textContent = isRon ? "荣和" : "自摸";
+    if (aiProbBadge) aiProbBadge.textContent = isRon ? "荣和终局" : "自摸终局";
+    if (aiShantenBadge) aiShantenBadge.textContent = isRon ? "荣和终局" : "自摸终局";
     if (aiUkeireBadge) {
       const uras = snap.event.ura_markers || [];
       aiUkeireBadge.textContent = uras.length ? `里宝: ${uras.map(tileCn).join(" ")}` : "本局结束";
@@ -1433,10 +1461,10 @@ function renderDecisionCard(dec, isExactStep, snap) {
         if (actionType === "chi" || actionType === "pon" || actionType === "kan") {
           let comboTiles = [];
           if (consumed.length > 0) {
-            comboTiles = [mainPai, ...consumed].filter(Boolean);
+            comboTiles = [...consumed].filter(Boolean);
           } else if (mainPai) {
-            if (actionType === "pon") comboTiles = [mainPai, mainPai, mainPai];
-            else if (actionType === "kan") comboTiles = [mainPai, mainPai, mainPai, mainPai];
+            if (actionType === "pon") comboTiles = [mainPai, mainPai];
+            else if (actionType === "kan") comboTiles = [mainPai, mainPai, mainPai];
             else comboTiles = [mainPai];
           }
           comboTiles.sort((a, b) => tileSortOrder(a) - tileSortOrder(b));
