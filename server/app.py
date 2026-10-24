@@ -100,6 +100,7 @@ class AnalyzeDemoReq(BaseModel):
 
 
 class EngineConfigReq(BaseModel):
+    selected_model: str | None = None
     model_path: str | None = None
 
 
@@ -364,17 +365,21 @@ async def api_analyze_demo(req: AnalyzeDemoReq):
 @app.post("/api/engine/config")
 async def api_engine_config(req: EngineConfigReq):
     cfg = load_config()
-    if req.model_path:
-        p = Path(req.model_path.strip().strip('"'))
-        if not p.is_file():
-            raise HTTPException(status_code=400, detail=f"找不到权重文件: {p}")
-        engine_mgr.custom_pth = p
-        cfg["model_path"] = str(p)
-        save_config(cfg)
-    else:
-        engine_mgr.custom_pth = None
-        cfg.pop("model_path", None)
-        save_config(cfg)
+    if req.selected_model:
+        engine_mgr.selected_model = req.selected_model.strip()
+        cfg["selected_model"] = engine_mgr.selected_model
+    if req.model_path is not None:
+        p_str = req.model_path.strip().strip('"')
+        if p_str:
+            p = Path(p_str)
+            if not p.is_file():
+                raise HTTPException(status_code=400, detail=f"找不到权重文件: {p}")
+            engine_mgr.custom_pth = p
+            cfg["model_path"] = str(p)
+        else:
+            engine_mgr.custom_pth = None
+            cfg.pop("model_path", None)
+    save_config(cfg)
     return engine_mgr.status()
 
 

@@ -58,16 +58,41 @@ class EngineManager:
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.custom_pth: Path | None = None
+        self.selected_model: str = "auto"
         self._loaded: LoadedMortal | None = None
         self._loaded_mtime: float | None = None
         self._load_error: str | None = None
 
+    def list_available_models(self) -> list[dict[str, str]]:
+        models = []
+        akagi = self.models_dir / "akagi.pth"
+        if akagi.is_file():
+            models.append({"id": "akagi", "name": "赤木 Akagi (v4 582k步 进攻强化)", "path": str(akagi)})
+        mortal = self.models_dir / "mortal.pth"
+        if mortal.is_file():
+            models.append({"id": "mortal", "name": "Mortal 官方核心 (v3 天凤十段)", "path": str(mortal)})
+        for p in sorted(self.models_dir.glob("*.pth")):
+            if p.name not in ("akagi.pth", "mortal.pth") and "grp" not in p.name.lower():
+                models.append({"id": p.stem, "name": f"自定义模型 ({p.name})", "path": str(p)})
+        return models
+
     def find_pth(self) -> Path | None:
         if self.custom_pth and self.custom_pth.is_file():
             return self.custom_pth
-        default = self.models_dir / "mortal.pth"
-        if default.is_file():
-            return default
+        if self.selected_model == "akagi":
+            p = self.models_dir / "akagi.pth"
+            if p.is_file():
+                return p
+        elif self.selected_model == "mortal":
+            p = self.models_dir / "mortal.pth"
+            if p.is_file():
+                return p
+        akagi = self.models_dir / "akagi.pth"
+        if akagi.is_file():
+            return akagi
+        mortal = self.models_dir / "mortal.pth"
+        if mortal.is_file():
+            return mortal
         pths = sorted(self.models_dir.glob("*.pth"))
         for p in pths:
             if "grp" not in p.name.lower():
@@ -96,13 +121,17 @@ class EngineManager:
     def status(self) -> dict[str, Any]:
         pth = self.find_pth()
         mortal = self.get_mortal()
+        model_name = "赤木 Akagi" if (pth and "akagi" in pth.name.lower()) else ("Mortal" if mortal is not None else "内置引擎")
         return {
             "has_mortal_weights": mortal is not None,
             "active_engine": "mortal" if mortal is not None else "builtin",
+            "model_name": model_name,
             "model_tag": mortal.tag if mortal is not None else "Built-in SP+Defense (libriichi Rust)",
             "model_path": str(pth) if pth else str(self.models_dir / "mortal.pth"),
             "models_dir": str(self.models_dir),
-            "device": str(mortal.device) if mortal is not None else "cpu (Rust SIMD)",
+            "device": str(mortal.device).upper() if mortal is not None else "CPU",
+            "selected_model": self.selected_model,
+            "available_models": self.list_available_models(),
             "load_error": self._load_error,
         }
 
