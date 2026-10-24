@@ -16,7 +16,7 @@ const state = {
 };
 
 const STAGE_W = 750;
-const STAGE_H = 720;
+const STAGE_H = 740;
 
 const WIND_CN = ["东", "南", "西", "北"];
 const TILE_CN_MAP = {
@@ -1416,6 +1416,17 @@ function bindEvents() {
       }
     });
   }, { passive: false });
+
+  // Click opponent hands / docks to toggle show/hide
+  document.querySelectorAll(".opp-dock, .opp-hand").forEach((el) => {
+    el.addEventListener("click", () => toggleOpenHands());
+  });
+  $("board")?.addEventListener("click", (e) => {
+    // If clicking felt outside center box, toggle open hands
+    if (!e.target.closest(".center-box")) {
+      toggleOpenHands();
+    }
+  });
 
   // Stage scaling
   new ResizeObserver(() => fitStage()).observe($("stageWrap"));
