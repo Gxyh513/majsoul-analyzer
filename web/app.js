@@ -15,8 +15,6 @@ const state = window.state = {
   serverStatus: null,
   isPlaying: false,
   playTimer: null,
-  currentTheme: localStorage.getItem("majsoul_theme_pref") || "apple-dark",
-  customBack: localStorage.getItem("majsoul_back_pref") || "auto",
   hidePlayerId: localStorage.getItem("majsoul_hide_id") === "true",
 };
 
@@ -71,36 +69,7 @@ function applyHidePlayerId() {
 }
 
 function getTileBackSrc() {
-  const custom = state.customBack || "auto";
-  if (custom !== "auto") return `/tiles/${custom}.svg`;
-  const theme = state.currentTheme || "apple-dark";
-  if (theme === "majsoul-green") return "/tiles/back-green.svg";
-  if (theme === "midnight-navy") return "/tiles/back-navy.svg";
-  if (theme === "true-black") return "/tiles/back-dark.svg";
-  return "/tiles/back-red.svg";
-}
-
-function applyTheme(themeName, save = true) {
-  state.currentTheme = themeName;
-  if (save) localStorage.setItem("majsoul_theme_pref", themeName);
-  document.documentElement.setAttribute("data-theme", themeName);
-  const sel1 = $("themeSelect");
-  if (sel1 && sel1.value !== themeName) sel1.value = themeName;
-  const sel2 = $("themeSelectCard");
-  if (sel2 && sel2.value !== themeName) sel2.value = themeName;
-  if (state.reviewData) {
-    setStep(state.stepIdx);
-  }
-}
-
-function applyBack(backName, save = true) {
-  state.customBack = backName;
-  if (save) localStorage.setItem("majsoul_back_pref", backName);
-  const sel = $("backSelectCard");
-  if (sel && sel.value !== backName) sel.value = backName;
-  if (state.reviewData) {
-    setStep(state.stepIdx);
-  }
+  return "/tiles/back.svg";
 }
 
 function escapeHtml(s) {
@@ -1927,11 +1896,6 @@ function bindEvents() {
     }
   });
 
-  // Theme & Appearance Selectors
-  $("themeSelect")?.addEventListener("change", (e) => applyTheme(e.target.value));
-  $("themeSelectCard")?.addEventListener("change", (e) => applyTheme(e.target.value));
-  $("backSelectCard")?.addEventListener("change", (e) => applyBack(e.target.value));
-
   // Step timeline slider
   $("stepSlider")?.addEventListener("input", (e) => {
     if (state.isPlaying) togglePlay(false);
@@ -2046,8 +2010,11 @@ window.addEventListener("resize", updateResponsiveZoom);
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
   updateResponsiveZoom();
-  applyTheme(state.currentTheme, false);
-  applyBack(state.customBack, false);
+  document.documentElement.removeAttribute("data-theme");
+  try {
+    localStorage.removeItem("majsoul_theme_pref");
+    localStorage.removeItem("majsoul_back_pref");
+  } catch (_) {}
   applyHidePlayerId();
   bindEvents();
   await refreshServerStatus();
