@@ -1,0 +1,40 @@
+"""Entry point to launch the NAGA-style Mahjong Soul Paipu Analyzer web server."""
+from __future__ import annotations
+
+import argparse
+import sys
+import webbrowser
+from threading import Timer
+
+import uvicorn
+
+
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+    parser = argparse.ArgumentParser(description="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)")
+    parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000, help="监听端口 (默认 8000)")
+    parser.add_argument("--no-browser", action="store_true", help="启动时不自动打开浏览器")
+    args = parser.parse_args()
+
+    url = f"http://{args.host}:{args.port}"
+    print("=" * 68)
+    print(" [Majsoul Analyzer] 雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格) 已启动")
+    print(f" [Web UI] 浏览器访问地址: {url}")
+    print(" [Engine] Mortal 权重目录: data/models/mortal.pth (放入即可自动启用神经网络)")
+    print("=" * 68)
+
+    if not args.no_browser:
+        Timer(1.2, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run("server.app:app", host=args.host, port=args.port, reload=False)
+
+
+if __name__ == "__main__":
+    main()
