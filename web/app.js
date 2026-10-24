@@ -1,5 +1,6 @@
 /**
  * 雀魂牌谱 AI 检讨系统 — NAGA / Mortal 风格前端控制器
+ * v2.0 UI: rotated mahjong table, scale-to-fit stage, tabbed analysis panel.
  */
 
 const state = {
@@ -10,15 +11,25 @@ const state = {
   stepIdx: 0,              // Current replay step index within kyoku
   openHands: true,         // Show opponent hands face-up
   decisionFilter: "all",   // "all" | "issues"
-  selectedCandLabel: null, // Selected candidate action label for ukeire breakdown
+  openCandLabel: null,     // Expanded candidate row (ukeire breakdown)
   serverStatus: null,
 };
+
+const STAGE_W = 720;
+const STAGE_H = 870;
 
 const WIND_CN = ["东", "南", "西", "北"];
 const TILE_CN_MAP = {
   E: "东", S: "南", W: "西", N: "北", P: "白", F: "发", C: "中",
   "5mr": "赤五万", "5pr": "赤五筒", "5sr": "赤五索",
 };
+const VERDICT_SHORT = { best: "一致", ok: "微差", question: "疑问", blunder: "恶手" };
+
+const $ = (id) => document.getElementById(id);
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
 
 function tileCn(pai) {
   if (!pai) return "";
@@ -35,42 +46,44 @@ function shantenText(s) {
   if (s === undefined || s === null) return "-";
   if (s < 0) return "和牌";
   if (s === 0) return "听牌";
-  return `${s}向听`;
+  return `${s} 向听`;
+}
+
+function fmtPct(v, digits = 1) {
+  return `${(v ?? 0).toFixed(digits)}%`;
 }
 
 // Render an SVG mahjong tile HTML string
-function renderTileHtml(pai, sizeClass = "tile-opp", extraClass = "", title = "") {
+function renderTileHtml(pai, sizeClass = "t-opp", extraClass = "", title = "") {
   if (!pai || pai === "?") {
     return `<div class="mj-tile tile-back ${sizeClass} ${extraClass}"></div>`;
   }
-  const isRed = pai.endsWith("r");
-  const redCls = isRed ? "tile-red" : "";
-  const tip = title || tileCn(pai);
-  return `
-    <div class="mj-tile ${sizeClass} ${redCls} ${extraClass}" title="${tip}" data-pai="${pai}">
-      <img src="/tiles/${pai}.svg" alt="${pai}" loading="lazy" />
-    </div>
-  `;
+  const tip = escapeHtml(title || tileCn(pai));
+  return `<div class="mj-tile ${sizeClass} ${extraClass}" title="${tip}" data-pai="${escapeHtml(pai)}"><img src="/tiles/${encodeURIComponent(pai)}.svg" alt="${tip}" draggable="false" /></div>`;
 }
 
 // Toast helper
 function showToast(msg, type = "info") {
-  const container = document.getElementById("toastContainer");
+  const container = $("toastContainer");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = msg;
   container.appendChild(el);
   setTimeout(() => {
     el.style.opacity = "0";
+    el.style.transform = "translateY(8px)";
     setTimeout(() => el.remove(), 300);
-  }, 3600);
+  }, type === "error" ? 6000 : 3200);
 }
 
-function setLoading(visible, title = "正在进行 AI 牌谱检讨...", sub = "计算每一巡向听、进张、局收支 EV、放铳率与最优动作分布") {
-  const overlay = document.getElementById("loadingOverlay");
-  document.getElementById("loadingTitle").textContent = title;
-  document.getElementById("loadingSub").textContent = sub;
-  overlay.classList.toggle("hidden", !visible);
+function setLoading(visible, title = "正在分析牌谱...", sub = "") {
+  $("loadingTitle").textContent = title;
+  $("loadingSub").textContent = sub;
+  $("loadingOverlay").classList.toggle("hidden", !visible);
+}
+
+function currentEngine() {
+  return $("engineSelect").value;
 }
 
 // ============================================================================
@@ -96,113 +109,106 @@ async function refreshServerStatus() {
     renderSavedHistoryList(st.history || []);
   } catch (err) {
     console.error("Failed to fetch status:", err);
+    showToast("无法连接本地服务，请确认程序正在运行", "error");
   }
 }
 
 function updateTopbarStatus(st) {
-  const dot = document.getElementById("msStatusDot");
-  const txt = document.getElementById("msStatusText");
-  const banner = document.getElementById("modalAccountStatusBanner");
+  const dot = $("msStatusDot");
+  const txt = $("msStatusText");
+  const banner = $("modalAccountStatusBanner");
+  const ms = st.majsoul || {};
 
-  if (st.majsoul?.logged_in) {
+  if (ms.logged_in) {
     dot.className = "status-dot online";
-    txt.textContent = `已连接: ${st.majsoul.nickname || st.majsoul.account_id || "国服账号"}`;
-    banner.textContent = `✅ 已登录雀魂国服网关 — 昵称: ${st.majsoul.nickname || "未知"} (ID: ${st.majsoul.account_id || "-"})`;
-  } else if (st.majsoul?.has_saved_token || st.majsoul?.saved_account) {
+    txt.textContent = ms.nickname || "已登录";
+    banner.className = "banner ok";
+    banner.textContent = `已登录：${ms.nickname || "未知昵称"}（ID ${ms.account_id || "-"}）`;
+  } else if (ms.has_saved_token || ms.saved_account) {
     dot.className = "status-dot saved";
-    txt.textContent = `国服账号 (已存凭证)`;
-    banner.textContent = `🟡 已保存本地登录凭证 (${st.majsoul.saved_account || "Token"})，拉取在线牌谱时将自动连接国服网关`;
+    txt.textContent = ms.nickname || "已保存账号";
+    banner.className = "banner warn";
+    banner.textContent = `已保存登录凭证（${ms.saved_account || "Token"}），分析在线牌谱时会自动登录。`;
   } else {
     dot.className = "status-dot offline";
-    txt.textContent = "雀魂账号 / 最近对局";
-    banner.textContent = "⚪ 当前状态：未登录雀魂国服网关（可使用内置演示牌谱、本地 JSON，或在此登录国服拉取在线牌谱）";
+    txt.textContent = "登录雀魂";
+    banner.className = "banner";
+    banner.textContent = "未登录。你仍然可以使用示例牌谱或导入牌谱文件。";
   }
 
-  const engTxt = document.getElementById("engineStatusText");
   const eng = st.engine || {};
-  if (eng.has_mortal_weights) {
-    engTxt.textContent = `Mortal 神经网络 (${eng.device})`;
-  } else {
-    engTxt.textContent = `内置 SP+防守引擎 (Rust)`;
-  }
+  $("engineStatusText").textContent = eng.has_mortal_weights ? `Mortal · ${eng.device || "CPU"}` : "内置引擎";
 
-  const engDetail = document.getElementById("engineModalDetail");
-  if (engDetail) {
-    engDetail.innerHTML = `
-      <div><strong>当前激活引擎：</strong> <span style="color:#38bdf8">${eng.model_tag || "-"}</span></div>
-      <div><strong>Mortal 权重状态：</strong> ${
-        eng.has_mortal_weights
-          ? `<span style="color:#34d399">✅ 已加载 (${eng.model_path})</span>`
-          : `<span style="color:#fbbf24">⚡ 未检测到 mortal.pth，当前使用开箱即用的 libriichi Rust SP+防守精确检讨引擎</span>`
-      }</div>
-      <div><strong>推理计算设备：</strong> <code>${eng.device || "CPU"}</code></div>
-      ${eng.load_error ? `<div style="color:#fda4af"><strong>权重加载提示：</strong> ${eng.load_error}</div>` : ""}
-    `;
+  $("engineModalDetail").innerHTML = `
+    <div><span class="k">当前引擎</span>${escapeHtml(eng.model_tag || "-")}</div>
+    <div><span class="k">Mortal 权重</span>${
+      eng.has_mortal_weights
+        ? `<span class="good">已加载 (${escapeHtml(eng.model_path)})</span>`
+        : `<span class="warn">未检测到 mortal.pth，正在使用内置引擎</span>`
+    }</div>
+    <div><span class="k">计算设备</span>${escapeHtml(eng.device || "CPU")}</div>
+    ${eng.load_error ? `<div><span class="k">加载提示</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
+  `;
+}
+
+async function runAnalysis(promise, { keepKyoku = 0, successMsg = null } = {}) {
+  try {
+    const res = await promise;
+    applyReviewResult(res, keepKyoku);
+    if (successMsg) showToast(successMsg(res), "success");
+    return res;
+  } catch (err) {
+    showToast(err.message, "error");
+    return null;
+  } finally {
+    setLoading(false);
   }
 }
 
 async function loadDemoGame(targetActor = 0) {
-  const engine = document.getElementById("engineSelect").value;
-  setLoading(true, "正在加载并分析内置四麻演示牌谱...", "调用 libriichi / Mortal 引擎计算全书手牌 EV 与 NAGA 分布");
-  try {
-    const res = await apiFetch("/api/analyze/demo", {
+  setLoading(true, "正在加载示例牌谱...", "首次分析约需数秒");
+  const res = await runAnalysis(
+    apiFetch("/api/analyze/demo", {
       method: "POST",
-      body: JSON.stringify({ target_actor: targetActor, engine, temperature: 0.1 }),
-    });
-    applyReviewResult(res);
-    showToast("已加载内置四麻多局演示牌谱", "success");
-  } catch (err) {
-    showToast(err.message, "error");
-  } finally {
-    setLoading(false);
-  }
+      body: JSON.stringify({ target_actor: targetActor, engine: currentEngine(), temperature: 0.1 }),
+    })
+  );
+  if (res) $("paipuInput").value = "";
 }
 
 async function analyzePaipuInput(targetActor = null) {
-  const rawInput = document.getElementById("paipuInput").value.trim() || state.gameId || "demo";
-  const engine = document.getElementById("engineSelect").value;
-  setLoading(true, "正在抓取并检讨牌谱...", `目标: ${rawInput}`);
-  try {
-    const res = await apiFetch("/api/analyze/paipu", {
-      method: "POST",
-      body: JSON.stringify({
-        paipu: rawInput,
-        target_actor: targetActor,
-        engine,
-        temperature: 0.1,
-      }),
-    });
-    applyReviewResult(res);
-    refreshServerStatus();
-    showToast(`牌谱分析完成（视角：${res.player_name}）`, "success");
-  } catch (err) {
-    showToast(err.message, "error");
-  } finally {
-    setLoading(false);
+  const rawInput = $("paipuInput").value.trim();
+  if (!rawInput) {
+    showToast("请先粘贴牌谱链接或牌谱 ID", "error");
+    $("paipuInput").focus();
+    return;
   }
+  setLoading(true, "正在获取并分析牌谱...", rawInput);
+  const res = await runAnalysis(
+    apiFetch("/api/analyze/paipu", {
+      method: "POST",
+      body: JSON.stringify({ paipu: rawInput, target_actor: targetActor, engine: currentEngine(), temperature: 0.1 }),
+    }),
+    { successMsg: (r) => `分析完成（视角：${r.player_name}）` }
+  );
+  if (res) refreshServerStatus();
+}
+
+async function reanalyzeCurrent(newSeat, keepKyoku) {
+  if (!state.reviewData) return;
+  return runAnalysis(
+    apiFetch("/api/analyze/paipu", {
+      method: "POST",
+      body: JSON.stringify({ paipu: state.gameId || "demo", target_actor: newSeat, engine: currentEngine(), temperature: 0.1 }),
+    }),
+    { keepKyoku }
+  );
 }
 
 async function switchSeatPerspective(newSeat) {
   if (!state.reviewData || newSeat === state.targetActor) return;
-  const keepKyoku = state.kyokuIdx;
-  const engine = document.getElementById("engineSelect").value;
-  setLoading(true, `正在切换至「${state.reviewData.names[newSeat]}」视角重新检讨...`);
-  try {
-    const res = await apiFetch("/api/analyze/paipu", {
-      method: "POST",
-      body: JSON.stringify({
-        paipu: state.gameId || "demo",
-        target_actor: newSeat,
-        engine,
-        temperature: 0.1,
-      }),
-    });
-    applyReviewResult(res, keepKyoku);
-  } catch (err) {
-    showToast(err.message, "error");
-  } finally {
-    setLoading(false);
-  }
+  setLoading(true, `切换到「${state.reviewData.names[newSeat]}」的视角...`);
+  await reanalyzeCurrent(newSeat, state.kyokuIdx);
 }
 
 // ============================================================================
@@ -222,74 +228,74 @@ function renderSummaryDashboard() {
   const res = state.reviewData;
   if (!res) return;
 
-  // 1. Seat switcher tabs
-  const seatTabs = document.getElementById("seatTabs");
-  seatTabs.innerHTML = res.names
-    .map((name, seat) => {
-      const active = seat === res.target_actor ? "active" : "";
-      return `
-        <button class="seat-tab ${active}" data-seat="${seat}">
-          <span class="seat-tab-wind">${WIND_CN[seat]}家 · 座位 ${seat + 1}</span>
-          <span class="seat-tab-name" title="${name}">${name}</span>
-        </button>
-      `;
-    })
-    .join("");
+  // Game title
+  const isDemo = String(state.gameId).startsWith("demo");
+  const room = res.meta?.room || "";
+  $("gameTitle").innerHTML = `${isDemo ? `<span class="demo-badge">示例</span>` : ""}${escapeHtml(room || state.gameId)}`;
+  $("gameTitle").title = room ? `${room} · ${state.gameId}` : state.gameId;
 
-  seatTabs.querySelectorAll(".seat-tab").forEach((btn) => {
+  // 1. Seat switcher
+  const seatTabs = $("seatTabs");
+  seatTabs.innerHTML = res.names
+    .map((name, seat) => `
+      <button class="seg ${seat === res.target_actor ? "active" : ""}" data-seat="${seat}" role="tab" title="${escapeHtml(name)}">
+        <span class="seg-wind">${WIND_CN[seat]}起</span>
+        <span class="seg-name">${escapeHtml(name)}</span>
+      </button>`)
+    .join("");
+  seatTabs.querySelectorAll(".seg").forEach((btn) => {
     btn.addEventListener("click", () => switchSeatPerspective(parseInt(btn.dataset.seat, 10)));
   });
 
-  // 2. Metrics cards
+  // 2. Overview
   const sum = res.summary || {};
-  document.getElementById("metricRating").textContent = (sum.rating ?? 0).toFixed(1);
-  document.getElementById("metricEngineTag").textContent = `引擎: ${res.engine?.tag || "-"}`;
-
-  const gradeEl = document.getElementById("metricGrade");
-  const grade = sum.grade || "A";
+  $("metricRating").textContent = (sum.rating ?? 0).toFixed(1);
+  const grade = sum.grade || "-";
+  const gradeEl = $("metricGrade");
   gradeEl.textContent = grade;
-  const gLetter = grade[0];
-  gradeEl.className = `grade-badge grade-${gLetter}`;
-
-  document.getElementById("metricMatchRate").textContent = `${(sum.match_rate ?? 0).toFixed(1)}%`;
-  document.getElementById("metricMatchCount").textContent = `(${sum.total_matches || 0} / ${sum.total_reviewed || 0} 手)`;
-  document.getElementById("metricMatchBar").style.width = `${Math.min(100, sum.match_rate || 0)}%`;
-
-  document.getElementById("metricBlunders").textContent = sum.blunders || 0;
-  document.getElementById("metricBlunderRate").textContent = `(${(sum.blunder_rate ?? 0).toFixed(1)}%)`;
-  document.getElementById("metricInaccuracies").textContent = `微差/疑问: ${sum.inaccuracies || 0} 处`;
+  gradeEl.className = `grade-badge grade-${grade[0]}`;
+  $("metricMatchRate").textContent = fmtPct(sum.match_rate);
+  $("metricMatchCount").textContent = `${sum.total_matches || 0} / ${sum.total_reviewed || 0} 手`;
+  $("metricMatchBar").style.width = `${Math.min(100, sum.match_rate || 0)}%`;
+  $("metricBlunders").textContent = sum.blunders || 0;
+  $("metricInaccuracies").textContent = sum.inaccuracies || 0;
+  $("metricEngineTag").textContent = `分析引擎：${res.engine?.type === "mortal" ? "Mortal 神经网络" : "内置引擎"}（${res.engine?.tag || "-"}）`;
 
   // 3. Kyoku pills
   renderKyokuPills();
 }
 
+function rateClass(rate) {
+  if (rate >= 80) return "rate-good";
+  if (rate >= 60) return "rate-mid";
+  return "rate-bad";
+}
+
 function renderKyokuPills() {
   const res = state.reviewData;
-  const container = document.getElementById("kyokuPills");
+  const container = $("kyokuPills");
   if (!res || !res.kyokus) {
     container.innerHTML = "";
     return;
   }
-
   container.innerHTML = res.kyokus
     .map((k, idx) => {
-      const active = idx === state.kyokuIdx ? "active" : "";
+      const rate = k.stats?.match_rate ?? 100;
       const blunders = k.stats?.blunders || 0;
-      const blunderHtml = blunders > 0 ? `<span class="kyoku-blunder-dot" title="本局有 ${blunders} 处恶手">${blunders}恶</span>` : "";
-      const endSum = k.end_summaries?.length ? k.end_summaries[0] : "";
+      const endSum = (k.end_summaries || []).join(" · ");
+      const tip = `${k.label}${k.honba ? ` ${k.honba}本场` : ""} · 一致率 ${rate}%${blunders ? ` · ${blunders} 处恶手` : ""}${endSum ? `\n结果：${endSum}` : ""}`;
       return `
-        <button class="kyoku-pill ${active}" data-kidx="${idx}" title="${endSum}">
-          <span>${k.label}</span>
-          <span class="kyoku-pill-rate">${k.stats?.match_rate ?? 100}%</span>
-          ${blunderHtml}
-        </button>
-      `;
+        <button class="kyoku-pill ${idx === state.kyokuIdx ? "active" : ""}" data-kidx="${idx}" title="${escapeHtml(tip)}">
+          <span>${escapeHtml(k.label)}${k.honba ? `<small>·${k.honba}</small>` : ""}</span>
+          <span class="kyoku-rate ${rateClass(rate)}">${Math.round(rate)}%</span>
+          ${blunders ? `<span class="kyoku-err">${blunders}</span>` : ""}
+        </button>`;
     })
     .join("");
-
   container.querySelectorAll(".kyoku-pill").forEach((btn) => {
     btn.addEventListener("click", () => selectKyoku(parseInt(btn.dataset.kidx, 10), true));
   });
+  container.querySelector(".kyoku-pill.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function selectKyoku(kIdx, jumpToFirstDecision = false) {
@@ -299,9 +305,7 @@ function selectKyoku(kIdx, jumpToFirstDecision = false) {
   renderKyokuPills();
 
   const kyoku = res.kyokus[kIdx];
-  const slider = document.getElementById("stepSlider");
-  slider.max = Math.max(0, kyoku.steps.length - 1);
-
+  $("stepSlider").max = Math.max(0, kyoku.steps.length - 1);
   renderTimelineTicks(kyoku);
   renderKyokuDecisionList(kyoku);
 
@@ -313,16 +317,16 @@ function selectKyoku(kIdx, jumpToFirstDecision = false) {
 }
 
 function renderTimelineTicks(kyoku) {
-  const ticksEl = document.getElementById("timelineTicks");
+  const ticksEl = $("timelineTicks");
   const totalSteps = Math.max(1, kyoku.steps.length - 1);
   ticksEl.innerHTML = (kyoku.decisions || [])
     .map((d) => {
       const leftPct = ((d.step_idx / totalSteps) * 100).toFixed(2);
-      return `<div class="timeline-tick ${d.verdict}" style="left:${leftPct}%" data-step="${d.step_idx}" title="第${d.junme}巡: ${d.verdict_cn} (AI:${d.expected_cn} / 实战:${d.actual_cn})"></div>`;
+      const tip = `第${d.junme}巡 · ${d.verdict_cn}（AI：${d.expected_cn} / 实战：${d.actual_cn}）`;
+      return `<div class="tick ${d.verdict}" style="left:${leftPct}%" data-step="${d.step_idx}" title="${escapeHtml(tip)}"></div>`;
     })
     .join("");
-
-  ticksEl.querySelectorAll(".timeline-tick").forEach((el) => {
+  ticksEl.querySelectorAll(".tick").forEach((el) => {
     el.addEventListener("click", () => setStep(parseInt(el.dataset.step, 10)));
   });
 }
@@ -337,18 +341,17 @@ function setStep(stepIdx) {
   if (!kyoku || !kyoku.steps.length) return;
 
   const clamped = Math.max(0, Math.min(kyoku.steps.length - 1, stepIdx));
+  const changed = clamped !== state.stepIdx;
   state.stepIdx = clamped;
-  state.selectedCandLabel = null;
 
-  document.getElementById("stepSlider").value = clamped;
-  document.getElementById("stepCounterText").textContent = `步骤 ${clamped} / ${kyoku.steps.length - 1}`;
+  $("stepSlider").value = clamped;
+  $("stepCounterText").textContent = `${clamped} / ${kyoku.steps.length - 1}`;
 
   const snap = kyoku.steps[clamped];
-  const decision = snap.decision_idx !== null && snap.decision_idx !== undefined
-    ? kyoku.decisions[snap.decision_idx]
-    : findLatestDecisionBeforeStep(kyoku, clamped);
-
   const isExactDecisionStep = snap.decision_idx !== null && snap.decision_idx !== undefined;
+  const decision = isExactDecisionStep ? kyoku.decisions[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, clamped);
+
+  if (changed || !isExactDecisionStep) state.openCandLabel = null;
 
   renderBoard(kyoku, snap, isExactDecisionStep ? decision : null);
   renderDecisionPanel(kyoku, decision, isExactDecisionStep);
@@ -372,9 +375,9 @@ function formatStepEventToast(ev, names) {
   const actorName = ev.actor !== undefined ? names[ev.actor] || `玩家${ev.actor}` : "";
   switch (ev.type) {
     case "start_kyoku":
-      return `🀄 ${ev.bakaze === "S" ? "南" : "东"}${ev.kyoku}局 开始`;
+      return `${ev.bakaze === "S" ? "南" : ev.bakaze === "W" ? "西" : "东"}${ev.kyoku}局 开始`;
     case "tsumo":
-      return `${actorName} 摸 ${tileCn(ev.pai)}`;
+      return `${actorName} 摸牌`;
     case "dahai":
       return `${actorName} ${ev.tsumogiri ? "摸切" : "手切"} ${tileCn(ev.pai)}`;
     case "chi":
@@ -382,17 +385,29 @@ function formatStepEventToast(ev, names) {
     case "pon":
       return `${actorName} 碰 ${tileCn(ev.pai)}`;
     case "daiminkan":
+      return `${actorName} 明杠 ${tileCn(ev.pai)}`;
     case "ankan":
+      return `${actorName} 暗杠`;
     case "kakan":
-      return `${actorName} 杠`;
+      return `${actorName} 加杠 ${tileCn(ev.pai)}`;
+    case "reach":
+      return `${actorName} 立直！`;
+    case "reach_accepted":
+      return `${actorName} 立直成立`;
+    case "dora":
+      return `新宝牌指示牌 ${tileCn(ev.dora_marker)}`;
     case "hora":
-      return `🎉 ${actorName} ${ev.actor === ev.target ? "自摸" : "荣和"}!`;
+      return `${actorName} ${ev.actor === ev.target ? "自摸" : "荣和"}！`;
     case "ryukyoku":
-      return `🌊 流局`;
+      return "流局";
+    case "end_kyoku":
+      return "本局结束";
     default:
-      return ev.type;
+      return "";
   }
 }
+
+const REL_POS = ["Bottom", "Right", "Top", "Left"];
 
 function renderBoard(kyoku, snap, activeDecision) {
   const res = state.reviewData;
@@ -400,52 +415,27 @@ function renderBoard(kyoku, snap, activeDecision) {
   const names = res.names;
 
   // Center status box
-  document.getElementById("centerRoundLabel").textContent = kyoku.label;
-  document.getElementById("centerTilesLeft").textContent = `余 ${snap.tiles_left} 枚`;
-  document.getElementById("centerKyotaku").textContent = `供托 ${snap.kyotaku}`;
-  document.getElementById("centerHonba").textContent = `本场 ${snap.honba}`;
-  document.getElementById("centerJunme").textContent = `第 ${snap.junme} 巡`;
+  $("centerRoundLabel").textContent = kyoku.label;
+  $("centerTilesLeft").textContent = `余 ${snap.tiles_left} 张`;
+  $("centerKyotaku").textContent = `供托 ${snap.kyotaku}`;
+  $("centerHonba").textContent = `${snap.honba} 本场`;
+  $("centerJunme").textContent = `第 ${snap.junme} 巡`;
 
-  // Dora markers
-  const doraWrap = document.getElementById("centerDoraMarkers");
   const markers = snap.dora_markers || [];
-  let doraHtml = markers.map((m) => renderTileHtml(m, "tile-dora")).join("");
-  for (let i = markers.length; i < 5; i++) {
-    doraHtml += renderTileHtml("?", "tile-dora");
-  }
-  doraWrap.innerHTML = doraHtml;
+  let doraHtml = markers.map((m) => renderTileHtml(m, "t-dora")).join("");
+  for (let i = markers.length; i < 5; i++) doraHtml += renderTileHtml("?", "t-dora");
+  $("centerDoraMarkers").innerHTML = doraHtml;
 
-  // 4-way compass scores
-  const compassEl = document.getElementById("compassScores");
-  compassEl.innerHTML = [0, 1, 2, 3]
-    .map((seat) => {
-      const seatWind = WIND_CN[(seat - kyoku.oya + 4) % 4];
-      const isTurn = snap.actor === seat ? "active-turn" : "";
-      const rBadge = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
-      return `
-        <div class="compass-cell ${isTurn}">
-          <span><strong>${seatWind}</strong> ${names[seat].slice(0, 5)} ${rBadge}</span>
-          <span class="compass-score">${snap.scores[seat]}</span>
-        </div>
-      `;
-    })
-    .join("");
-
-  // Event toast
-  const toastText = kyoku.end_summaries?.length && state.stepIdx === kyoku.steps.length - 1
-    ? `🏁 ${kyoku.end_summaries.join(" · ")}`
+  // Event text
+  const isLast = state.stepIdx === kyoku.steps.length - 1;
+  $("centerEventToast").textContent = kyoku.end_summaries?.length && isLast
+    ? `本局结果：${kyoku.end_summaries.join(" · ")}`
     : formatStepEventToast(snap.event, names);
-  document.getElementById("centerEventToast").textContent = toastText;
 
   // Relative seat mapping: Bottom = hero, Right = (hero+1)%4, Top = (hero+2)%4, Left = (hero+3)%4
-  const relMap = [
-    { pos: "Bottom", seat: hero },
-    { pos: "Right", seat: (hero + 1) % 4 },
-    { pos: "Top", seat: (hero + 2) % 4 },
-    { pos: "Left", seat: (hero + 3) % 4 },
-  ];
-
-  for (const { pos, seat } of relMap) {
+  REL_POS.forEach((pos, rel) => {
+    const seat = (hero + rel) % 4;
+    renderCenterSeat(pos, seat, kyoku, snap);
     renderPlayerHeader(pos, seat, kyoku, snap, names);
     renderPlayerRiver(pos, seat, snap);
     renderPlayerMelds(pos, seat, snap);
@@ -454,377 +444,363 @@ function renderBoard(kyoku, snap, activeDecision) {
     } else {
       renderOpponentHand(pos, seat, snap);
     }
-  }
+  });
+}
+
+function renderCenterSeat(pos, seat, kyoku, snap) {
+  const el = $(`cseat${pos}`);
+  const wind = WIND_CN[(seat - kyoku.oya + 4) % 4];
+  el.className = `cseat cseat-${pos.toLowerCase()}`;
+  if (seat === kyoku.oya) el.classList.add("is-oya");
+  if (snap.actor === seat) el.classList.add("is-turn");
+  if (snap.riichi[seat]) el.classList.add("is-riichi");
+  el.innerHTML = `<b>${wind}</b><span class="cs-score">${snap.scores[seat]}</span>`;
+  el.title = `${state.reviewData.names[seat]} · ${snap.scores[seat]} 点`;
 }
 
 function renderPlayerHeader(pos, seat, kyoku, snap, names) {
-  const el = document.getElementById(`header${pos}`);
+  const el = $(`header${pos}`);
   const seatWind = WIND_CN[(seat - kyoku.oya + 4) % 4];
   const isOya = seat === kyoku.oya;
-  const rHtml = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
-  el.innerHTML = `
-    <span class="wind-pill ${isOya ? "oya" : ""}">${seatWind}家${isOya ? "·亲" : ""}</span>
-    <strong>${names[seat]}</strong>
-    <span style="color:#38bdf8;font-weight:700">${snap.scores[seat]}点</span>
-    ${rHtml}
-  `;
+  const windHtml = `<span class="wind-pill ${isOya ? "oya" : ""}">${seatWind}${isOya ? "·亲" : ""}</span>`;
+  const riichiHtml = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
+  el.classList.toggle("is-turn", snap.actor === seat);
+  el.title = names[seat];
+  if (pos === "Bottom") {
+    el.innerHTML = `${windHtml}<span class="tag-name">${escapeHtml(names[seat])}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
+  } else {
+    el.innerHTML = `
+      <div class="tag-line1">${windHtml}<span class="tag-name">${escapeHtml(names[seat])}</span></div>
+      <div class="tag-line2"><span class="tag-score">${snap.scores[seat]}</span> 点 ${riichiHtml}</div>`;
+  }
 }
 
 function renderPlayerRiver(pos, seat, snap) {
-  const el = document.getElementById(`river${pos}`);
   const river = snap.rivers[seat] || [];
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
-
-  el.innerHTML = river
+  $(`river${pos}`).innerHTML = river
     .map((r, idx) => {
       const classes = [];
       if (r.tsumogiri) classes.push("tile-tsumogiri");
-      if (r.riichi) classes.push("tile-riichi");
+      if (r.riichi) classes.push("tile-side");
       if (r.called) classes.push("tile-called");
-      if (isLastDiscardActor && idx === river.length - 1) classes.push("tile-last-discard");
-      const tip = `${tileCn(r.pai)} (${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? "·立直宣言牌" : ""})`;
-      return renderTileHtml(r.pai, "tile-river", classes.join(" "), tip);
+      if (isLastDiscardActor && idx === river.length - 1) classes.push("tile-last");
+      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言牌" : ""}${r.called ? " · 被鸣" : ""}）`;
+      return renderTileHtml(r.pai, "t-river", classes.join(" "), tip);
     })
     .join("");
+}
+
+// Render melds with the called tile turned sideways according to the source seat
+function renderMeldGroup(m, ownerSeat, sizeCls) {
+  const MELD_CN = { chi: "吃", pon: "碰", daiminkan: "明杠", kakan: "加杠", ankan: "暗杠" };
+  const tiles = [...(m.tiles || [])];
+  if (!tiles.length) return "";
+  let sideIdx = -1;
+  let order = tiles;
+  if (m.type === "ankan") {
+    return `<div class="meld-group" title="暗杠">${tiles.map((t, i) => renderTileHtml(i === 0 || i === tiles.length - 1 ? "?" : t, sizeCls)).join("")}</div>`;
+  }
+  if (m.from !== undefined && m.from !== null) {
+    const called = tiles[0];
+    const rest = tiles.slice(1);
+    const rel = (m.from - ownerSeat + 4) % 4; // 3 = kamicha (left), 2 = toimen, 1 = shimocha (right)
+    if (rel === 3) { order = [called, ...rest]; sideIdx = 0; }
+    else if (rel === 2) { order = [rest[0], called, ...rest.slice(1)]; sideIdx = 1; }
+    else { order = [...rest, called]; sideIdx = order.length - 1; }
+  }
+  const html = order.map((t, i) => renderTileHtml(t, sizeCls, i === sideIdx ? "tile-side" : "")).join("");
+  return `<div class="meld-group" title="${MELD_CN[m.type] || m.type}">${html}</div>`;
 }
 
 function renderPlayerMelds(pos, seat, snap) {
-  const el = document.getElementById(`melds${pos}`);
   const melds = snap.melds[seat] || [];
-  const sizeCls = pos === "Bottom" ? "tile-opp" : "tile-dora";
-  el.innerHTML = melds
-    .map((m) => {
-      const tilesHtml = (m.tiles || []).map((t) => renderTileHtml(t, sizeCls)).join("");
-      return `<div class="meld-group" title="${m.type}">${tilesHtml}</div>`;
-    })
-    .join("");
+  const sizeCls = pos === "Bottom" ? "t-hmeld" : "t-meld";
+  $(`melds${pos}`).innerHTML = melds.map((m) => renderMeldGroup(m, seat, sizeCls)).join("");
 }
 
 function renderOpponentHand(pos, seat, snap) {
-  const el = document.getElementById(`hand${pos}`);
   const hand = snap.hands[seat] || [];
   const drawn = snap.drawn[seat];
-  let html = hand
-    .map((t) => renderTileHtml(state.openHands ? t : "?", "tile-opp"))
-    .join("");
+  let html = hand.map((t) => renderTileHtml(state.openHands ? t : "?", "t-opp")).join("");
   if (drawn) {
-    html += renderTileHtml(state.openHands ? drawn : "?", "tile-opp", "drawn-gap");
+    html += `<span style="width:8px"></span>` + renderTileHtml(state.openHands ? drawn : "?", "t-opp");
   }
-  el.innerHTML = html;
+  $(`hand${pos}`).innerHTML = html;
 }
 
 // Render Hero Hand with NAGA Probability Bars overlaid directly on top of each tile!
 function renderHeroHand(seat, snap, activeDecision) {
-  const wrap = document.getElementById("handBottom");
-  const banner = document.getElementById("heroActionBanner");
-  const verdictPill = document.getElementById("heroVerdictPill");
+  const wrap = $("handBottom");
+  const banner = $("heroActionBanner");
+  const verdictPill = $("heroVerdictPill");
 
   const hand = snap.hands[seat] || [];
   const drawn = snap.drawn[seat];
   const allTiles = hand.map((pai) => ({ pai, isDrawn: false }));
-  if (drawn) {
-    allTiles.push({ pai: drawn, isDrawn: true });
-  }
+  if (drawn) allTiles.push({ pai: drawn, isDrawn: true });
 
   const tileBars = activeDecision?.tile_bars || {};
 
-  // Show verdict pill next to hero header if activeDecision exists
   if (activeDecision) {
-    verdictPill.className = `hero-verdict-pill verdict-badge ${activeDecision.verdict}`;
-    verdictPill.textContent = `${activeDecision.verdict_cn} · AI推荐: ${activeDecision.expected_cn} (${activeDecision.best_prob.toFixed(1)}%)`;
-    verdictPill.classList.remove("hidden");
+    verdictPill.className = `verdict-pill ${activeDecision.verdict}`;
+    verdictPill.textContent = activeDecision.is_equal
+      ? `${activeDecision.verdict_cn} · 与 AI 一致`
+      : `${activeDecision.verdict_cn} · AI：${activeDecision.expected_cn}`;
   } else {
-    verdictPill.classList.add("hidden");
+    verdictPill.className = "verdict-pill hidden";
   }
 
-  // Render non-discard action comparison banner (Riichi / Call / Pass / Kan / Agari)
-  const nonDiscardCands = (activeDecision?.candidates || []).filter((c) => c.label >= 37);
-  if (activeDecision && (nonDiscardCands.length > 0 || activeDecision.decision_type === "call_response")) {
+  // Non-discard action distribution (Riichi / Call / Pass / Kan / Agari)
+  const hasNonDiscard = (activeDecision?.candidates || []).some((c) => c.label >= 37);
+  if (activeDecision && (hasNonDiscard || activeDecision.decision_type === "call_response")) {
     const topCands = activeDecision.candidates.slice(0, 5);
-    banner.innerHTML = `
-      <span style="font-size:11.5px;color:#94a3b8;font-weight:700">🔔 副露 / 立直决策分布：</span>
-      ${topCands
-        .map((c) => {
-          const isBest = c.rank === 1 ? "is-best" : "";
-          const isAct = c.action_cn === activeDecision.actual_cn ? "is-actual" : "";
-          return `
-            <div class="action-banner-chip ${isBest} ${isAct}" data-label="${c.label}">
-              <span>${c.action_cn}</span>
-              <span style="color:#38bdf8">${c.prob.toFixed(1)}%</span>
-              ${c.rank === 1 ? `<span class="mini-badge ai">AI</span>` : ""}
-              ${c.action_cn === activeDecision.actual_cn ? `<span class="mini-badge actual-ok">实</span>` : ""}
-            </div>
-          `;
-        })
-        .join("")}
-    `;
-    banner.classList.remove("hidden");
+    banner.innerHTML = `<span class="ab-label">动作选择</span>` + topCands
+      .map((c) => {
+        const isBest = c.rank === 1;
+        const isAct = c.action_cn === activeDecision.actual_cn;
+        return `
+          <span class="ab-chip ${isBest ? "is-best" : ""} ${isAct ? "is-actual" : ""}">
+            ${c.pai && c.label <= 36 ? renderTileHtml(c.pai, "t-mini") : ""}
+            <span>${escapeHtml(c.action_cn)}</span>
+            <span class="ab-prob">${fmtPct(c.prob)}</span>
+            ${isBest ? `<span class="mini-badge ai">AI</span>` : ""}
+            ${isAct ? `<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">实战</span>` : ""}
+          </span>`;
+      })
+      .join("");
+    banner.classList.remove("is-empty");
   } else {
-    banner.classList.add("hidden");
+    banner.innerHTML = "";
+    banner.classList.add("is-empty");
   }
 
-  // Render each tile slot with vertical NAGA probability bar above it
   wrap.innerHTML = allTiles
     .map(({ pai, isDrawn }) => {
       const barInfo = tileBars[pai];
       const prob = barInfo ? barInfo.prob : 0;
-      const barHeight = Math.max(prob > 0 ? 3 : 0, Math.round((prob / 100) * 30));
+      const barHeight = prob > 0 ? Math.max(2, Math.round((prob / 100) * 30)) : 0;
 
-      let slotCls = isDrawn ? "drawn-slot" : "";
-      if (barInfo?.is_best) slotCls += " best-tile";
-      else if (barInfo?.is_actual) slotCls += " actual-mismatch";
+      const cls = ["hero-slot"];
+      if (isDrawn) cls.push("drawn");
+      if (barInfo?.is_best) cls.push("best");
+      else if (barInfo?.is_actual) cls.push("mismatch");
 
-      let badgesHtml = "";
-      if (barInfo?.is_best) {
-        badgesHtml += `<span class="mini-badge ai" title="AI 最优推荐">AI</span>`;
-      }
-      if (barInfo?.is_actual) {
-        const bCls = barInfo.is_best ? "actual-ok" : "actual-bad";
-        badgesHtml += `<span class="mini-badge ${bCls}" title="实战打出的牌">实</span>`;
-      }
+      let badges = "";
+      if (barInfo?.is_best) badges += `<span class="mini-badge ai">AI</span>`;
+      if (barInfo?.is_actual) badges += `<span class="mini-badge ${barInfo.is_best ? "act-ok" : "act-bad"}">实战</span>`;
 
       const probText = barInfo && prob >= 0.5 ? `${prob.toFixed(prob >= 10 ? 0 : 1)}%` : "";
       const tip = barInfo
-        ? `${tileCn(pai)} — AI推荐度: ${prob.toFixed(1)}% | Q:${barInfo.q_value} | 进张:${barInfo.ukeire}枚 | EV:${barInfo.ev} | 放铳率:${barInfo.danger}%`
+        ? `${tileCn(pai)}：AI 推荐度 ${prob.toFixed(1)}% · 进张 ${barInfo.ukeire} 张${barInfo.danger ? ` · 放铳率 ${barInfo.danger}%` : ""}`
         : tileCn(pai);
 
       return `
-        <div class="hero-tile-slot ${slotCls}" data-pai="${pai}">
-          <div class="naga-bar-area">
-            <span class="naga-prob-text">${probText}</span>
-            <div class="naga-bar-track">
-              <div class="naga-bar-fill" style="height: ${barHeight}px"></div>
-            </div>
+        <div class="${cls.join(" ")}" data-pai="${escapeHtml(pai)}">
+          <div class="bar-area">
+            <span class="bar-text">${probText}</span>
+            <div class="bar-track">${barHeight ? `<div class="bar-fill" style="height:${barHeight}px"></div>` : ""}</div>
           </div>
-          ${renderTileHtml(pai, "tile-hero", "", tip)}
-          <div class="tile-badges-row">${badgesHtml}</div>
-        </div>
-      `;
+          ${renderTileHtml(pai, "t-hero", "", tip)}
+          <div class="slot-badges">${badges}</div>
+        </div>`;
     })
     .join("");
 
-  // Clicking a tile in hero hand highlights its candidate row & ukeire breakdown
-  wrap.querySelectorAll(".hero-tile-slot").forEach((slot) => {
+  // Clicking a tile in hero hand expands its candidate row
+  wrap.querySelectorAll(".hero-slot").forEach((slot) => {
     slot.addEventListener("click", () => {
-      const pai = slot.dataset.pai;
       if (!activeDecision) return;
-      const cand = activeDecision.candidates.find((c) => c.pai === pai && c.label <= 36);
+      const cand = activeDecision.candidates.find((c) => c.pai === slot.dataset.pai && c.label <= 36);
       if (cand) {
-        showUkeireDetail(cand);
+        switchTab("tabDecision");
+        toggleCandidate(cand.label, true);
       }
     });
   });
 }
 
 // ============================================================================
-// Right Column: NAGA Candidate Table & Decision List
+// Right Column: Decision panel, candidates, decision list
 // ============================================================================
 function renderActionWithTile(actObj, actionCn) {
-  if (!actObj) return actionCn || "--";
-  if (actObj.pai) {
-    return `${renderTileHtml(actObj.pai, "tile-inline")} <span>${actionCn}</span>`;
-  }
-  return `<span>${actionCn}</span>`;
+  if (!actObj) return `<span>${escapeHtml(actionCn || "--")}</span>`;
+  const tile = actObj.pai && actObj.type === "dahai" ? renderTileHtml(actObj.pai, "t-inline") : "";
+  return `${tile}<span>${escapeHtml(actionCn)}</span>`;
+}
+
+function tagClass(t) {
+  if (t.includes("危险") || t.includes("退向") || t.includes("无役")) return "danger";
+  if (t.includes("最") || t.includes("听牌") || t.includes("现物")) return "good";
+  return "";
 }
 
 function renderDecisionPanel(kyoku, dec, isExactStep) {
-  const badge = document.getElementById("decVerdictBadge");
-  const turnChip = document.getElementById("decTurnChip");
-  const shantenChip = document.getElementById("decShantenChip");
-  const qLossChip = document.getElementById("decQLossChip");
-  const furitenChip = document.getElementById("decFuritenChip");
-  const aiBox = document.getElementById("compareAiContent");
-  const actBox = document.getElementById("compareActualContent");
-  const tbody = document.getElementById("candidatesTableBody");
-  const ukeireBox = document.getElementById("ukeireDetailBox");
-
-  ukeireBox.classList.add("hidden");
+  const badge = $("decVerdictBadge");
+  const aiBox = $("compareAiContent");
+  const actBox = $("compareActualContent");
+  const list = $("candidatesList");
+  const actualSide = actBox.parentElement;
 
   if (!dec) {
-    badge.className = "verdict-badge neutral";
-    badge.textContent = "等待决策步骤";
-    turnChip.textContent = "第 - 巡";
-    shantenChip.textContent = "向听: -";
-    qLossChip.textContent = "ΔQ: 0.000";
-    furitenChip.classList.add("hidden");
+    badge.className = "verdict-pill neutral";
+    badge.textContent = "还没有决策";
+    $("decTurnChip").textContent = "第 - 巡";
+    $("decShantenChip").textContent = "-";
+    $("decQLossChip").textContent = "损失 -";
+    $("decFuritenChip").classList.add("hidden");
     aiBox.innerHTML = "--";
     actBox.innerHTML = "--";
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">当前步骤无我方决策，点击下方「下一决策 ⏬」跳至我方行动手</td></tr>`;
+    actualSide.classList.remove("is-diff");
+    list.innerHTML = `<div class="empty">本局还没轮到该玩家决策。<br />按 <kbd>↓</kbd> 或点击「下一手」跳到第一个决策点。</div>`;
     return;
   }
 
-  badge.className = `verdict-badge ${dec.verdict}`;
-  badge.textContent = `${dec.verdict_cn}${isExactStep ? "" : " (最近一手)"}`;
+  badge.className = `verdict-pill ${dec.verdict}`;
+  badge.textContent = isExactStep ? dec.verdict_cn : `${dec.verdict_cn} · 上一手`;
+  $("decTurnChip").textContent = `第 ${dec.junme} 巡 · 余 ${dec.tiles_left} 张`;
+  $("decShantenChip").textContent = shantenText(dec.shanten);
+  $("decQLossChip").textContent = `损失 ${dec.q_loss.toFixed(3)}`;
+  $("decFuritenChip").classList.toggle("hidden", !dec.at_furiten);
 
-  turnChip.textContent = `第 ${dec.junme} 巡 · 余 ${dec.tiles_left} 枚`;
-  shantenChip.textContent = `当前: ${shantenText(dec.shanten)}`;
-  qLossChip.textContent = `权重损失 ΔQ: ${dec.q_loss.toFixed(3)}`;
-  furitenChip.classList.toggle("hidden", !dec.at_furiten);
+  aiBox.innerHTML = `${renderActionWithTile(dec.expected, dec.expected_cn)}<span class="cc-sub good">${fmtPct(dec.best_prob)}</span>`;
+  actBox.innerHTML = `${renderActionWithTile(dec.actual, dec.actual_cn)}<span class="cc-sub ${dec.is_equal ? "same" : "bad"}">${fmtPct(dec.actual_prob)} · 第 ${dec.actual_rank} 选择</span>`;
+  actualSide.classList.toggle("is-diff", !dec.is_equal);
 
-  aiBox.innerHTML = `
-    ${renderActionWithTile(dec.expected, dec.expected_cn)}
-    <span style="color:#34d399;font-size:13px">(${dec.best_prob.toFixed(1)}%)</span>
-  `;
-
-  const actColor = dec.is_equal ? "#38bdf8" : "#fda4af";
-  actBox.innerHTML = `
-    ${renderActionWithTile(dec.actual, dec.actual_cn)}
-    <span style="color:${actColor};font-size:13px">(${dec.actual_prob.toFixed(1)}% · #${dec.actual_rank})</span>
-  `;
-
-  // Render candidates table
-  tbody.innerHTML = dec.candidates
+  list.innerHTML = dec.candidates
     .map((c) => {
       const isBest = c.rank === 1;
       const isActual = c.action_cn === dec.actual_cn && c.rank === dec.actual_rank;
-      let rowCls = "";
-      if (isBest) rowCls = "row-best";
-      else if (isActual && !dec.is_equal) rowCls = "row-actual-mismatch";
+      const cls = ["cand"];
+      if (isBest) cls.push("is-best");
+      else if (isActual && !dec.is_equal) cls.push("is-actual-bad");
 
-      const rankBadges = [];
-      if (isBest) rankBadges.push(`<span class="mini-badge ai">首选</span>`);
-      if (isActual) {
-        rankBadges.push(`<span class="mini-badge ${isBest ? "actual-ok" : "actual-bad"}">实战</span>`);
-      }
+      const badges = [];
+      if (isBest) badges.push(`<span class="mini-badge ai">AI</span>`);
+      if (isActual) badges.push(`<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">实战</span>`);
 
-      const shantenStr = shantenText(c.shanten_after);
-      const ukeireStr = c.ukeire > 0 ? `${c.ukeire}枚` : "-";
+      const stats = [];
+      if (c.win_prob > 0) stats.push(`<span class="stat-text">和率 ${c.win_prob}%</span>`);
+      if (c.tenpai_prob > 0) stats.push(`<span class="stat-text">听牌率 ${c.tenpai_prob}%</span>`);
+      if (c.ev > 0) stats.push(`<span class="stat-text">打点期望 ${c.ev}</span>`);
+      if (c.danger > 0) stats.push(`<span class="stat-text ${c.danger >= 12 ? "danger" : ""}">放铳率 ${c.danger}%</span>`);
+      const tags = (c.tags || []).map((t) => `<span class="tag-chip ${tagClass(t)}">${escapeHtml(t)}</span>`).join("");
 
-      const evStr = c.ev > 0 ? `EV ${c.ev}` : "-";
-      const wpStr = c.win_prob > 0 ? `和率 ${c.win_prob}%` : `听牌 ${c.tenpai_prob}%`;
+      const ukTiles = c.ukeire_tiles || [];
+      const ukHtml = ukTiles.length
+        ? `<div class="uk-title">进张 ${c.ukeire} 张（${ukTiles.length} 种）</div>
+           <div class="uk-tiles">${ukTiles.map((u) => `<span class="uk-item">${renderTileHtml(u.pai, "t-inline")}×${u.count}</span>`).join("")}</div>`
+        : `<div class="uk-title">${shantenText(c.shanten_after)}，无进张明细</div>`;
 
-      const dangerStr = c.danger > 0 ? `<span style="color:${c.danger >= 12 ? "#fda4af" : "#94a3b8"}">铳率 ${c.danger}%</span>` : "";
-      const tagsHtml = (c.tags || [])
-        .map((t) => {
-          const tCls = t.includes("危险") || t.includes("退向") || t.includes("无役")
-            ? "danger"
-            : t.includes("最") || t.includes("听牌") || t.includes("现物")
-            ? "good"
-            : "";
-          return `<span class="tag-chip ${tCls}">${t}</span>`;
-        })
-        .join("");
-
+      const isDiscard = c.label <= 36 && c.pai;
       return `
-        <tr class="${rowCls}" data-label="${c.label}">
-          <td>
-            <div style="font-weight:800">#${c.rank}</div>
-            <div>${rankBadges.join(" ")}</div>
-          </td>
-          <td>
-            <div class="cand-action-cell">
-              ${c.pai ? renderTileHtml(c.pai, "tile-inline") : ""}
-              <span>${c.action_cn}</span>
+        <div class="${cls.join(" ")}" data-label="${c.label}" title="Q 值 ${c.q_value.toFixed(3)}">
+          <div class="cand-main">
+            <span class="cand-rank">#${c.rank}</span>
+            <div class="cand-action">
+              ${isDiscard ? renderTileHtml(c.pai, "t-inline") : ""}
+              <span>${escapeHtml(c.action_cn)}</span>
+              <span class="cand-badges">${badges.join("")}</span>
             </div>
-          </td>
-          <td>
-            <div class="prob-bar-wrap">
-              <div class="prob-bar-top">
-                <span class="prob-pct">${c.prob.toFixed(1)}%</span>
-                <span class="prob-q">Q: ${c.q_value.toFixed(2)}</span>
-              </div>
-              <div class="prob-track">
-                <div class="prob-fill" style="width: ${Math.min(100, c.prob)}%"></div>
-              </div>
+            <div>
+              <div class="cand-prob-top"><b>${fmtPct(c.prob)}</b></div>
+              <div class="cand-track"><div class="cand-fill" style="width:${Math.min(100, c.prob)}%"></div></div>
             </div>
-          </td>
-          <td>
-            <div style="font-weight:700">${shantenStr}</div>
-            <div style="font-size:11px;color:#38bdf8">${ukeireStr}</div>
-          </td>
-          <td>
-            <div style="font-weight:700;color:#fbbf24">${evStr}</div>
-            <div style="font-size:11px;color:#94a3b8">${wpStr}</div>
-          </td>
-          <td>
-            <div>${dangerStr}</div>
-            <div>${tagsHtml}</div>
-          </td>
-        </tr>
-      `;
+            <div class="cand-eff">
+              <div>${shantenText(c.shanten_after)}</div>
+              <div class="sub">${c.ukeire > 0 ? `进张 ${c.ukeire}` : "&nbsp;"}</div>
+            </div>
+          </div>
+          <div class="cand-extra">${stats.join("")}${tags}</div>
+          <div class="cand-ukeire">${ukHtml}</div>
+        </div>`;
     })
     .join("");
 
-  tbody.querySelectorAll("tr[data-label]").forEach((row) => {
-    row.addEventListener("click", () => {
-      const label = parseInt(row.dataset.label, 10);
-      const cand = dec.candidates.find((c) => c.label === label);
-      if (cand) showUkeireDetail(cand);
-    });
+  list.querySelectorAll(".cand").forEach((row) => {
+    row.addEventListener("click", () => toggleCandidate(parseInt(row.dataset.label, 10)));
   });
 
-  // Automatically show top candidate's ukeire if available
-  if (dec.candidates[0]?.ukeire_tiles?.length) {
-    showUkeireDetail(dec.candidates[0]);
+  // Re-open previously expanded row (same step), otherwise expand the AI top choice
+  const openLabel = state.openCandLabel ?? dec.candidates[0]?.label;
+  if (openLabel !== undefined) toggleCandidate(openLabel, true, false);
+}
+
+function toggleCandidate(label, forceOpen = false, scroll = true) {
+  const list = $("candidatesList");
+  const row = list.querySelector(`.cand[data-label="${label}"]`);
+  if (!row) return;
+  const willOpen = forceOpen || !row.classList.contains("open");
+  list.querySelectorAll(".cand.open").forEach((r) => r.classList.remove("open"));
+  if (willOpen) {
+    row.classList.add("open");
+    state.openCandLabel = label;
+    if (scroll) scrollIntoContainer($("tabDecision"), row);
+  } else {
+    state.openCandLabel = null;
   }
 }
 
-function showUkeireDetail(cand) {
-  const box = document.getElementById("ukeireDetailBox");
-  const tiles = cand.ukeire_tiles || [];
-  if (!tiles.length) {
-    box.innerHTML = `<span><strong>${cand.action_cn}</strong>：${shantenText(cand.shanten_after)}（无具体进张列表）</span>`;
-    box.classList.remove("hidden");
-    return;
+// Scroll a child into view inside its scroll container only (never scrolls the page)
+function scrollIntoContainer(container, el) {
+  if (!container || !el) return;
+  if (container.scrollHeight <= container.clientHeight) return;
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  if (eRect.top < cRect.top) {
+    container.scrollTop += eRect.top - cRect.top - 8;
+  } else if (eRect.bottom > cRect.bottom) {
+    container.scrollTop += eRect.bottom - cRect.bottom + 8;
   }
+}
 
-  const itemsHtml = tiles
-    .map(
-      (u) => `
-      <span class="ukeire-tile-item">
-        ${renderTileHtml(u.pai, "tile-dora")}
-        <span>×${u.count}</span>
-      </span>
-    `
-    )
-    .join("");
-
-  box.innerHTML = `
-    <div><strong>${cand.action_cn}</strong> 进张详情 (共 <strong>${cand.ukeire}</strong> 枚)：</div>
-    <div class="ukeire-tiles-list">${itemsHtml}</div>
-  `;
-  box.classList.remove("hidden");
+function renderDecActCell(label, actObj, actionCn, pct) {
+  const tile = actObj?.pai && actObj.type === "dahai" ? renderTileHtml(actObj.pai, "t-mini") : "";
+  return `<span class="dr-act"><span class="lbl">${label}</span>${tile}<span class="txt">${escapeHtml(actionCn)}</span><span class="pct">${pct.toFixed(0)}%</span></span>`;
 }
 
 function renderKyokuDecisionList(kyoku) {
-  const container = document.getElementById("decisionListContainer");
-  let decs = kyoku.decisions || [];
-  if (state.decisionFilter === "issues") {
-    decs = decs.filter((d) => d.verdict === "blunder" || d.verdict === "question");
-  }
+  const container = $("decisionListContainer");
+  const all = kyoku.decisions || [];
+  const issues = all.filter((d) => d.verdict === "blunder" || d.verdict === "question");
+  $("decCountBadge").textContent = issues.length ? `${issues.length} 失误` : all.length;
 
+  const decs = state.decisionFilter === "issues" ? issues : all;
   if (!decs.length) {
-    container.innerHTML = `<div class="empty-cell">本局无符合筛选条件的决策记录</div>`;
+    container.innerHTML = `<div class="empty">${state.decisionFilter === "issues" ? "本局没有恶手或疑问手 🎉" : "本局没有该玩家的决策记录"}</div>`;
     return;
   }
 
   container.innerHTML = decs
-    .map(
-      (d) => `
-      <div class="decision-row" data-decidx="${d.decision_idx}" data-step="${d.step_idx}">
-        <span style="font-weight:700;color:#94a3b8">第 ${d.junme} 巡</span>
-        <span>🤖 AI: <strong>${d.expected_cn}</strong> (${d.best_prob.toFixed(0)}%)</span>
-        <span>🖐️ 实: <strong>${d.actual_cn}</strong> (${d.actual_prob.toFixed(0)}%)</span>
-        <span class="verdict-badge ${d.verdict}">${d.verdict_cn}</span>
-      </div>
-    `
-    )
+    .map((d) => `
+      <div class="dec-row v-${d.verdict}" data-decidx="${d.decision_idx}" data-step="${d.step_idx}">
+        <span class="dr-turn">第 ${d.junme} 巡</span>
+        ${renderDecActCell("AI", d.expected, d.expected_cn, d.best_prob)}
+        ${renderDecActCell("实战", d.actual, d.actual_cn, d.actual_prob)}
+        <span class="verdict-pill ${d.verdict}">${VERDICT_SHORT[d.verdict] || d.verdict_cn}</span>
+      </div>`)
     .join("");
 
-  container.querySelectorAll(".decision-row").forEach((row) => {
-    row.addEventListener("click", () => {
-      setStep(parseInt(row.dataset.step, 10));
-    });
+  container.querySelectorAll(".dec-row").forEach((row) => {
+    row.addEventListener("click", () => setStep(parseInt(row.dataset.step, 10)));
   });
+  highlightActiveDecisionInList(currentDecisionIdx());
+}
+
+function currentDecisionIdx() {
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (!kyoku) return undefined;
+  return findLatestDecisionBeforeStep(kyoku, state.stepIdx)?.decision_idx;
 }
 
 function highlightActiveDecisionInList(decIdx) {
-  const container = document.getElementById("decisionListContainer");
-  container.querySelectorAll(".decision-row").forEach((row) => {
+  const container = $("decisionListContainer");
+  if (!container) return;
+  container.querySelectorAll(".dec-row").forEach((row) => {
     const isMatch = parseInt(row.dataset.decidx, 10) === decIdx;
     row.classList.toggle("active", isMatch);
-    if (isMatch) {
-      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (isMatch && !$("tabList").classList.contains("hidden")) {
+      scrollIntoContainer($("tabList"), row);
     }
   });
 }
@@ -855,6 +831,8 @@ function jumpNextDecision() {
     setStep(next.step_idx);
   } else if (state.kyokuIdx + 1 < (state.reviewData?.kyokus?.length || 0)) {
     selectKyoku(state.kyokuIdx + 1, true);
+  } else {
+    showToast("已经是最后一手了", "info");
   }
 }
 
@@ -870,140 +848,194 @@ function jumpNextBlunder() {
     for (const d of decs) {
       if (d.verdict !== "blunder" && d.verdict !== "question") continue;
       if (offset === 0 && d.step_idx <= state.stepIdx) continue;
-      if (kIdx !== state.kyokuIdx) {
-        selectKyoku(kIdx, false);
-      }
+      if (kIdx !== state.kyokuIdx) selectKyoku(kIdx, false);
       setStep(d.step_idx);
-      showToast(`已定位至 ${res.kyokus[kIdx].label} 第${d.junme}巡 (${d.verdict_cn})`, "info");
+      switchTab("tabDecision");
+      showToast(`${res.kyokus[kIdx].label} 第 ${d.junme} 巡：${d.verdict_cn}`, "info");
       return;
     }
   }
-  showToast("全庄未发现更多恶手或疑问手 🎉", "success");
+  showToast("没有发现恶手或疑问手 🎉", "success");
 }
 
 // ============================================================================
-// Modals & Account / JSON / Engine Handlers
+// Tabs, Stage scaling, Modals
 // ============================================================================
+function switchTab(tabId) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tabId));
+  document.querySelectorAll(".tab-body").forEach((b) => b.classList.toggle("hidden", b.id !== tabId));
+  if (tabId === "tabList") highlightActiveDecisionInList(currentDecisionIdx());
+}
+
+const stackedMq = window.matchMedia("(max-width: 1099px)");
+
+function fitStage() {
+  const wrap = $("stageWrap");
+  const stage = $("stage");
+  const w = wrap.clientWidth;
+  let scale;
+  if (stackedMq.matches) {
+    scale = Math.min(1, w / STAGE_W);
+    wrap.style.height = `${Math.ceil(STAGE_H * scale)}px`;
+  } else {
+    wrap.style.height = "";
+    scale = Math.min(w / STAGE_W, wrap.clientHeight / STAGE_H);
+  }
+  stage.style.setProperty("--stage-scale", Math.max(0.3, scale).toFixed(4));
+}
+
+function openModal(id) {
+  $(id).classList.remove("hidden");
+  $(id).querySelector("input, textarea, select, button.btn")?.focus();
+}
+
+function closeModal(id) {
+  $(id).classList.add("hidden");
+}
+
 function renderSavedHistoryList(items) {
-  const listEl = document.getElementById("recentGamesList");
+  const listEl = $("recentGamesList");
   if (!items || !items.length) return;
   listEl.innerHTML = items
     .map((item) => {
       const namesStr = (item.names || []).join(" / ") || "四人麻将";
+      const time = item.start_time ? new Date(item.start_time * 1000).toLocaleString("zh-CN", { hour12: false }) : "";
       return `
-        <div class="recent-game-item">
-          <div>
-            <div style="font-weight:700;color:#e2e8f0">${item.uuid}</div>
-            <div style="font-size:11px;color:#94a3b8">${namesStr}</div>
+        <div class="recent-item">
+          <div class="ri-main">
+            <div class="ri-id" title="${escapeHtml(item.uuid)}">${escapeHtml(time || item.uuid)}</div>
+            <div class="ri-names" title="${escapeHtml(namesStr)}">${escapeHtml(namesStr)}</div>
           </div>
-          <button class="btn btn-sm btn-primary btn-analyze-uuid" data-uuid="${item.uuid}">分析此局</button>
-        </div>
-      `;
+          <button class="btn btn-sm btn-primary" data-uuid="${escapeHtml(item.uuid)}">分析</button>
+        </div>`;
     })
     .join("");
 
-  listEl.querySelectorAll(".btn-analyze-uuid").forEach((btn) => {
+  listEl.querySelectorAll("button[data-uuid]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.getElementById("paipuInput").value = btn.dataset.uuid;
-      document.getElementById("accountModal").classList.add("hidden");
+      $("paipuInput").value = btn.dataset.uuid;
+      closeModal("accountModal");
       analyzePaipuInput();
     });
   });
 }
 
+function toggleOpenHands() {
+  state.openHands = !state.openHands;
+  const btn = $("btnToggleOpenHands");
+  btn.textContent = `对手手牌: ${state.openHands ? "显示" : "隐藏"}`;
+  btn.classList.toggle("is-on", state.openHands);
+  if (state.reviewData) setStep(state.stepIdx);
+}
+
+function setDecisionFilter(filter) {
+  state.decisionFilter = filter;
+  $("filterAllDecs").classList.toggle("active", filter === "all");
+  $("filterIssueDecs").classList.toggle("active", filter === "issues");
+  if (state.reviewData) renderKyokuDecisionList(state.reviewData.kyokus[state.kyokuIdx]);
+}
+
+async function analyzeJsonContent(raw) {
+  closeModal("jsonModal");
+  setLoading(true, "正在解析并分析牌谱文件...");
+  await runAnalysis(
+    apiFetch("/api/analyze/json", {
+      method: "POST",
+      body: JSON.stringify({ content: raw, target_actor: state.targetActor, engine: currentEngine() }),
+    }),
+    { successMsg: () => "牌谱文件分析完成" }
+  );
+}
+
+async function readFileToPasteArea(file) {
+  if (!file) return;
+  const text = await file.text();
+  $("jsonPasteArea").value = text;
+  $("dropText").textContent = `已选择：${file.name}`;
+}
+
 function bindEvents() {
-  // Topbar actions
-  document.getElementById("btnAnalyzePaipu").addEventListener("click", () => analyzePaipuInput());
-  document.getElementById("paipuInput").addEventListener("keydown", (e) => {
+  // Header actions
+  $("btnAnalyzePaipu").addEventListener("click", () => analyzePaipuInput());
+  $("paipuInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") analyzePaipuInput();
   });
-  document.getElementById("btnLoadDemo").addEventListener("click", () => loadDemoGame(state.targetActor));
+  $("btnLoadDemo").addEventListener("click", () => loadDemoGame(0));
 
   // Replay controls
-  document.getElementById("stepSlider").addEventListener("input", (e) => setStep(parseInt(e.target.value, 10)));
-  document.getElementById("btnStepStart").addEventListener("click", () => setStep(0));
-  document.getElementById("btnPrevStep").addEventListener("click", () => setStep(state.stepIdx - 1));
-  document.getElementById("btnNextStep").addEventListener("click", () => setStep(state.stepIdx + 1));
-  document.getElementById("btnPrevDec").addEventListener("click", jumpPrevDecision);
-  document.getElementById("btnNextDec").addEventListener("click", jumpNextDecision);
-  document.getElementById("btnNextBlunder").addEventListener("click", jumpNextBlunder);
-  document.getElementById("btnQuickNextBlunder").addEventListener("click", jumpNextBlunder);
+  $("stepSlider").addEventListener("input", (e) => setStep(parseInt(e.target.value, 10)));
+  $("btnStepStart").addEventListener("click", () => setStep(0));
+  $("btnPrevStep").addEventListener("click", () => setStep(state.stepIdx - 1));
+  $("btnNextStep").addEventListener("click", () => setStep(state.stepIdx + 1));
+  $("btnPrevDec").addEventListener("click", jumpPrevDecision);
+  $("btnNextDec").addEventListener("click", jumpNextDecision);
+  $("btnNextBlunder").addEventListener("click", jumpNextBlunder);
+  $("btnQuickNextBlunder").addEventListener("click", jumpNextBlunder);
+  $("btnToggleOpenHands").addEventListener("click", toggleOpenHands);
 
-  document.getElementById("btnToggleOpenHands").addEventListener("click", (e) => {
-    state.openHands = !state.openHands;
-    e.currentTarget.textContent = `👁️ 三家明牌: ${state.openHands ? "开" : "关"}`;
-    setStep(state.stepIdx);
-  });
-
-  // Decision filters
-  document.getElementById("filterAllDecs").addEventListener("click", (e) => {
-    state.decisionFilter = "all";
-    e.currentTarget.classList.add("active");
-    document.getElementById("filterIssueDecs").classList.remove("active");
-    if (state.reviewData) renderKyokuDecisionList(state.reviewData.kyokus[state.kyokuIdx]);
-  });
-
-  document.getElementById("filterIssueDecs").addEventListener("click", (e) => {
-    state.decisionFilter = "issues";
-    e.currentTarget.classList.add("active");
-    document.getElementById("filterAllDecs").classList.remove("active");
-    if (state.reviewData) renderKyokuDecisionList(state.reviewData.kyokus[state.kyokuIdx]);
-  });
+  // Tabs & filters
+  document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
+  $("filterAllDecs").addEventListener("click", () => setDecisionFilter("all"));
+  $("filterIssueDecs").addEventListener("click", () => setDecisionFilter("issues"));
 
   // Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach((m) => m.classList.add("hidden"));
+      return;
+    }
     if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
-    if (e.key === "ArrowLeft") {
+    if (document.querySelector(".modal-backdrop:not(.hidden)")) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const actions = {
+      ArrowLeft: () => setStep(state.stepIdx - 1),
+      ArrowRight: () => setStep(state.stepIdx + 1),
+      ArrowUp: jumpPrevDecision,
+      ArrowDown: jumpNextDecision,
+      Home: () => setStep(0),
+      b: jumpNextBlunder,
+      B: jumpNextBlunder,
+      h: toggleOpenHands,
+      H: toggleOpenHands,
+    };
+    if (actions[e.key]) {
       e.preventDefault();
-      setStep(state.stepIdx - 1);
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      setStep(state.stepIdx + 1);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      jumpPrevDecision();
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      jumpNextDecision();
-    } else if (e.key === "b" || e.key === "B") {
-      e.preventDefault();
-      jumpNextBlunder();
-    } else if (e.key === "h" || e.key === "H") {
-      e.preventDefault();
-      document.getElementById("btnToggleOpenHands").click();
+      actions[e.key]();
     }
   });
 
   // Modals open/close
-  document.getElementById("btnOpenAccountModal").addEventListener("click", () => {
-    document.getElementById("accountModal").classList.remove("hidden");
-  });
-  document.getElementById("btnOpenJsonModal").addEventListener("click", () => {
-    document.getElementById("jsonModal").classList.remove("hidden");
-  });
-  document.getElementById("btnOpenEngineModal").addEventListener("click", () => {
-    document.getElementById("engineModal").classList.remove("hidden");
-  });
-
+  $("btnOpenAccountModal").addEventListener("click", () => openModal("accountModal"));
+  $("btnOpenJsonModal").addEventListener("click", () => openModal("jsonModal"));
+  $("btnOpenEngineModal").addEventListener("click", () => openModal("engineModal"));
+  $("btnOpenHelp").addEventListener("click", () => openModal("helpModal"));
   document.querySelectorAll(".modal-close").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.getElementById(btn.dataset.close).classList.add("hidden");
+    btn.addEventListener("click", () => closeModal(btn.dataset.close));
+  });
+  document.querySelectorAll(".modal-backdrop").forEach((bd) => {
+    bd.addEventListener("mousedown", (e) => {
+      if (e.target === bd) bd.classList.add("hidden");
     });
   });
 
   // Account Login / Logout / Recent games
-  document.getElementById("btnSubmitLogin").addEventListener("click", async () => {
-    const account = document.getElementById("loginAccount").value.trim();
-    const password = document.getElementById("loginPassword").value;
-    const access_token = document.getElementById("loginToken").value.trim();
-    setLoading(true, "正在连接雀魂国服网关并验证登录...");
+  $("btnSubmitLogin").addEventListener("click", async () => {
+    const account = $("loginAccount").value.trim();
+    const password = $("loginPassword").value;
+    const access_token = $("loginToken").value.trim();
+    if (!access_token && !(account && password)) {
+      showToast("请填写账号和密码，或填写 Access Token", "error");
+      return;
+    }
+    setLoading(true, "正在登录雀魂国服...");
     try {
       const st = await apiFetch("/api/login", {
         method: "POST",
         body: JSON.stringify({ account, password, access_token, remember: true }),
       });
       updateTopbarStatus(st);
-      showToast("雀魂国服登录成功！", "success");
+      $("loginPassword").value = "";
+      showToast("登录成功", "success");
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -1011,18 +1043,24 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("btnLogout").addEventListener("click", async () => {
-    const st = await apiFetch("/api/logout", { method: "POST" });
-    updateTopbarStatus(st);
-    showToast("已清除本地雀魂凭证", "info");
+  $("btnLogout").addEventListener("click", async () => {
+    try {
+      const st = await apiFetch("/api/logout", { method: "POST" });
+      updateTopbarStatus(st);
+      showToast("已清除本地凭证", "info");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   });
 
-  document.getElementById("btnFetchRecentGames").addEventListener("click", async () => {
-    setLoading(true, "正在从雀魂国服拉取最近对局列表...");
+  $("btnFetchRecentGames").addEventListener("click", async () => {
+    setLoading(true, "正在拉取最近对局...");
     try {
       const data = await apiFetch("/api/recent_games");
-      renderSavedHistoryList(data.games || []);
-      showToast(`已获取 ${data.games?.length || 0} 场最近对局`, "success");
+      const games = data.games || [];
+      if (games.length) renderSavedHistoryList(games);
+      else $("recentGamesList").innerHTML = `<div class="empty">没有找到最近对局</div>`;
+      showToast(`获取到 ${games.length} 场对局`, "success");
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -1030,65 +1068,65 @@ function bindEvents() {
     }
   });
 
-  // Local JSON Upload / Paste
-  document.getElementById("jsonFileInput").addEventListener("change", async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    document.getElementById("jsonPasteArea").value = text;
-    showToast(`已读取文件: ${file.name}`, "info");
+  // Local JSON Upload / Paste / Drag & drop
+  $("jsonFileInput").addEventListener("change", (e) => readFileToPasteArea(e.target.files?.[0]));
+  const dz = $("fileDropZone");
+  ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, () => dz.classList.remove("drag")));
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault();
+    readFileToPasteArea(e.dataTransfer?.files?.[0]);
   });
 
-  document.getElementById("btnAnalyzeJson").addEventListener("click", async () => {
-    const raw = document.getElementById("jsonPasteArea").value.trim();
+  $("btnAnalyzeJson").addEventListener("click", () => {
+    const raw = $("jsonPasteArea").value.trim();
     if (!raw) {
-      showToast("请先选择牌谱文件或粘贴 JSON 内容", "error");
+      showToast("请先选择牌谱文件或粘贴内容", "error");
       return;
     }
-    document.getElementById("jsonModal").classList.add("hidden");
-    setLoading(true, "正在解析并检讨本地 JSON 牌谱...");
-    try {
-      const res = await apiFetch("/api/analyze/json", {
-        method: "POST",
-        body: JSON.stringify({
-          content: raw,
-          target_actor: state.targetActor,
-          engine: document.getElementById("engineSelect").value,
-        }),
-      });
-      applyReviewResult(res);
-      showToast("本地 JSON 牌谱分析完成！", "success");
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setLoading(false);
-    }
+    analyzeJsonContent(raw);
   });
 
-  // Engine Config Save / Reset
-  document.getElementById("btnSaveEngineConfig").addEventListener("click", async () => {
-    const model_path = document.getElementById("modelPathInput").value.trim();
+  // Engine Config Save / Reset / Re-analyze
+  $("btnSaveEngineConfig").addEventListener("click", async () => {
+    const model_path = $("modelPathInput").value.trim();
     try {
       await apiFetch("/api/engine/config", {
         method: "POST",
         body: JSON.stringify({ model_path: model_path || null }),
       });
       await refreshServerStatus();
-      showToast("引擎配置已更新", "success");
+      showToast("引擎设置已保存", "success");
     } catch (err) {
       showToast(err.message, "error");
     }
   });
 
-  document.getElementById("btnResetEngineConfig").addEventListener("click", async () => {
-    document.getElementById("modelPathInput").value = "";
-    await apiFetch("/api/engine/config", {
-      method: "POST",
-      body: JSON.stringify({ model_path: null }),
-    });
-    await refreshServerStatus();
-    showToast("已恢复默认权重检测路径 (data/models/mortal.pth)", "info");
+  $("btnResetEngineConfig").addEventListener("click", async () => {
+    $("modelPathInput").value = "";
+    try {
+      await apiFetch("/api/engine/config", { method: "POST", body: JSON.stringify({ model_path: null }) });
+      await refreshServerStatus();
+      showToast("已恢复默认权重路径", "info");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   });
+
+  $("btnReanalyze").addEventListener("click", async () => {
+    if (!state.reviewData) {
+      showToast("请先加载一个牌谱", "error");
+      return;
+    }
+    closeModal("engineModal");
+    setLoading(true, "正在用新设置重新分析...");
+    await reanalyzeCurrent(state.targetActor, state.kyokuIdx);
+  });
+
+  // Stage scaling
+  new ResizeObserver(() => fitStage()).observe($("stageWrap"));
+  window.addEventListener("resize", fitStage);
+  stackedMq.addEventListener("change", fitStage);
 }
 
 // ============================================================================
@@ -1096,6 +1134,7 @@ function bindEvents() {
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
+  fitStage();
   await refreshServerStatus();
   await loadDemoGame(0);
 });
