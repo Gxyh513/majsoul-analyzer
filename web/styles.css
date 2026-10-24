@@ -51,51 +51,6 @@
   --color-text-secondary: rgba(235, 235, 245, 0.65);
 }
 
-/* Theme: 🀄 经典雀庄翠绿 (Majsoul Green) - 纯正雀庄细腻毛毡桌布与沉浸式环境 */
-[data-theme="majsoul-green"] {
-  --color-main: #06110a;
-  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #0d2818 0%, #040d07 80%);
-  --color-accent: #0f2217;
-  --color-accent2: #163625;
-  --color-accent3: #1f4d35;
-  --color-table-bg: linear-gradient(135deg, #133e24 0%, #1a5030 50%, #113620 100%);
-  --color-table-border: rgba(52, 199, 89, 0.35);
-  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.65), inset 0 0 50px rgba(8, 26, 15, 0.65);
-  --apple-card-bg: rgba(14, 34, 22, 0.82);
-  --apple-card-elevated: rgba(20, 48, 32, 0.86);
-  --apple-border: 1px solid rgba(52, 199, 89, 0.22);
-}
-
-/* Theme: 🌊 深海藏青 (Midnight Navy) - 低饱和深邃午夜蓝 */
-[data-theme="midnight-navy"] {
-  --color-main: #040912;
-  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #0e223d 0%, #03070e 80%);
-  --color-accent: #0c1728;
-  --color-accent2: #12233c;
-  --color-accent3: #1a3255;
-  --color-table-bg: linear-gradient(135deg, #0e223d 0%, #16365c 50%, #0c1c33 100%);
-  --color-table-border: rgba(10, 132, 255, 0.32);
-  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.65), inset 0 0 50px rgba(5, 15, 28, 0.65);
-  --apple-card-bg: rgba(14, 28, 48, 0.82);
-  --apple-card-elevated: rgba(20, 42, 72, 0.86);
-  --apple-border: 1px solid rgba(10, 132, 255, 0.22);
-}
-
-/* Theme: ⬛ 极夜 OLED 纯黑 (True Black) - 全黑无光纯粹高对比 */
-[data-theme="true-black"] {
-  --color-main: #000000;
-  --color-bg-gradient: linear-gradient(180deg, #050505 0%, #000000 100%);
-  --color-accent: #08080a;
-  --color-accent2: #121214;
-  --color-accent3: #1a1a1e;
-  --color-table-bg: #070707;
-  --color-table-border: rgba(255, 255, 255, 0.2);
-  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.85), inset 0 0 1px 1px rgba(255, 255, 255, 0.08);
-  --apple-card-bg: rgba(16, 16, 18, 0.92);
-  --apple-card-elevated: rgba(26, 26, 30, 0.95);
-  --apple-border: 1px solid rgba(255, 255, 255, 0.16);
-}
-
 * {
   box-sizing: border-box;
   margin: 0;
@@ -1661,10 +1616,6 @@ button {
   padding: 14px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   transition: background 0.3s ease, border-color 0.3s ease;
-}
-
-.kd-appearance-card {
-  margin-top: 0;
 }
 
 /* Non-Discard & Meld Action Badges (Pure Typography, Apple HIG Finish) */
