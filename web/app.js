@@ -190,13 +190,17 @@ async function apiFetch(path, options = {}) {
   return data;
 }
 
+function isBackendOnline() {
+  return Boolean(state.serverStatus && (state.serverStatus.ok || state.serverStatus.engine));
+}
+
 async function refreshServerStatus() {
   const backend = getBackendUrl();
   try {
     const st = await apiFetch("/api/status");
-    state.serverStatus = st;
+    state.serverStatus = { ok: true, ...st };
     updateBackendBadge(true, backend || "本地服务");
-    updateTopbarStatus(st);
+    updateTopbarStatus(state.serverStatus);
     renderSavedHistoryList(st.history || []);
   } catch (err) {
     console.warn("Backend offline or unreachable:", err);
@@ -295,7 +299,7 @@ async function loadDemoGame(targetActor = 0) {
   setLoading(true, "正在加载示例牌谱...", "首次分析约需数秒");
   let res = null;
   // If backend is online, try fetching fresh analysis
-  if (state.serverStatus?.ok) {
+  if (isBackendOnline()) {
     try {
       res = await runAnalysis(
         apiFetch("/api/analyze/demo", {
@@ -335,7 +339,7 @@ async function analyzePaipuInput(targetActor = null) {
     $("paipuInput").focus();
     return;
   }
-  if (!state.serverStatus?.ok) {
+  if (!isBackendOnline()) {
     showToast("AI 牌谱分析需要本地 Python/GPU 服务支持。请先在本地启动 python run.py 并连接", "warn");
     openModal("backendModal");
     return;
@@ -353,7 +357,7 @@ async function analyzePaipuInput(targetActor = null) {
 
 async function reanalyzeCurrent(newSeat, keepKyoku) {
   if (!state.reviewData) return;
-  if (state.gameId === "demo" && (!state.serverStatus || !state.serverStatus.ok)) {
+  if (state.gameId === "demo" && !isBackendOnline()) {
     try {
       const resp = await fetch(`demo_review_${newSeat}.json`).catch(() => fetch("demo_review.json"));
       if (resp && resp.ok) {
