@@ -7,7 +7,7 @@ WORKDIR /build
 COPY vendor/Mortal ./vendor/Mortal
 
 WORKDIR /build/vendor/Mortal
-RUN cargo build -p libriichi --release
+RUN cargo build -p libriichi --lib --release
 
 # =============================================================================
 # Stage 2: Production Python Runtime
