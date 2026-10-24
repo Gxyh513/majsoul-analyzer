@@ -487,13 +487,8 @@ function renderCenterSeat(pos, seat, kyoku, snap) {
 
 function renderPlayerHeader(pos, seat, kyoku, snap) {
   const el = $(`header${pos}`);
-  const seatWind = handWind(seat, kyoku);
-  const isOya = seat === kyoku.oya;
-  const label = `${seatWind}家${isOya ? "·亲" : ""}`;
-  const riichiHtml = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
-  el.classList.toggle("is-turn", snap.actor === seat);
-  el.title = `${label} ${snap.scores[seat]}`;
-  el.innerHTML = `<span class="tag-name">${label}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
+  if (!el) return;
+  el.innerHTML = "";
 }
 
 function renderPlayerRiver(pos, seat, snap) {
