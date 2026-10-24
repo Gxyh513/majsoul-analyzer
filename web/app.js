@@ -113,16 +113,48 @@ function getBackendUrl() {
     localStorage.setItem("majsoul_backend_url", b);
     return b;
   }
-  const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
   const saved = localStorage.getItem("majsoul_backend_url");
-  if (saved !== null) return saved.trim().replace(/\/+$/, "");
-  return isLocal ? "" : "http://localhost:8000";
+  if (saved !== null && saved !== undefined) return saved.trim().replace(/\/+$/, "");
+
+  // If hosted on Cloudflare Pages, default to localhost
+  if (window.location.hostname.endsWith("pages.dev")) {
+    return "http://localhost:8000";
+  }
+  // If served directly from backend server (ModelScope *.ms.show, Render, local FastAPI), default to same origin ("")
+  return "";
 }
 
 function setBackendUrl(url) {
   const clean = (url || "").trim().replace(/\/+$/, "");
   localStorage.setItem("majsoul_backend_url", clean);
   return clean;
+}
+
+function buildApiUrl(backend, path) {
+  if (!backend && !window.location.search.includes("studio_token")) return path;
+  try {
+    const currentSearch = new URLSearchParams(window.location.search);
+    const studioToken = currentSearch.get("studio_token");
+
+    if (!backend) {
+      if (!studioToken) return path;
+      const u = new URL(path, window.location.origin);
+      u.searchParams.set("studio_token", studioToken);
+      return u.pathname + u.search;
+    }
+
+    const base = new URL(backend.startsWith("http") ? backend : `http://${backend}`);
+    const full = new URL(path.replace(/^\//, ""), base.href.endsWith("/") ? base.href : base.href + "/");
+    for (const [k, v] of base.searchParams.entries()) {
+      if (!full.searchParams.has(k)) full.searchParams.set(k, v);
+    }
+    if (studioToken && !full.searchParams.has("studio_token")) {
+      full.searchParams.set("studio_token", studioToken);
+    }
+    return full.toString();
+  } catch (e) {
+    return backend ? `${backend.replace(/\/+$/, "")}/${path.replace(/^\//, "")}` : path;
+  }
 }
 
 function updateBackendBadge(online, text) {
@@ -139,7 +171,7 @@ function updateBackendBadge(online, text) {
 async function apiFetch(path, options = {}) {
   const isAbs = /^https?:\/\//i.test(path);
   const backend = getBackendUrl();
-  const url = isAbs ? path : (backend ? `${backend}${path}` : path);
+  const url = isAbs ? path : buildApiUrl(backend, path);
 
   const resp = await fetch(url, {
     headers: { "Content-Type": "application/json" },
