@@ -1,9 +1,9 @@
 # 雀魂牌谱 AI 检讨系统 (Majsoul Analyzer)
 
-基于深度学习神经网络（Akagi / Mortal）与 NAGA 风格交互界面的雀魂牌谱复盘检讨系统。
+基于深度学习神经网络（Akagi / Mortal）与 KillerDucky 风格的雀魂牌谱复盘检讨系统。
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Gxyh513/majsoul-analyzer/blob/main/colab_run.ipynb)
-[![Cloudflare Pages](https://img.shields.io/badge/Cloudflare_Pages-Online-orange?logo=cloudflare)](https://majsoul-analyzer.pages.dev)
+[![Cloudflare Pages](https://img.shields.io/badge/Cloudflare_Pages-Online-orange?logo=cloudflare)](https://majsoul.ccwu.cc)
 
 ## 🌟 特性
 
@@ -28,7 +28,7 @@
 4. 构建配置（已由根目录 `wrangler.toml` 自动声明）：
    - **Framework preset**: None
    - **Build output directory**: `web`
-5. 点击 **Save and Deploy** 即可生成公网访问地址（如 `https://majsoul-analyzer.pages.dev`）。后续每次 `git push` 将自动触发部署。
+5. 点击 **Save and Deploy** 即可生成公网访问地址（如 `https://majsoul.ccwu.cc`）。后续每次 `git push` 将自动触发部署。
 
 ---
 
@@ -44,7 +44,7 @@
    - **Hardware**: 选择免费的 **CPU Basic (2 vCPU, 16GB RAM)**（或按需选择 T4 GPU）
 3. 将本项目推送到该 Space（或在 Space 设置中直接关联 GitHub 仓库 `Gxyh513/majsoul-analyzer`）。
 4. 项目内已配置自动化 [Dockerfile](file:///c:/Users/22/.gemini/antigravity/scratch/majsoul-analyzer/Dockerfile)，构建完成后将生成公开 API 域名（如 `https://<用户名>-majsoul.hf.space`）。
-5. 打开 [https://majsoul-analyzer.pages.dev](https://majsoul-analyzer.pages.dev)，点击右上角 **🔌 服务状态**，填入该域名即可！
+5. 打开 [https://majsoul.ccwu.cc](https://majsoul.ccwu.cc)，点击右上角 **🔌 服务状态**，填入该域名即可！
 
 ### 方案 B：Google Colab（免费 T4 GPU 算力一键启动）
 
