@@ -3,66 +3,62 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>雀魂 AI 牌谱复盘</title>
+  <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=2.0" />
+  <link rel="stylesheet" href="/styles.css?v=2.1.1" />
 </head>
 <body>
-  <!-- ======================= Header ======================= -->
   <header class="app-header">
     <div class="brand">
-      <div class="brand-logo">🀄</div>
-      <div class="brand-text">
-        <div class="brand-title">雀魂 AI 牌谱复盘</div>
-        <div class="brand-sub">逐手对比 AI 推荐，找出每一处失误</div>
-      </div>
+      <div class="brand-title">雀魂复盘</div>
     </div>
 
     <div class="import-bar">
       <div class="import-input">
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" /></svg>
         <input id="paipuInput" type="text" autocomplete="off" spellcheck="false"
-          placeholder="粘贴雀魂牌谱链接或牌谱 ID，回车开始分析" aria-label="牌谱链接或 ID" />
+          placeholder="把雀魂牌谱链接或牌谱号贴在这里，回车开始" aria-label="牌谱链接或牌谱号" />
       </div>
-      <button id="btnAnalyzePaipu" class="btn btn-primary">分析牌谱</button>
-      <button id="btnOpenJsonModal" class="btn btn-ghost" title="上传或粘贴牌谱文件 (JSON / MJAI)">导入文件</button>
-      <button id="btnLoadDemo" class="btn btn-ghost" title="加载内置的四人麻将示例牌谱">示例牌谱</button>
+      <button id="btnAnalyzePaipu" class="btn btn-primary">开始复盘</button>
+      <button id="btnLoadDemo" class="btn btn-ghost">看示例牌谱</button>
     </div>
 
     <div class="header-actions">
-      <button id="btnOpenAccountModal" class="chip-btn" title="登录雀魂账号 / 查看最近对局">
+      <button id="btnOpenAccountModal" class="chip-btn" title="打开网上的牌谱需要先登录">
         <span id="msStatusDot" class="status-dot offline"></span>
-        <span id="msStatusText">雀魂账号</span>
+        <span id="msStatusText">登录雀魂</span>
       </button>
-      <button id="btnOpenEngineModal" class="chip-btn" title="AI 引擎设置">
-        <span class="chip-ico">⚙</span>
-        <span id="engineStatusText">引擎</span>
-      </button>
-      <button id="btnOpenHelp" class="chip-btn chip-icon-only" title="快捷键与使用说明" aria-label="帮助">?</button>
+      <details id="moreMenu" class="more">
+        <summary class="chip-btn">更多</summary>
+        <div class="more-panel">
+          <button id="btnOpenJsonModal" class="menu-item">导入牌谱文件</button>
+          <button id="btnOpenEngineModal" class="menu-item">
+            分析方式
+            <span id="engineStatusText" class="menu-note">牌效</span>
+          </button>
+          <button id="btnOpenHelp" class="menu-item">怎么用</button>
+        </div>
+      </details>
     </div>
   </header>
 
-  <!-- ======================= Game Sub-bar ======================= -->
   <nav class="subbar">
     <div class="subbar-group">
-      <span class="subbar-label">复盘视角</span>
+      <span class="subbar-label">看谁的牌</span>
       <div id="seatTabs" class="seg-control" role="tablist"></div>
     </div>
     <div class="subbar-group subbar-grow">
-      <span class="subbar-label">小局</span>
+      <span class="subbar-label">第几局</span>
       <div id="kyokuPills" class="kyoku-pills"></div>
     </div>
     <div id="gameTitle" class="game-title" title=""></div>
   </nav>
 
-  <!-- ======================= Main ======================= -->
   <main class="workspace">
-    <!-- Left: Table -->
     <section class="stage-col">
       <div id="stageWrap" class="stage-wrap">
         <div id="stage" class="stage">
           <div id="board" class="board">
-            <!-- Rotated seat layers: rivers & opponent hands -->
             <div class="seat-layer pos-bottom"><div id="riverBottom" class="river"></div></div>
             <div class="seat-layer pos-right">
               <div id="riverRight" class="river"></div>
@@ -77,12 +73,10 @@
               <div class="opp-row"><div id="handLeft" class="opp-hand"></div><div id="meldsLeft" class="melds"></div></div>
             </div>
 
-            <!-- Opponent name tags (not rotated, readable) -->
             <div id="headerTop" class="name-tag tag-top"></div>
             <div id="headerLeft" class="name-tag tag-left"></div>
             <div id="headerRight" class="name-tag tag-right"></div>
 
-            <!-- Center info box -->
             <div class="center-box">
               <div id="cseatTop" class="cseat cseat-top"></div>
               <div id="cseatLeft" class="cseat cseat-left"></div>
@@ -103,11 +97,10 @@
             </div>
           </div>
 
-          <!-- Hero dock -->
           <div class="hero-dock">
             <div class="dock-head">
               <div id="headerBottom" class="hero-tag"></div>
-              <div id="centerEventToast" class="event-text">等待开始</div>
+              <div id="centerEventToast" class="event-text">先贴一局牌谱，或看示例</div>
               <div id="heroVerdictPill" class="verdict-pill hidden"></div>
             </div>
             <div id="heroActionBanner" class="action-banner is-empty"></div>
@@ -119,7 +112,6 @@
         </div>
       </div>
 
-      <!-- Replay controls -->
       <div class="replay">
         <div class="timeline">
           <div id="timelineTicks" class="timeline-ticks"></div>
@@ -128,15 +120,15 @@
         <div class="replay-row">
           <span id="stepCounterText" class="step-counter">0 / 0</span>
           <div class="ctrl-group">
-            <button id="btnStepStart" class="ctrl" title="回到本局开头 (Home)">⏮</button>
-            <button id="btnPrevStep" class="ctrl" title="上一步 (←)">◀</button>
-            <button id="btnNextStep" class="ctrl" title="下一步 (→)">▶</button>
+            <button id="btnStepStart" class="ctrl" title="回到本局开头 (Home)">开头</button>
+            <button id="btnPrevStep" class="ctrl" title="上一步 (←)">上一步</button>
+            <button id="btnNextStep" class="ctrl" title="下一步 (→)">下一步</button>
             <span class="ctrl-sep"></span>
-            <button id="btnPrevDec" class="ctrl ctrl-wide" title="上一个决策点 (↑)">↑ 上一手</button>
-            <button id="btnNextDec" class="ctrl ctrl-wide ctrl-primary" title="下一个决策点 (↓)">下一手 ↓</button>
-            <button id="btnNextBlunder" class="ctrl ctrl-wide ctrl-danger" title="跳到下一处恶手 / 疑问手 (B)">下一处失误</button>
+            <button id="btnPrevDec" class="ctrl ctrl-wide" title="上一个该你做决定的地方 (↑)">上一手</button>
+            <button id="btnNextDec" class="ctrl ctrl-wide ctrl-primary" title="下一个该你做决定的地方 (↓)">下一手</button>
+            <button id="btnNextBlunder" class="ctrl ctrl-wide ctrl-danger" title="跳到下一处恶手或疑问手 (B)">下一处问题</button>
             <span class="ctrl-sep"></span>
-            <button id="btnToggleOpenHands" class="ctrl ctrl-wide is-on" title="显示 / 隐藏对手手牌 (H)">对手手牌: 显示</button>
+            <button id="btnToggleOpenHands" class="ctrl ctrl-wide is-on" title="显示或隐藏对手手牌 (H)">对手手牌：显示</button>
           </div>
           <span class="legend">
             <i class="dot best"></i>一致 <i class="dot ok"></i>微差 <i class="dot question"></i>疑问 <i class="dot blunder"></i>恶手
@@ -145,80 +137,77 @@
       </div>
     </section>
 
-    <!-- Right: Analysis -->
     <aside class="panel-col">
-      <!-- Overview -->
       <div class="card overview">
+        <div class="ov-item ov-lead">
+          <div class="ov-label">值得回头看</div>
+          <div class="ov-value">
+            <span id="metricBlunders" class="c-blunder">0</span><small> 恶手</small>
+            <span id="metricInaccuracies" class="c-question ov-second">0</span><small> 疑问或微差</small>
+          </div>
+          <button id="btnQuickNextBlunder" class="link-btn">从下一处看起</button>
+        </div>
+        <div class="ov-item">
+          <div class="ov-label">和 AI 相同</div>
+          <div class="ov-value"><span id="metricMatchRate">--%</span></div>
+          <div class="ov-count" id="metricMatchCount"></div>
+          <div class="progress"><div id="metricMatchBar" class="progress-bar" style="width:0%"></div></div>
+        </div>
         <div class="ov-grade">
           <div id="metricGrade" class="grade-badge">-</div>
           <div>
-            <div class="ov-label">综合评分</div>
-            <div class="ov-value"><span id="metricRating">--</span><small> / 100</small></div>
+            <div class="ov-label">整局</div>
+            <div class="ov-value ov-rating"><span id="metricRating">--</span></div>
           </div>
-        </div>
-        <div class="ov-item">
-          <div class="ov-label">AI 一致率</div>
-          <div class="ov-value"><span id="metricMatchRate">--%</span> <small id="metricMatchCount"></small></div>
-          <div class="progress"><div id="metricMatchBar" class="progress-bar" style="width:0%"></div></div>
-        </div>
-        <div class="ov-item">
-          <div class="ov-label">失误</div>
-          <div class="ov-value">
-            <span id="metricBlunders" class="c-blunder">0</span><small> 恶手</small>
-            <span id="metricInaccuracies" class="c-question ov-second">0</span><small> 疑问/微差</small>
-          </div>
-          <button id="btnQuickNextBlunder" class="link-btn">定位下一处失误 →</button>
         </div>
         <div id="metricEngineTag" class="ov-engine"></div>
       </div>
 
-      <!-- Tabs -->
       <div class="card tab-card">
         <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="tabDecision" role="tab">当前一手</button>
-          <button class="tab" data-tab="tabList" role="tab">本局手顺 <span id="decCountBadge" class="tab-badge">0</span></button>
+          <button class="tab active" data-tab="tabDecision" role="tab">这一手</button>
+          <button class="tab" data-tab="tabList" role="tab">本局每一手 <span id="decCountBadge" class="tab-badge">0</span></button>
         </div>
 
-        <!-- Tab 1: current decision -->
         <div id="tabDecision" class="tab-body">
+          <p id="decHeadline" class="dec-headline">载入牌谱之后，这里用一句话说明你和 AI 差在哪里。</p>
           <div class="dec-head">
-            <span id="decVerdictBadge" class="verdict-pill neutral">无决策</span>
+            <span id="decVerdictBadge" class="verdict-pill neutral">还没有</span>
             <div id="decMetaRow" class="dec-meta">
               <span id="decTurnChip" class="meta-chip">第 - 巡</span>
               <span id="decShantenChip" class="meta-chip">-</span>
-              <span id="decQLossChip" class="meta-chip" title="AI 评估中，实战选择相比最优选择的期望值损失。越小越好。">损失 0.000</span>
+              <span id="decQLossChip" class="meta-chip" title="和 AI 最想下的那一手比，差多少。">还没比较</span>
               <span id="decFuritenChip" class="meta-chip chip-warn hidden">振听</span>
             </div>
           </div>
 
           <div id="decCompareBox" class="compare">
             <div class="compare-side ai">
-              <div class="compare-label">AI 推荐</div>
+              <div class="compare-label">AI 想下</div>
               <div id="compareAiContent" class="compare-content">--</div>
             </div>
             <div class="compare-side actual">
-              <div class="compare-label">实战选择</div>
+              <div class="compare-label">你下的</div>
               <div id="compareActualContent" class="compare-content">--</div>
             </div>
           </div>
 
           <div class="section-head">
-            <span>候选打法</span>
-            <span class="hint">点击查看进张 · 手牌上方柱状图为 AI 推荐度</span>
+            <span>其他打法</span>
+            <span class="hint">点一行，看打出后能进哪些牌。手牌上的柱子是 AI 有多想打这张。</span>
           </div>
           <div id="candidatesList" class="cand-list">
-            <div class="empty">加载牌谱后在此查看每一手的 AI 分析</div>
+            <div class="empty">载入牌谱后，每一手的打法会列在这里。</div>
           </div>
         </div>
 
-        <!-- Tab 2: decisions in kyoku -->
         <div id="tabList" class="tab-body hidden">
           <div class="section-head">
             <div class="seg-control seg-sm">
               <button id="filterAllDecs" class="seg active">全部</button>
-              <button id="filterIssueDecs" class="seg">只看失误</button>
+              <button id="filterIssueDecs" class="seg">只看有问题的</button>
             </div>
-            <span class="hint">点击跳转到该手</span>
+            <span class="hint">点一行就跳到那一手</span>
           </div>
           <div id="decisionListContainer" class="dec-list"></div>
         </div>
@@ -226,46 +215,44 @@
     </aside>
   </main>
 
-  <!-- ======================= Overlays ======================= -->
   <div id="loadingOverlay" class="loading-overlay hidden">
     <div class="loading-card">
       <div class="spinner"></div>
-      <div id="loadingTitle" class="loading-title">正在分析牌谱...</div>
+      <div id="loadingTitle" class="loading-title">正在看这局牌...</div>
       <div id="loadingSub" class="loading-sub"></div>
     </div>
   </div>
 
   <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
-  <!-- Modal: Account -->
   <div id="accountModal" class="modal-backdrop hidden">
-    <div class="modal modal-lg" role="dialog" aria-modal="true">
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
       <div class="modal-header">
-        <h3>雀魂账号与最近对局</h3>
-        <button class="modal-close" data-close="accountModal" aria-label="关闭">✕</button>
+        <h3 id="accountTitle">登录雀魂，打开最近的牌</h3>
+        <button class="modal-close" data-close="accountModal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
-        <div id="modalAccountStatusBanner" class="banner">未登录</div>
+        <div id="modalAccountStatusBanner" class="banner">还没登录。示例牌谱和导入的文件不需要登录。</div>
         <div class="modal-columns">
           <div class="modal-col">
-            <h4>登录国服账号</h4>
-            <p class="muted">分析在线牌谱需要登录雀魂国服。凭证只保存在本机的 <code>data/config.json</code>，建议使用小号。</p>
-            <label class="field"><span>手机号 / 邮箱</span><input id="loginAccount" type="text" placeholder="雀魂国服账号" /></label>
+            <h4>国服账号</h4>
+            <p class="muted">网上的牌谱要登录才能打开。密码只留在这台电脑上，建议用小号。</p>
+            <label class="field"><span>手机号或邮箱</span><input id="loginAccount" type="text" placeholder="雀魂国服账号" /></label>
             <label class="field"><span>密码</span><input id="loginPassword" type="password" placeholder="登录密码" /></label>
-            <div class="divider"><span>或使用 Access Token</span></div>
-            <label class="field"><span>Access Token（可选，优先使用）</span><input id="loginToken" type="text" placeholder="填写后将优先使用 Token 登录" /></label>
+            <div class="divider"><span>或者粘贴登录凭证</span></div>
+            <label class="field"><span>Access Token，填了就优先用它</span><input id="loginToken" type="text" placeholder="可以不填" /></label>
             <div class="form-actions">
               <button id="btnSubmitLogin" class="btn btn-primary">登录</button>
-              <button id="btnLogout" class="btn btn-ghost">清除本地凭证</button>
+              <button id="btnLogout" class="btn btn-ghost">清除这台电脑上的登录</button>
             </div>
           </div>
           <div class="modal-col">
             <div class="col-head">
-              <h4>最近对局</h4>
-              <button id="btnFetchRecentGames" class="btn btn-sm btn-ghost">↻ 拉取最近对局</button>
+              <h4>最近的牌</h4>
+              <button id="btnFetchRecentGames" class="btn btn-sm btn-ghost">刷新</button>
             </div>
             <div id="recentGamesList" class="recent-list">
-              <div class="empty">登录后可拉取最近 15 场对局；分析过的牌谱也会显示在这里。</div>
+              <div class="empty">登录后可以拉取最近 15 场。你分析过的牌也会出现在这里。</div>
             </div>
           </div>
         </div>
@@ -273,89 +260,85 @@
     </div>
   </div>
 
-  <!-- Modal: JSON import -->
   <div id="jsonModal" class="modal-backdrop hidden">
-    <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="jsonTitle">
       <div class="modal-header">
-        <h3>导入牌谱文件</h3>
-        <button class="modal-close" data-close="jsonModal" aria-label="关闭">✕</button>
+        <h3 id="jsonTitle">导入牌谱文件</h3>
+        <button class="modal-close" data-close="jsonModal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
-        <p class="muted">支持雀魂原始牌谱 JSON（含 <code>head</code> 与 <code>actions</code>），以及 MJAI 事件数组 / JSONL。</p>
+        <p class="muted">可以是雀魂导出的牌谱，也可以是 MJAI 记录。</p>
         <label id="fileDropZone" class="drop-zone">
           <input id="jsonFileInput" type="file" accept=".json,.jsonl,.txt" />
-          <span class="drop-ico">📄</span>
-          <span id="dropText">点击选择文件，或把文件拖到这里</span>
+          <span id="dropText">把文件拖到这里，或点这里选择</span>
         </label>
         <label class="field">
-          <span>或直接粘贴内容</span>
-          <textarea id="jsonPasteArea" rows="6" placeholder='[{"type":"start_game","names":["A","B","C","D"]}, ...]'></textarea>
+          <span>或把内容贴在下面</span>
+          <textarea id="jsonPasteArea" rows="6" placeholder="把牌谱内容贴在这里"></textarea>
         </label>
         <div class="form-actions">
-          <button id="btnAnalyzeJson" class="btn btn-primary">开始分析</button>
+          <button id="btnAnalyzeJson" class="btn btn-primary">开始复盘</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Modal: Engine -->
   <div id="engineModal" class="modal-backdrop hidden">
-    <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="engineTitle">
       <div class="modal-header">
-        <h3>AI 引擎设置</h3>
-        <button class="modal-close" data-close="engineModal" aria-label="关闭">✕</button>
+        <h3 id="engineTitle">分析方式</h3>
+        <button class="modal-close" data-close="engineModal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
         <div id="engineModalDetail" class="engine-detail"></div>
         <label class="field">
-          <span>分析引擎</span>
+          <span>用哪种判断</span>
           <select id="engineSelect">
-            <option value="auto">自动（有 Mortal 权重时优先使用）</option>
-            <option value="builtin">内置引擎（牌效 + 防守）</option>
+            <option value="auto">自动。有神经网络权重时优先用它</option>
+            <option value="builtin">内置。只看牌效和防守</option>
           </select>
         </label>
         <label class="field">
-          <span>Mortal 权重文件路径（可选）</span>
-          <input id="modelPathInput" type="text" placeholder="默认自动检测 data/models/mortal.pth" />
+          <span>神经网络权重的位置（可不填）</span>
+          <input id="modelPathInput" type="text" placeholder="不填就自动找 data/models/mortal.pth" />
         </label>
         <p class="muted small">
-          内置引擎开箱即用，计算向听、进张、和率与放铳风险；把训练好的 <code>mortal.pth</code> 放到
-          <code>data/models/</code> 或在上方填写路径后，即可使用 Mortal 神经网络分析。
+          不设置也能用。内置方式会算向听、进张、和率和放铳风险。把 mortal.pth 放到
+          data/models/，或在上面填好位置，就会改用神经网络。
         </p>
         <div class="form-actions">
-          <button id="btnSaveEngineConfig" class="btn btn-primary">保存并检测权重</button>
-          <button id="btnResetEngineConfig" class="btn btn-ghost">恢复默认路径</button>
-          <button id="btnReanalyze" class="btn btn-ghost">用当前设置重新分析</button>
+          <button id="btnSaveEngineConfig" class="btn btn-primary">保存</button>
+          <button id="btnResetEngineConfig" class="btn btn-ghost">恢复默认位置</button>
+          <button id="btnReanalyze" class="btn btn-ghost">用现在的方式重看这局</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Modal: Help -->
   <div id="helpModal" class="modal-backdrop hidden">
-    <div class="modal modal-sm" role="dialog" aria-modal="true">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
       <div class="modal-header">
-        <h3>使用说明</h3>
-        <button class="modal-close" data-close="helpModal" aria-label="关闭">✕</button>
+        <h3 id="helpTitle">怎么用</h3>
+        <button class="modal-close" data-close="helpModal" aria-label="关闭">关闭</button>
       </div>
       <div class="modal-body">
         <ol class="help-steps">
-          <li>在顶部粘贴雀魂牌谱链接（需先登录账号），或导入牌谱文件。</li>
-          <li>用「复盘视角」选择要分析的玩家，「小局」切换东1局、东2局…</li>
-          <li>按 <kbd>↓</kbd> 逐个查看你的决策，右侧显示 AI 推荐与实战的差异。</li>
+          <li>把雀魂牌谱链接贴到顶部，点「开始复盘」。网上的牌谱要先登录。</li>
+          <li>「看谁的牌」选你自己，「第几局」切换东一局、东二局。</li>
+          <li>按 <kbd>↓</kbd> 一手一手看。右边第一句话就是你和 AI 差在哪。</li>
         </ol>
         <table class="kbd-table">
           <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一步 / 下一步</td></tr>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>上一个 / 下一个决策点</td></tr>
-          <tr><td><kbd>B</kbd></td><td>跳到下一处失误</td></tr>
-          <tr><td><kbd>H</kbd></td><td>显示 / 隐藏对手手牌</td></tr>
+          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>上一手 / 下一手该你决定的地方</td></tr>
+          <tr><td><kbd>B</kbd></td><td>下一处有问题的手</td></tr>
+          <tr><td><kbd>H</kbd></td><td>显示或隐藏对手手牌</td></tr>
           <tr><td><kbd>Home</kbd></td><td>回到本局开头</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>关闭弹窗</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>关闭窗口</td></tr>
         </table>
       </div>
     </div>
   </div>
 
-  <script src="/app.js?v=2.0"></script>
+  <script src="/app.js?v=2.1.1"></script>
 </body>
 </html>
