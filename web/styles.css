@@ -878,81 +878,64 @@ button {
   display: flex;
 }
 
-/* Bottom Player (P0 / 自家)
-   Row 0 (1-6巡) closest to hand (bottom); discards grow left to right */
 .grid-discard-p0 {
   grid-area: ad-p0;
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   justify-content: flex-start;
   align-items: flex-start;
 }
 .grid-discard-p0 .river-row {
   display: flex;
   flex-direction: row;
-  justify-content: flex-start;
   align-items: flex-end;
-  min-width: calc(6 * var(--tile-width));
   height: var(--tile-height);
 }
 
-/* Right Player (P1 / 下家)
-   Row 0 (1-6巡) closest to hand (right-most column, growing leftwards towards center)
-   Discards grow top to bottom (anchored strictly to top, empty slots at bottom) */
 .grid-discard-p1 {
   grid-area: ad-p1;
   display: flex;
-  flex-direction: row-reverse;
+  flex-direction: row;
+  align-self: end;
+  align-items: flex-end;
   justify-content: flex-start;
-  align-items: flex-start;
-  align-self: start;
 }
 .grid-discard-p1 .river-row {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: flex-start;
-  width: var(--tile-height);
-  min-height: calc(6 * var(--tile-width));
-}
-
-/* Top Player (P2 / 对家)
-   Row 0 (1-6巡) closest to hand (top-most row, growing downwards towards center)
-   Discards grow right to left (anchored strictly to right, empty slots at left) */
-.grid-discard-p2 {
-  grid-area: ad-p2;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: flex-end;
-}
-.grid-discard-p2 .river-row {
-  display: flex;
-  flex-direction: row-reverse;
-  justify-content: flex-start;
-  align-items: flex-end;
-  min-width: calc(6 * var(--tile-width));
-  height: var(--tile-height);
-}
-
-/* Left Player (P3 / 上家)
-   Row 0 (1-6巡) closest to hand (left-most column, growing rightwards towards center)
-   Discards grow bottom to top (anchored strictly to bottom, empty slots at top) */
-.grid-discard-p3 {
-  grid-area: ad-p3;
-  display: flex;
-  flex-direction: row;
-  justify-content: flex-start;
-  align-items: flex-end;
-  align-self: end;
-}
-.grid-discard-p3 .river-row {
   display: flex;
   flex-direction: column-reverse;
   justify-content: flex-start;
   align-items: flex-end;
   width: var(--tile-height);
-  min-height: calc(6 * var(--tile-width));
+}
+
+.grid-discard-p2 {
+  grid-area: ad-p2;
+  display: flex;
+  flex-direction: column-reverse;
+  justify-self: end;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+.grid-discard-p2 .river-row {
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-end;
+  height: var(--tile-height);
+}
+
+.grid-discard-p3 {
+  grid-area: ad-p3;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.grid-discard-p3 .river-row {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: var(--tile-height);
 }
 
 /* ============================================================================
@@ -966,7 +949,7 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 16px;
   margin: auto;
-  grid-template-columns: 15% 3% 65% 2% 15%;
+  grid-template-columns: 12% 1% 74% 1% 12%;
   grid-template-rows: repeat(5, 1fr);
   grid-template-areas:
     "ai-p3 ai-p2 ai-p2   ai-p2 ai-p2"
@@ -1020,17 +1003,23 @@ button {
   grid-area: ai-doras;
   display: flex;
   margin: auto;
-  gap: 2px;
+  gap: 2.5px;
+  align-items: center;
+  justify-content: center;
 }
 
 .info-doras > * > * {
-  width: calc(var(--tile-img-width) * 0.58);
-  height: calc(var(--tile-img-height) * 0.58);
+  width: calc(var(--tile-img-width) * 0.77);
+  height: calc(var(--tile-img-height) * 0.77);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
 .info-doras > * {
-  width: calc(var(--tile-img-width) * 0.58 + 4px);
-  height: calc(var(--tile-img-height) * 0.58 + 4px);
+  width: calc(var(--tile-img-width) * 0.77 + 2px);
+  height: calc(var(--tile-img-height) * 0.77 + 2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .gi-p0-outer, .gi-p1-outer, .gi-p2-outer, .gi-p3-outer {
