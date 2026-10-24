@@ -53,7 +53,7 @@ if not os.path.isfile(so_path):
     env = os.environ.copy()
     env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
     try:
-        subprocess.run(["cargo", "build", "-p", "libriichi", "--release"], cwd=os.path.join(root_dir, "vendor", "Mortal"), env=env, check=True)
+        subprocess.run(["cargo", "build", "-p", "libriichi", "--lib", "--release"], cwd=os.path.join(root_dir, "vendor", "Mortal"), env=env, check=True)
         found = False
         for root, dirs, files in os.walk(os.path.join(root_dir, "vendor", "Mortal", "target", "release")):
             for f in files:
