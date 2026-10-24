@@ -73,13 +73,12 @@ while time.time() - start_t < 30:
         break
 
 if tunnel_url:
+    one_click_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}"
     print("\n" + "=" * 65)
     print(" 🎉 云端 GPU AI 引擎已成功启动！")
     print(f" 👉 您的云端 API 服务地址为:  {tunnel_url}")
-    print(" 💡 使用方法：")
-    print("    1. 打开前端网页: https://majsoul-analyzer.pages.dev")
-    print(f"    2. 点击右上角 [🔌 服务状态] -> 填入上述地址 [{tunnel_url}] -> 点击保存")
-    print("    3. 即可在任何设备使用免费云端 GPU 进行极速复盘！")
+    print(f" 🔗 点击直接进入复盘网页 (已自动连接):")
+    print(f"    👉 {one_click_url}")
     print("=" * 65 + "\n")
 else:
     print("⚠️ 隧道地址解析超时，请检查日志。")

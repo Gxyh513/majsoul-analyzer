@@ -107,6 +107,13 @@ function currentEngine() {
 // API Calls & Backend Server Management
 // ============================================================================
 function getBackendUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const qBackend = params.get("backend");
+  if (qBackend) {
+    const cleanQ = qBackend.trim().replace(/\/+$/, "");
+    localStorage.setItem("majsoul_backend_url", cleanQ);
+    return cleanQ;
+  }
   const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
   const saved = localStorage.getItem("majsoul_backend_url");
   if (saved !== null) return saved.trim().replace(/\/+$/, "");
