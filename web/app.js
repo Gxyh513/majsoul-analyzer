@@ -15,8 +15,8 @@ const state = {
   serverStatus: null,
 };
 
-const STAGE_W = 720;
-const STAGE_H = 870;
+const STAGE_W = 920;
+const STAGE_H = 888;
 
 const WIND_CN = ["东", "南", "西", "北"];
 const TILE_CN_MAP = {
@@ -138,12 +138,12 @@ function updateTopbarStatus(st) {
 
   if (ms.logged_in) {
     dot.className = "status-dot online";
-    txt.textContent = ms.nickname || "已登录";
+    txt.textContent = "已登录";
     banner.className = "banner ok";
     banner.textContent = `已登录：${ms.nickname || "未知昵称"}（ID ${ms.account_id || "-"}）`;
   } else if (ms.has_saved_token || ms.saved_account) {
     dot.className = "status-dot saved";
-    txt.textContent = ms.nickname || "已保存账号";
+    txt.textContent = "已保存";
     banner.className = "banner warn";
     banner.textContent = `已保存登录凭证（${ms.saved_account || "Token"}），分析在线牌谱时会自动登录。`;
   } else {
@@ -245,24 +245,9 @@ function renderSummaryDashboard() {
   const res = state.reviewData;
   if (!res) return;
 
-  // Game title
-  const isDemo = String(state.gameId).startsWith("demo");
-  const room = res.meta?.room || "";
-  $("gameTitle").innerHTML = `${isDemo ? `<span class="demo-badge">示例</span>` : ""}${escapeHtml(room || state.gameId)}`;
-  $("gameTitle").title = room ? `${room} · ${state.gameId}` : state.gameId;
-
-  // 1. Seat switcher
-  const seatTabs = $("seatTabs");
-  seatTabs.innerHTML = res.names
-    .map((name, seat) => `
-      <button class="seg ${seat === res.target_actor ? "active" : ""}" data-seat="${seat}" role="tab" title="${escapeHtml(name)}">
-        <span class="seg-wind">${WIND_CN[seat]}起</span>
-        <span class="seg-name">${escapeHtml(name)}</span>
-      </button>`)
-    .join("");
-  seatTabs.querySelectorAll(".seg").forEach((btn) => {
-    btn.addEventListener("click", () => switchSeatPerspective(parseInt(btn.dataset.seat, 10)));
-  });
+  $("gameTitle").textContent = "";
+  $("gameTitle").title = "";
+  renderSeatTabs();
 
   // 2. Overview
   const sum = res.summary || {};
@@ -284,6 +269,30 @@ function renderSummaryDashboard() {
   renderKyokuPills();
 }
 
+function handWind(seat, kyoku) {
+  return WIND_CN[(seat - kyoku.oya + 4) % 4];
+}
+
+function renderSeatTabs() {
+  const res = state.reviewData;
+  if (!res) return;
+  const oya = res.kyokus?.[state.kyokuIdx]?.oya ?? 0;
+  const seatTabs = $("seatTabs");
+  seatTabs.innerHTML = res.names
+    .map((name, seat) => {
+      const wind = WIND_CN[(seat - oya + 4) % 4];
+      return `
+      <button class="seg ${seat === res.target_actor ? "active" : ""}" data-seat="${seat}" role="tab" title="${escapeHtml(name)}">
+        <span class="seg-wind">${wind}家</span>
+        <span class="seg-name">${escapeHtml(name)}</span>
+      </button>`;
+    })
+    .join("");
+  seatTabs.querySelectorAll(".seg").forEach((btn) => {
+    btn.addEventListener("click", () => switchSeatPerspective(parseInt(btn.dataset.seat, 10)));
+  });
+}
+
 function rateClass(rate) {
   if (rate >= 80) return "rate-good";
   if (rate >= 60) return "rate-mid";
@@ -302,10 +311,10 @@ function renderKyokuPills() {
       const rate = k.stats?.match_rate ?? 100;
       const blunders = k.stats?.blunders || 0;
       const endSum = (k.end_summaries || []).join(" · ");
-      const tip = `${k.label}${k.honba ? ` ${k.honba}本场` : ""} · 一致率 ${rate}%${blunders ? ` · ${blunders} 处恶手` : ""}${endSum ? `\n结果：${endSum}` : ""}`;
+      const tip = `${k.label} · 一致率 ${rate}%${blunders ? ` · ${blunders} 处恶手` : ""}${endSum ? `\n结果：${endSum}` : ""}`;
       return `
         <button class="kyoku-pill ${idx === state.kyokuIdx ? "active" : ""}" data-kidx="${idx}" title="${escapeHtml(tip)}">
-          <span>${escapeHtml(k.label)}${k.honba ? `<small>·${k.honba}</small>` : ""}</span>
+          <span>${escapeHtml(k.label)}</span>
           <span class="kyoku-rate ${rateClass(rate)}">${Math.round(rate)}%</span>
           ${blunders ? `<span class="kyoku-err">${blunders}</span>` : ""}
         </button>`;
@@ -314,13 +323,13 @@ function renderKyokuPills() {
   container.querySelectorAll(".kyoku-pill").forEach((btn) => {
     btn.addEventListener("click", () => selectKyoku(parseInt(btn.dataset.kidx, 10), true));
   });
-  container.querySelector(".kyoku-pill.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function selectKyoku(kIdx, jumpToFirstDecision = false) {
   const res = state.reviewData;
   if (!res || !res.kyokus[kIdx]) return;
   state.kyokuIdx = kIdx;
+  renderSeatTabs();
   renderKyokuPills();
 
   const kyoku = res.kyokus[kIdx];
@@ -429,9 +438,7 @@ function formatStepEventToast(ev, names) {
 const REL_POS = ["Bottom", "Right", "Top", "Left"];
 
 function renderBoard(kyoku, snap, activeDecision) {
-  const res = state.reviewData;
   const hero = state.targetActor;
-  const names = res.names;
 
   // Center status box
   $("centerRoundLabel").textContent = kyoku.label;
@@ -447,9 +454,10 @@ function renderBoard(kyoku, snap, activeDecision) {
 
   // Event text
   const isLast = state.stepIdx === kyoku.steps.length - 1;
+  const seatNames = [0, 1, 2, 3].map((seat) => `${handWind(seat, kyoku)}家`);
   $("centerEventToast").textContent = kyoku.end_summaries?.length && isLast
     ? `本局结果：${kyoku.end_summaries.join(" · ")}`
-    : formatStepEventToast(snap.event, names);
+    : formatStepEventToast(snap.event, seatNames);
 
   // Relative seat mapping: Bottom = hero, Right = (hero+1)%4, Top = (hero+2)%4, Left = (hero+3)%4
   REL_POS.forEach((pos, rel) => {
@@ -468,29 +476,29 @@ function renderBoard(kyoku, snap, activeDecision) {
 
 function renderCenterSeat(pos, seat, kyoku, snap) {
   const el = $(`cseat${pos}`);
-  const wind = WIND_CN[(seat - kyoku.oya + 4) % 4];
+  const wind = handWind(seat, kyoku);
   el.className = `cseat cseat-${pos.toLowerCase()}`;
   if (seat === kyoku.oya) el.classList.add("is-oya");
   if (snap.actor === seat) el.classList.add("is-turn");
   if (snap.riichi[seat]) el.classList.add("is-riichi");
-  el.innerHTML = `<b>${wind}</b><span class="cs-score">${snap.scores[seat]}</span>`;
-  el.title = `${state.reviewData.names[seat]} · ${snap.scores[seat]} 点`;
+  el.innerHTML = `<b>${wind}家</b><span class="cs-score">${snap.scores[seat]}</span>`;
+  el.title = `${wind}家 · ${snap.scores[seat]} 点`;
 }
 
-function renderPlayerHeader(pos, seat, kyoku, snap, names) {
+function renderPlayerHeader(pos, seat, kyoku, snap) {
   const el = $(`header${pos}`);
-  const seatWind = WIND_CN[(seat - kyoku.oya + 4) % 4];
+  const seatWind = handWind(seat, kyoku);
   const isOya = seat === kyoku.oya;
-  const windHtml = `<span class="wind-pill ${isOya ? "oya" : ""}">${seatWind}${isOya ? "·亲" : ""}</span>`;
+  const label = `${seatWind}家${isOya ? "·亲" : ""}`;
   const riichiHtml = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
   el.classList.toggle("is-turn", snap.actor === seat);
-  el.title = names[seat];
+  el.title = label;
   if (pos === "Bottom") {
-    el.innerHTML = `${windHtml}<span class="tag-name">${escapeHtml(names[seat])}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
+    el.innerHTML = `<span class="tag-name">${label}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
   } else {
     el.innerHTML = `
-      <div class="tag-line1">${windHtml}<span class="tag-name">${escapeHtml(names[seat])}</span></div>
-      <div class="tag-line2"><span class="tag-score">${snap.scores[seat]}</span> 点 ${riichiHtml}</div>`;
+      <div class="tag-line1"><span class="tag-name">${label}</span>${riichiHtml}</div>
+      <div class="tag-line2"><span class="tag-score">${snap.scores[seat]}</span> 点</div>`;
   }
 }
 
@@ -598,7 +606,7 @@ function renderHeroHand(seat, snap, activeDecision) {
     .map(({ pai, isDrawn }) => {
       const barInfo = tileBars[pai];
       const prob = barInfo ? barInfo.prob : 0;
-      const barHeight = prob > 0 ? Math.max(2, Math.round((prob / 100) * 30)) : 0;
+      const barHeight = prob > 0 ? Math.max(2, Math.round((prob / 100) * 26)) : 0;
 
       const cls = ["hero-slot"];
       if (isDrawn) cls.push("drawn");
