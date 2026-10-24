@@ -1,11 +1,20 @@
 # =============================================================================
-# Stage 1: Build Rust native extension (libriichi.so)
+# Stage 1: Build Rust native extension (libriichi.so) with Python 3.12 headers
 # =============================================================================
-FROM rust:latest AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    ca-certificates \
+    build-essential \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 COPY vendor/Mortal ./vendor/Mortal
 
@@ -18,9 +27,9 @@ WORKDIR /build/vendor/Mortal
 RUN cargo build -p libriichi --lib --release
 
 # =============================================================================
-# Stage 2: Production Python Runtime
+# Stage 2: Production Python 3.12 Runtime
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
