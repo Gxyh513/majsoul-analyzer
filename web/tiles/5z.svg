@@ -210,5 +210,8 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(0,-652.36216)" />
+     transform="translate(0,-652.36216)">
+    <rect x="50" y="712.36216" width="200" height="280" rx="16" ry="16" fill="none" stroke="#2b6cb0" stroke-width="12" stroke-linejoin="round" />
+    <rect x="64" y="726.36216" width="172" height="252" rx="10" ry="10" fill="none" stroke="#2b6cb0" stroke-width="4" stroke-opacity="0.6" stroke-linejoin="round" />
+  </g>
 </svg>
