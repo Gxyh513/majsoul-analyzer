@@ -1381,7 +1381,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
         const uVal = c.ukeire !== undefined && c.ukeire !== null ? `${c.ukeire} 张` : "-";
         const ukeireList = c.ukeire_tiles || [];
         const hasUkeireTiles = ukeireList.length > 0;
-        const isExpanded = (i === 0);
+        const isExpanded = false;
         const uCell = hasUkeireTiles
           ? `<div class="kd-ukeire-cell" title="点击展开/收起具体进张有效牌"><span>${uVal}</span><span class="kd-ukeire-arrow">▾</span></div>`
           : `<span>${uVal}</span>`;
@@ -1389,7 +1389,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
         const detailRow = hasUkeireTiles
           ? `
           <tr class="kd-cand-detail-row ${isExpanded ? '' : 'hidden'}" id="candDetail_${i}">
-            <td colspan="5" style="padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);">
+            <td colspan="5" style="padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);" onclick="event.stopPropagation()">
               <div class="kd-ukeire-container">
                 <div class="kd-ukeire-grid">
                   ${ukeireList.map(u => `
@@ -1869,18 +1869,13 @@ function bindEvents() {
       });
     });
   };
-  bindNavClick(["btnPrevKyoku"], jumpPrevKyoku);
-  bindNavClick(["btnNextKyoku"], jumpNextKyoku);
-  bindNavClick(["btnPrevBlunder", "btnPrevBlunderTop"], jumpPrevBlunder);
-  bindNavClick(["btnNextBlunder", "btnNextBlunderTop"], jumpNextBlunder);
-  bindNavClick(["btnPrevDec", "btnPrevDecTop"], jumpPrevDecision);
-  bindNavClick(["btnNextDec", "btnNextDecTop"], jumpNextDecision);
-  bindNavClick(["btnPrevStep", "btnPrevStepTop"], () => stepDelta(-1));
-  bindNavClick(["btnNextStep", "btnNextStepTop"], () => stepDelta(1));
+  bindNavClick(["btnPrevBlunderTop", "btnPrevBlunder"], jumpPrevBlunder);
+  bindNavClick(["btnNextBlunderTop", "btnNextBlunder"], jumpNextBlunder);
+  bindNavClick(["btnPrevDecTop", "btnPrevDec"], jumpPrevDecision);
+  bindNavClick(["btnNextDecTop", "btnNextDec"], jumpNextDecision);
 
   // Round modal
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);
-  $("btnRoundScoreHeader")?.addEventListener("click", openRoundScoresModal);
   $("gameSummaryPill")?.addEventListener("click", openRoundScoresModal);
   $("roundModalClose")?.addEventListener("click", () => closeModal("roundModal"));
 
