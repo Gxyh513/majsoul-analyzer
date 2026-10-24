@@ -892,33 +892,33 @@ button {
   flex-direction: row;
   justify-content: flex-start;
   align-items: flex-end;
-  width: calc(6 * var(--tile-width));
+  min-width: calc(6 * var(--tile-width));
   height: var(--tile-height);
 }
 
 /* Right Player (P1 / 下家)
    Row 0 (1-6巡) closest to hand (right-most column, growing leftwards towards center)
-   Discards grow bottom to top (anchored strictly to bottom, no floating) */
+   Discards grow top to bottom (anchored strictly to top, empty slots at bottom) */
 .grid-discard-p1 {
   grid-area: ad-p1;
   display: flex;
   flex-direction: row-reverse;
   justify-content: flex-start;
-  align-items: flex-end;
-  align-self: end;
+  align-items: flex-start;
+  align-self: start;
 }
 .grid-discard-p1 .river-row {
   display: flex;
-  flex-direction: column-reverse;
+  flex-direction: column;
   justify-content: flex-start;
-  align-items: flex-end;
+  align-items: flex-start;
   width: var(--tile-height);
-  height: calc(6 * var(--tile-width));
+  min-height: calc(6 * var(--tile-width));
 }
 
 /* Top Player (P2 / 对家)
    Row 0 (1-6巡) closest to hand (top-most row, growing downwards towards center)
-   Discards grow right to left (anchored strictly to right) */
+   Discards grow right to left (anchored strictly to right, empty slots at left) */
 .grid-discard-p2 {
   grid-area: ad-p2;
   display: flex;
@@ -931,27 +931,28 @@ button {
   flex-direction: row-reverse;
   justify-content: flex-start;
   align-items: flex-end;
-  width: calc(6 * var(--tile-width));
+  min-width: calc(6 * var(--tile-width));
   height: var(--tile-height);
 }
 
 /* Left Player (P3 / 上家)
    Row 0 (1-6巡) closest to hand (left-most column, growing rightwards towards center)
-   Discards grow top to bottom (anchored strictly to top) */
+   Discards grow bottom to top (anchored strictly to bottom, empty slots at top) */
 .grid-discard-p3 {
   grid-area: ad-p3;
   display: flex;
   flex-direction: row;
   justify-content: flex-start;
-  align-items: flex-start;
+  align-items: flex-end;
+  align-self: end;
 }
 .grid-discard-p3 .river-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   justify-content: flex-start;
-  align-items: flex-start;
+  align-items: flex-end;
   width: var(--tile-height);
-  height: calc(6 * var(--tile-width));
+  min-height: calc(6 * var(--tile-width));
 }
 
 /* ============================================================================
