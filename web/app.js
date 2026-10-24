@@ -15,8 +15,8 @@ const state = {
   serverStatus: null,
 };
 
-const STAGE_W = 820;
-const STAGE_H = 870;
+const STAGE_W = 750;
+const STAGE_H = 720;
 
 const WIND_CN = ["东", "南", "西", "北"];
 const TILE_CN_MAP = {
@@ -661,7 +661,7 @@ function renderHeroHand(seat, snap, activeDecision) {
         const isAct = c.action_cn === activeDecision.actual_cn;
         return `
           <span class="ab-chip ${isBest ? "is-best" : ""} ${isAct ? "is-actual" : ""}">
-            ${formatActionDisplay(c, "t-mini")}
+            ${formatActionDisplay(c, "t-inline")}
             <span class="ab-prob">${fmtPct(c.prob)}</span>
             ${isBest ? `<span class="mini-badge ai">AI</span>` : ""}
             ${isAct ? `<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">玩家</span>` : ""}
@@ -1116,7 +1116,7 @@ function fitStage() {
   }
 
   wrap.style.height = "";
-  const availableH = wrap.clientHeight || (window.innerHeight - 100);
+  const availableH = wrap.clientHeight || (window.innerHeight - 80);
   const maxAvailableW = Math.max(500, window.innerWidth - 440 - 48);
   const scale = Math.min(1.0, availableH / STAGE_H, maxAvailableW / STAGE_W);
   stage.style.setProperty("--stage-scale", Math.max(0.3, scale).toFixed(4));
