@@ -28,15 +28,34 @@
         />
       </div>
       <select id="engineSelect" class="select-ctrl" title="选择 AI 分析引擎">
-        <option value="auto">引擎: 自动 (优先 Mortal)</option>
-        <option value="builtin">引擎: 内置 SP+防守 (Rust)</option>
+        <option value="auto">引擎: 自动 (Mortal优先)</option>
+        <option value="builtin">引擎: SP+防守 (Rust)</option>
       </select>
-      <button id="btnAnalyzePaipu" class="btn btn-primary">开始分析</button>
-      <button id="btnLoadDemo" class="btn btn-accent" title="一键加载内置四麻多局演示牌谱">✨ 演示牌谱</button>
-      <button id="btnOpenJsonModal" class="btn btn-ghost" title="上传或粘贴雀魂 JSON / MJAI 牌谱">📂 本地 JSON</button>
+      <button id="btnAnalyzePaipu" class="btn btn-primary">分析</button>
+      <button id="btnLoadDemo" class="btn btn-accent" title="一键加载内置四麻多局演示牌谱">✨ 演示</button>
+      <button id="btnOpenJsonModal" class="btn btn-ghost" title="上传或粘贴雀魂 JSON / MJAI 牌谱">📂 JSON</button>
     </div>
 
     <div class="topbar-right">
+      <div class="appearance-bar" title="切换界面主题风格与自适应缩放大小">
+        <select id="themeSelect" class="select-ctrl select-compact" aria-label="界面主题风格">
+          <option value="majsoul">🀄 雀魂暗金</option>
+          <option value="naga">📊 NAGA深色</option>
+          <option value="light">☀️ 清爽浅色</option>
+          <option value="classic">🎋 雀庄和风</option>
+          <option value="auto">🌓 跟随系统</option>
+        </select>
+        <select id="scaleSelect" class="select-ctrl select-compact" aria-label="界面缩放大小">
+          <option value="auto">📐 自动适应</option>
+          <option value="0.85">🔍 紧凑 85%</option>
+          <option value="1">🔍 标准 100%</option>
+          <option value="1.12">🔍 宽松 112%</option>
+        </select>
+        <button id="btnToggleCompact" class="status-pill compact-toggle-btn" title="折叠/展开顶部概览栏，让牌桌与分析面板适应一屏高度">
+          <span id="compactToggleIcon">↕️</span>
+          <span id="compactToggleText">紧凑一屏</span>
+        </button>
+      </div>
       <button id="btnOpenAccountModal" class="status-pill" title="配置雀魂国服账号或拉取最近对局">
         <span id="msStatusDot" class="status-dot offline"></span>
         <span id="msStatusText">雀魂账号 / 最近对局</span>
