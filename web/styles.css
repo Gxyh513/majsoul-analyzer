@@ -1,5 +1,5 @@
 /* ==========================================================================
-   雀魂复盘 — v2.3
+   雀魂复盘 — v2.7
    房间跟着系统浅色/深色走，牌桌始终是一张绿台呢。
    ========================================================================== */
 
@@ -176,16 +176,17 @@ kbd {
 .game-title { display: none; }
 .game-title .demo-badge { color: var(--gold); border: 1px solid rgba(224, 194, 122, 0.45); border-radius: 4px; padding: 1px 6px; margin-right: 6px; font-size: 11px; }
 
-.seg-control { display: inline-flex; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; }
+.seg-control { display: inline-flex; background: none; border: none; padding: 0; gap: 14px; }
 .seg {
-  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
-  padding: 4px 12px; border-radius: 6px; color: var(--text-2); min-width: 0;
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+  padding: 6px 16px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-2); min-width: 0;
 }
-.seg:hover { color: var(--text); background: var(--surface-2); }
-.seg.active { background: var(--surface-3); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
-.seg-wind { font-size: 11px; color: var(--text-3); }
-.seg.active .seg-wind { color: var(--gold); }
-.seg-name { font-size: 12px; font-weight: 600; max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg:hover { color: var(--text); background: var(--surface-3); border-color: var(--border-strong); }
+.seg.active { background: var(--primary-soft); border-color: var(--primary); color: var(--text); box-shadow: inset 0 0 0 1px var(--primary); }
+.seg-wind { font-size: 12px; font-weight: 700; color: var(--text-3); }
+.seg.active .seg-wind { color: var(--primary); }
+.seg-name { font-size: 13px; font-weight: 600; max-width: 130px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg-sm .seg { padding: 3px 10px; font-size: 12px; }
 
 .kyoku-pills { display: flex; flex-wrap: wrap; gap: 6px; overflow: visible; padding: 2px 0; }
@@ -227,7 +228,7 @@ kbd {
 .seat-layer.pos-left { transform: rotate(90deg); }
 
 .river {
-  position: absolute; top: 478px; left: 255px; width: 210px;
+  position: absolute; top: 462px; left: 241px; width: 238px;
   display: flex; flex-wrap: wrap; align-content: flex-start; gap: 1px;
 }
 .opp-row {
@@ -238,6 +239,7 @@ kbd {
 .melds { display: flex; gap: 6px; align-items: flex-end; }
 .meld-group { display: flex; align-items: flex-end; gap: 0; }
 
+.name-tag, .hero-tag { display: none !important; }
 .name-tag {
   position: absolute; z-index: 3; display: flex; align-items: center; gap: 8px;
   width: auto; max-width: 180px; padding: 4px 8px; border-radius: 8px;
@@ -260,33 +262,33 @@ kbd {
 .riichi-tag { font-size: 10px; font-weight: 800; color: #fff; background: var(--blunder); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 
 .center-box {
-  position: absolute; left: 250px; top: 250px; width: 220px; height: 220px;
-  border-radius: 14px; background: rgba(8, 22, 18, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  position: absolute; left: 272px; top: 272px; width: 176px; height: 176px;
+  border-radius: 12px; background: rgba(8, 22, 18, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
 }
 .cseat {
-  position: absolute; display: flex; align-items: center; justify-content: center; gap: 6px;
-  font-variant-numeric: tabular-nums; color: #c9d8d1; font-size: 13px; border-radius: 6px;
+  position: absolute; display: flex; align-items: center; justify-content: center; gap: 4px;
+  font-variant-numeric: tabular-nums; color: #c9d8d1; font-size: 11.5px; border-radius: 4px;
 }
-.cseat b { color: #f4f7f5; font-size: 15px; }
-.cseat .cs-score { color: #fff; font-weight: 700; white-space: nowrap; font-size: 12px; }
+.cseat b { color: #f4f7f5; font-size: 13px; }
+.cseat .cs-score { color: #fff; font-weight: 700; white-space: nowrap; font-size: 11.5px; }
 .cseat.is-oya b { color: var(--gold); }
 .cseat.is-turn { background: rgba(224, 194, 122, 0.16); box-shadow: inset 0 0 0 1px rgba(224, 194, 122, 0.5); }
-.cseat.is-riichi::after { content: ""; position: absolute; width: 44px; height: 4px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px var(--blunder); }
-.cseat-top, .cseat-bottom { left: 46px; right: 46px; height: 28px; }
-.cseat-top { top: 6px; } .cseat-bottom { bottom: 6px; }
-.cseat-top.is-riichi::after { bottom: -4px; } .cseat-bottom.is-riichi::after { top: -4px; }
-.cseat-left, .cseat-right { top: 48px; bottom: 48px; width: 54px; flex-direction: column; gap: 2px; font-size: 12px; }
-.cseat-left { left: 6px; } .cseat-right { right: 6px; }
-.cseat-left.is-riichi::after, .cseat-right.is-riichi::after { width: 4px; height: 44px; }
-.cseat-left.is-riichi::after { right: -4px; } .cseat-right.is-riichi::after { left: -4px; }
+.cseat.is-riichi::after { content: ""; position: absolute; width: 36px; height: 3px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px var(--blunder); }
+.cseat-top, .cseat-bottom { left: 22px; right: 22px; height: 22px; }
+.cseat-top { top: 4px; } .cseat-bottom { bottom: 4px; }
+.cseat-top.is-riichi::after { bottom: -3px; } .cseat-bottom.is-riichi::after { top: -3px; }
+.cseat-left, .cseat-right { top: 24px; bottom: 24px; width: 44px; flex-direction: column; gap: 1px; font-size: 11px; }
+.cseat-left { left: 4px; } .cseat-right { right: 4px; }
+.cseat-left.is-riichi::after, .cseat-right.is-riichi::after { width: 3px; height: 36px; }
+.cseat-left.is-riichi::after { right: -3px; } .cseat-right.is-riichi::after { left: -3px; }
 .center-mid {
-  position: absolute; left: 58px; right: 58px; top: 34px; bottom: 34px;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  position: absolute; left: 42px; right: 42px; top: 22px; bottom: 22px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
 }
-.round-label { font-family: var(--kai); font-size: 28px; color: var(--gold); letter-spacing: 0.08em; }
-.center-sub { display: flex; gap: 10px; font-size: 11px; color: #c9d8d1; white-space: nowrap; }
+.round-label { font-family: var(--kai); font-size: 21px; color: var(--gold); letter-spacing: 0.04em; }
+.center-sub { display: flex; gap: 6px; font-size: 10px; color: #c9d8d1; white-space: nowrap; }
 .dora-row { display: flex; gap: 2px; }
 
 .hero-dock {
@@ -358,11 +360,11 @@ kbd {
 .mj-tile.tile-called { opacity: 0.45; }
 .mj-tile.tile-last { box-shadow: 0 0 0 2px var(--gold), 0 0 10px rgba(224, 194, 122, 0.7); z-index: 1; }
 .mj-tile.tile-side { transform: rotate(90deg); }
-.t-hero  { width: 56px; height: 78px; border-radius: 5px; border-bottom-width: 4px; }
-.t-opp   { width: 32px; height: 44px; }
-.t-river { width: 34px; height: 44px; }
-.t-meld  { width: 32px; height: 44px; }
-.t-hmeld { width: 44px; height: 60px; }
+.t-hero  { width: 60px; height: 84px; border-radius: 5px; border-bottom-width: 4px; }
+.t-opp   { width: 36px; height: 50px; }
+.t-river { width: 38px; height: 52px; }
+.t-meld  { width: 36px; height: 50px; }
+.t-hmeld { width: 48px; height: 66px; }
 .t-dora  { width: 18px; height: 24px; border-bottom-width: 2px; border-radius: 3px; }
 .t-inline { width: 26px; height: 36px; border-bottom-width: 2px; border-radius: 3px; }
 .t-mini  { width: 22px; height: 30px; border-bottom-width: 2px; border-radius: 3px; }
@@ -370,7 +372,7 @@ kbd {
 .t-meld.tile-side { margin: 0 6px; }
 .t-hmeld.tile-side { margin: 0 8px; }
 
-.replay { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px 8px; }
+.replay { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 14px 4px; }
 .timeline { position: relative; height: 22px; }
 .timeline-ticks { position: absolute; left: 7px; right: 7px; top: 0; height: 22px; pointer-events: none; }
 .tick { position: absolute; top: 2px; width: 4px; height: 8px; margin-left: -2px; border-radius: 2px; pointer-events: auto; cursor: pointer; }
