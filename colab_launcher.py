@@ -13,14 +13,18 @@ print("=" * 65)
 print(" 🚀 正在初始化 雀魂牌谱 AI 检讨系统 (云端 GPU 加速环境)...")
 print("=" * 65)
 
-# 1. Clone repository if not present
-if not os.path.isdir("majsoul-analyzer"):
+# 1. Determine project directory
+if os.path.isfile("run.py") and os.path.isdir("vendor/Mortal"):
+    root_dir = os.path.abspath(os.getcwd())
+elif os.path.isdir("majsoul-analyzer") and os.path.isfile("majsoul-analyzer/run.py"):
+    root_dir = os.path.abspath("majsoul-analyzer")
+else:
     print("📦 拉取最新代码...")
     subprocess.run(["git", "clone", "https://github.com/Gxyh513/majsoul-analyzer.git"], check=True)
-    os.chdir("majsoul-analyzer")
-else:
-    os.chdir("majsoul-analyzer")
-    subprocess.run(["git", "pull"], check=False)
+    root_dir = os.path.abspath("majsoul-analyzer")
+
+os.chdir(root_dir)
+subprocess.run(["git", "pull", "origin", "main"], check=False)
 
 # 2. Install Python dependencies
 print("📥 安装 Python 依赖...")
