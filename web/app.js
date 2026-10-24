@@ -170,17 +170,30 @@ function updateTopbarStatus(st) {
   }
 
   const eng = st.engine || {};
-  $("engineStatusText").textContent = eng.has_mortal_weights ? "神经网络" : "牌效";
+  $("engineStatusText").textContent = eng.has_mortal_weights
+    ? `${eng.model_name || "神经网络"} · ${eng.device || "CUDA"}`
+    : "牌效";
+
+  const sel = $("engineSelect");
+  if (sel && eng.available_models && eng.available_models.length) {
+    let opts = `<option value="auto">自动选择（优先使用最强模型）</option>`;
+    eng.available_models.forEach((m) => {
+      opts += `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`;
+    });
+    opts += `<option value="builtin">内置规则引擎（牌效与防守）</option>`;
+    sel.innerHTML = opts;
+    if (eng.selected_model) sel.value = eng.selected_model;
+  }
 
   $("engineModalDetail").innerHTML = `
-    <div><span class="k">现在用的</span>${escapeHtml(eng.model_tag || "-")}</div>
-    <div><span class="k">神经网络</span>${
+    <div><span class="k">当前模型</span>${escapeHtml(eng.model_name || "-")}（${escapeHtml(eng.model_tag || "-")}）</div>
+    <div><span class="k">权重文件</span>${
       eng.has_mortal_weights
         ? `<span class="good">已载入（${escapeHtml(eng.model_path)}）</span>`
-        : `<span class="warn">没找到权重文件，所以用牌效和防守</span>`
+        : `<span class="warn">未检测到模型文件，使用内置规则引擎</span>`
     }</div>
-    <div><span class="k">跑在</span>${escapeHtml(eng.device || "CPU")}</div>
-    ${eng.load_error ? `<div><span class="k">没载入的原因</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
+    <div><span class="k">计算硬件</span>${escapeHtml(eng.device || "CPU")} ${eng.device === "CUDA" ? '<span class="good">（英伟达显卡 CUDA 硬件加速已开启）</span>' : ""}</div>
+    ${eng.load_error ? `<div><span class="k">加载异常</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
   `;
 }
 
@@ -1334,11 +1347,12 @@ function bindEvents() {
 
   // Engine Config Save / Reset / Re-analyze
   $("btnSaveEngineConfig").addEventListener("click", async () => {
+    const selected_model = $("engineSelect")?.value || "auto";
     const model_path = $("modelPathInput").value.trim();
     try {
       await apiFetch("/api/engine/config", {
         method: "POST",
-        body: JSON.stringify({ model_path: model_path || null }),
+        body: JSON.stringify({ selected_model, model_path: model_path || null }),
       });
       await refreshServerStatus();
       showToast("引擎设置已保存", "success");
