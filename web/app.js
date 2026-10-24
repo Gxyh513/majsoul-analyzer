@@ -106,6 +106,8 @@ function currentEngine() {
 // ============================================================================
 // API Calls & Backend Server Management
 // ============================================================================
+const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show?studio_token=39607f51-2d00-4fdd-9ee1-c121d670b498";
+
 function getBackendUrl() {
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has("backend")) {
@@ -114,11 +116,11 @@ function getBackendUrl() {
     return b;
   }
   const saved = localStorage.getItem("majsoul_backend_url");
-  if (saved !== null && saved !== undefined) return saved.trim().replace(/\/+$/, "");
+  if (saved !== null && saved !== undefined && saved !== "") return saved.trim().replace(/\/+$/, "");
 
-  // If hosted on Cloudflare Pages, default to localhost
-  if (window.location.hostname.endsWith("pages.dev")) {
-    return "http://localhost:8000";
+  // If hosted on Cloudflare Pages or custom domain, default to the production ModelScope backend
+  if (window.location.hostname.endsWith("pages.dev") || window.location.hostname.includes("ccwu.cc")) {
+    return DEFAULT_MODELSCOPE_BACKEND;
   }
   // If served directly from backend server (ModelScope *.ms.show, Render, local FastAPI), default to same origin ("")
   return "";
