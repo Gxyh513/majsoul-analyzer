@@ -502,7 +502,7 @@ function renderSeatTabs() {
       const active = seat === res.target_actor ? "active" : "";
       const displayName = getPlayerDisplayName(seat);
       return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${escapeHtml(displayName)}">
-        <b>${wind}家</b> ${escapeHtml(displayName)}
+        <span class="kd-seat-wind">${wind}家</span><span class="kd-seat-name">${escapeHtml(displayName)}</span>
       </button>`;
     })
     .join("");
@@ -737,13 +737,13 @@ function renderBoard(kyoku, snap, activeDecision) {
   const p3 = (hero + 3) % 4; // Left
 
   const giP0 = $("giP0");
-  if (giP0) giP0.textContent = `${handWind(hero, kyoku)} ${snap.scores[hero] ?? 25000}`;
+  if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${snap.scores[hero] ?? 25000}</span>`;
   const giP1 = $("giP1");
-  if (giP1) giP1.textContent = `${handWind(p1, kyoku)} ${snap.scores[p1] ?? 25000}`;
+  if (giP1) giP1.innerHTML = `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${snap.scores[p1] ?? 25000}</span>`;
   const giP2 = $("giP2");
-  if (giP2) giP2.textContent = `${handWind(p2, kyoku)} ${snap.scores[p2] ?? 25000}`;
+  if (giP2) giP2.innerHTML = `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${snap.scores[p2] ?? 25000}</span>`;
   const giP3 = $("giP3");
-  if (giP3) giP3.textContent = `${handWind(p3, kyoku)} ${snap.scores[p3] ?? 25000}`;
+  if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${snap.scores[p3] ?? 25000}</span>`;
 
   // Rivers
   renderPlayerRiver("Bottom", hero, snap, isRon, targetActor);
@@ -948,68 +948,51 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过")) {
     return `
       <div class="action-badge action-badge-pass" title="跳过 / 不鸣">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><path d="M5 4l8 8-8 8V4zm9 0l8 8-8 8V4z"/></svg>
-        </div>
-        <div class="action-badge-text">PASS</div>
+        <span class="action-badge-text">跳过</span>
       </div>
     `;
   }
   if (actType.includes("chi") || actType.includes("吃")) {
     return `
       <div class="action-badge action-badge-chi" title="吃牌">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-        </div>
-        <div class="action-badge-text">CHI</div>
+        <span class="action-badge-text">吃</span>
       </div>
     `;
   }
   if (actType.includes("pon") || actType.includes("碰")) {
     return `
       <div class="action-badge action-badge-pon" title="碰牌">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4" fill="currentColor"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>
-        </div>
-        <div class="action-badge-text">PON</div>
+        <span class="action-badge-text">碰</span>
       </div>
     `;
   }
   if (actType.includes("kan") || actType.includes("杠")) {
     return `
       <div class="action-badge action-badge-kan" title="杠牌">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="8" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="16" cy="12" r="1.5" fill="currentColor"/></svg>
-        </div>
-        <div class="action-badge-text">KAN</div>
+        <span class="action-badge-text">杠</span>
       </div>
     `;
   }
   if (actType.includes("riichi") || actType.includes("立直")) {
     return `
       <div class="action-badge action-badge-riichi" title="立直宣言">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><rect x="2" y="10" width="20" height="4" rx="2" fill="currentColor"/><circle cx="12" cy="12" r="2.2" fill="#ffffff"/></svg>
-        </div>
-        <div class="action-badge-text">RIICHI</div>
+        <span class="action-badge-text">立直</span>
       </div>
     `;
   }
   if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
+    const label = (actType.includes("ron") || actType.includes("荣")) ? "荣和" : (actType.includes("tsumo") || actType.includes("自摸")) ? "自摸" : "和牌";
     return `
-      <div class="action-badge action-badge-hora" title="和牌">
-        <div class="action-badge-icon">
-          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/></svg>
-        </div>
-        <div class="action-badge-text">WIN</div>
+      <div class="action-badge action-badge-hora" title="${label}">
+        <span class="action-badge-text">${label}</span>
       </div>
     `;
   }
 
+  const defaultLabel = actionCn ? escapeHtml(actionCn) : "等待";
   return `
     <div class="action-badge action-badge-pass" style="opacity:0.65;">
-      <div class="action-badge-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg></div>
-      <div class="action-badge-text">--</div>
+      <span class="action-badge-text">${defaultLabel}</span>
     </div>
   `;
 }
@@ -1869,10 +1852,14 @@ function bindEvents() {
       });
     });
   };
-  bindNavClick(["btnPrevBlunderTop", "btnPrevBlunder"], jumpPrevBlunder);
-  bindNavClick(["btnNextBlunderTop", "btnNextBlunder"], jumpNextBlunder);
-  bindNavClick(["btnPrevDecTop", "btnPrevDec"], jumpPrevDecision);
-  bindNavClick(["btnNextDecTop", "btnNextDec"], jumpNextDecision);
+  bindNavClick(["btnPrevKyoku"], jumpPrevKyoku);
+  bindNavClick(["btnNextKyoku"], jumpNextKyoku);
+  bindNavClick(["btnPrevBlunder", "btnPrevBlunderTop"], jumpPrevBlunder);
+  bindNavClick(["btnNextBlunder", "btnNextBlunderTop"], jumpNextBlunder);
+  bindNavClick(["btnPrevDec", "btnPrevDecTop"], jumpPrevDecision);
+  bindNavClick(["btnNextDec", "btnNextDecTop"], jumpNextDecision);
+  bindNavClick(["btnPrevStep", "btnPrevStepTop"], () => stepDelta(-1));
+  bindNavClick(["btnNextStep", "btnNextStepTop"], () => stepDelta(1));
 
   // Round modal
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);

@@ -44,45 +44,56 @@
   --apple-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   --apple-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.6);
   --apple-blur: blur(20px);
-  --color-table-bg: rgba(22, 22, 24, 0.82);
-  --color-table-border: rgba(255, 255, 255, 0.12);
+  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #1c1c24 0%, #08080a 75%);
+  --color-table-bg: linear-gradient(135deg, #18181b 0%, #202025 100%);
+  --color-table-border: rgba(255, 255, 255, 0.14);
+  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --color-text-secondary: rgba(235, 235, 245, 0.65);
 }
 
-/* Theme: 🀄 经典雀庄翠绿 (Majsoul Green) */
+/* Theme: 🀄 经典雀庄翠绿 (Majsoul Green) - 纯正雀庄细腻毛毡桌布与沉浸式环境 */
 [data-theme="majsoul-green"] {
-  --color-main: #0a140e;
+  --color-main: #06110a;
+  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #0d2818 0%, #040d07 80%);
   --color-accent: #0f2217;
   --color-accent2: #163625;
   --color-accent3: #1f4d35;
-  --color-table-bg: rgba(16, 44, 29, 0.88);
-  --color-table-border: rgba(52, 199, 89, 0.3);
-  --apple-card-bg: rgba(18, 38, 27, 0.78);
-  --apple-card-elevated: rgba(24, 52, 37, 0.82);
+  --color-table-bg: linear-gradient(135deg, #133e24 0%, #1a5030 50%, #113620 100%);
+  --color-table-border: rgba(52, 199, 89, 0.35);
+  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.65), inset 0 0 50px rgba(8, 26, 15, 0.65);
+  --apple-card-bg: rgba(14, 34, 22, 0.82);
+  --apple-card-elevated: rgba(20, 48, 32, 0.86);
+  --apple-border: 1px solid rgba(52, 199, 89, 0.22);
 }
 
-/* Theme: 🌊 深海藏青 (Midnight Navy) */
+/* Theme: 🌊 深海藏青 (Midnight Navy) - 低饱和深邃午夜蓝 */
 [data-theme="midnight-navy"] {
-  --color-main: #060b14;
+  --color-main: #040912;
+  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #0e223d 0%, #03070e 80%);
   --color-accent: #0c1728;
   --color-accent2: #12233c;
   --color-accent3: #1a3255;
-  --color-table-bg: rgba(14, 28, 48, 0.88);
-  --color-table-border: rgba(10, 132, 255, 0.28);
-  --apple-card-bg: rgba(16, 32, 54, 0.78);
-  --apple-card-elevated: rgba(22, 44, 74, 0.82);
+  --color-table-bg: linear-gradient(135deg, #0e223d 0%, #16365c 50%, #0c1c33 100%);
+  --color-table-border: rgba(10, 132, 255, 0.32);
+  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.65), inset 0 0 50px rgba(5, 15, 28, 0.65);
+  --apple-card-bg: rgba(14, 28, 48, 0.82);
+  --apple-card-elevated: rgba(20, 42, 72, 0.86);
+  --apple-border: 1px solid rgba(10, 132, 255, 0.22);
 }
 
-/* Theme: ⬛ 极夜 OLED 纯黑 (True Black) */
+/* Theme: ⬛ 极夜 OLED 纯黑 (True Black) - 全黑无光纯粹高对比 */
 [data-theme="true-black"] {
   --color-main: #000000;
+  --color-bg-gradient: linear-gradient(180deg, #050505 0%, #000000 100%);
   --color-accent: #08080a;
   --color-accent2: #121214;
   --color-accent3: #1a1a1e;
-  --color-table-bg: rgba(5, 5, 6, 0.96);
-  --color-table-border: rgba(255, 255, 255, 0.18);
-  --apple-card-bg: rgba(16, 16, 18, 0.85);
-  --apple-card-elevated: rgba(26, 26, 30, 0.9);
+  --color-table-bg: #070707;
+  --color-table-border: rgba(255, 255, 255, 0.2);
+  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.85), inset 0 0 1px 1px rgba(255, 255, 255, 0.08);
+  --apple-card-bg: rgba(16, 16, 18, 0.92);
+  --apple-card-elevated: rgba(26, 26, 30, 0.95);
+  --apple-border: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 * {
@@ -105,12 +116,13 @@ body {
   color: var(--color-text);
   line-height: 1.5;
   background-color: var(--color-main);
-  background-image: radial-gradient(circle at 50% 0%, #1c1c1e 0%, #000000 70%);
+  background-image: var(--color-bg-gradient);
   background-attachment: fixed;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
 a {
@@ -311,13 +323,14 @@ button {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(18, 18, 20, 0.88);
+  background: var(--apple-card-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: var(--apple-border);
   display: flex;
   flex-direction: column;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .kd-header-row {
@@ -354,7 +367,40 @@ button {
 .kd-step-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+.kd-step-group {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.kd-step-group .kd-step-btn {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 5px 11px;
+}
+
+.kd-step-group .kd-step-btn:not(:last-child) {
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.kd-step-group .kd-step-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.kd-step-group .kd-step-btn.blunder {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.10);
+}
+
+.kd-step-group .kd-step-btn.blunder:hover {
+  background: rgba(255, 69, 58, 0.22);
 }
 
 .kd-step-btn {
@@ -472,6 +518,29 @@ button {
 
 .kd-tab:active {
   transform: scale(0.96);
+}
+
+.kd-seat-wind {
+  color: rgba(255, 255, 255, 0.48);
+  font-weight: 500;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  margin-right: 5px;
+  letter-spacing: 0.3px;
+  transition: all 0.18s ease;
+}
+
+.kd-tab.active .kd-seat-wind {
+  color: #ffcc00;
+  background: rgba(255, 204, 0, 0.18);
+  font-weight: 700;
+}
+
+.kd-seat-name {
+  color: var(--color-text-bright);
+  font-weight: 600;
 }
 
 .kd-header-mid {
@@ -628,8 +697,9 @@ button {
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--color-table-border);
   border-radius: 20px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  box-shadow: var(--color-table-shadow, 0 12px 40px rgba(0, 0, 0, 0.55)), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   overflow: hidden;
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .grid-hand {
@@ -808,27 +878,34 @@ button {
   display: flex;
 }
 
+/* Bottom Player (P0 / 自家)
+   Row 0 (1-6巡) closest to hand (bottom); discards grow left to right */
 .grid-discard-p0 {
   grid-area: ad-p0;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   justify-content: flex-start;
   align-items: flex-start;
 }
 .grid-discard-p0 .river-row {
   display: flex;
   flex-direction: row;
+  justify-content: flex-start;
   align-items: flex-end;
+  width: calc(6 * var(--tile-width));
   height: var(--tile-height);
 }
 
+/* Right Player (P1 / 下家)
+   Row 0 (1-6巡) closest to hand (right-most column, growing leftwards towards center)
+   Discards grow bottom to top (anchored strictly to bottom, no floating) */
 .grid-discard-p1 {
   grid-area: ad-p1;
   display: flex;
-  flex-direction: row;
-  align-self: end;
-  align-items: flex-end;
+  flex-direction: row-reverse;
   justify-content: flex-start;
+  align-items: flex-end;
+  align-self: end;
 }
 .grid-discard-p1 .river-row {
   display: flex;
@@ -836,29 +913,37 @@ button {
   justify-content: flex-start;
   align-items: flex-end;
   width: var(--tile-height);
+  height: calc(6 * var(--tile-width));
 }
 
+/* Top Player (P2 / 对家)
+   Row 0 (1-6巡) closest to hand (top-most row, growing downwards towards center)
+   Discards grow right to left (anchored strictly to right) */
 .grid-discard-p2 {
   grid-area: ad-p2;
   display: flex;
-  flex-direction: column-reverse;
-  justify-self: end;
+  flex-direction: column;
+  justify-content: flex-start;
   align-items: flex-end;
-  justify-content: flex-end;
 }
 .grid-discard-p2 .river-row {
   display: flex;
   flex-direction: row-reverse;
+  justify-content: flex-start;
   align-items: flex-end;
+  width: calc(6 * var(--tile-width));
   height: var(--tile-height);
 }
 
+/* Left Player (P3 / 上家)
+   Row 0 (1-6巡) closest to hand (left-most column, growing rightwards towards center)
+   Discards grow top to bottom (anchored strictly to top) */
 .grid-discard-p3 {
   grid-area: ad-p3;
   display: flex;
-  flex-direction: row-reverse;
-  align-items: flex-start;
+  flex-direction: row;
   justify-content: flex-start;
+  align-items: flex-start;
 }
 .grid-discard-p3 .river-row {
   display: flex;
@@ -866,6 +951,7 @@ button {
   justify-content: flex-start;
   align-items: flex-start;
   width: var(--tile-height);
+  height: calc(6 * var(--tile-width));
 }
 
 /* ============================================================================
@@ -887,11 +973,13 @@ button {
     "ai-p3 .    ai-tiles   .     ai-p1"
     "ai-p3 .    ai-doras   .     ai-p1"
     "ai-p0 ai-p0 ai-p0   ai-p0 ai-p1";
-  background: rgba(36, 36, 38, 0.88);
+  background: var(--apple-card-bg);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-table-border);
   box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.12), 0 8px 24px rgba(0, 0, 0, 0.45);
   overflow: hidden;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .info-round {
@@ -978,6 +1066,18 @@ button {
   margin: calc(var(--zoom) * 10px) auto;
 }
 
+.gi-wind {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 500;
+  margin-right: 4px;
+}
+
+.gi-score {
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
 /* ============================================================================
    Mortal Discard Bars SVG (Apple Green Bars)
    ============================================================================ */
@@ -1009,13 +1109,14 @@ button {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   padding: 10px;
-  background: rgba(28, 28, 30, 0.72);
+  background: var(--apple-card-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: var(--apple-border);
   border-radius: 16px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   gap: 8px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .controls > * {
@@ -1043,16 +1144,17 @@ button {
 
 /* Active Decision Details Card — Apple HIG Design */
 .kd-decision-card {
-  background: rgba(28, 28, 30, 0.72);
+  background: var(--apple-card-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: var(--apple-border);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
   border-radius: 18px;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .kd-dec-header {
@@ -1504,29 +1606,28 @@ button {
 
 /* Extracted Keyboard Shortcuts Card */
 .kd-shortcuts-card {
-  background: rgba(28, 28, 30, 0.72);
+  background: var(--apple-card-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: var(--apple-border);
   border-radius: 16px;
   padding: 14px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .kd-appearance-card {
   margin-top: 0;
 }
 
-/* Non-Discard & Meld Action Badges (Apple Frosted Glass) */
+/* Non-Discard & Meld Action Badges (Pure Typography, Apple HIG Finish) */
 .action-badge {
   width: calc(var(--tile-img-width) * 1.15);
   height: calc(var(--tile-img-height) * 1.05);
   border-radius: 10px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
   background: rgba(44, 44, 46, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -1534,24 +1635,15 @@ button {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   flex-shrink: 0;
-}
-
-.action-badge-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.action-badge-icon svg {
-  width: 22px;
-  height: 22px;
+  user-select: none;
 }
 
 .action-badge-text {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: calc(var(--zoom) * 16px + 2px);
+  font-weight: 800;
   letter-spacing: 0.5px;
-  text-transform: uppercase;
+  line-height: 1;
+  text-align: center;
 }
 
 /* Specific Action Flavors */
@@ -1560,42 +1652,36 @@ button {
   border-color: rgba(48, 209, 88, 0.35);
   color: #30d158;
 }
-.action-badge-pass .action-badge-icon svg { fill: #30d158; }
 
 .action-badge-chi {
   background: linear-gradient(135deg, rgba(14, 55, 80, 0.9), rgba(10, 32, 50, 0.95));
   border-color: rgba(100, 210, 255, 0.35);
   color: #70d7ff;
 }
-.action-badge-chi .action-badge-icon svg { fill: #70d7ff; }
 
 .action-badge-pon {
   background: linear-gradient(135deg, rgba(80, 48, 12, 0.9), rgba(50, 28, 6, 0.95));
   border-color: rgba(255, 179, 64, 0.35);
   color: #ffb340;
 }
-.action-badge-pon .action-badge-icon svg { fill: #ffb340; }
 
 .action-badge-kan {
   background: linear-gradient(135deg, rgba(60, 25, 80, 0.9), rgba(36, 12, 50, 0.95));
   border-color: rgba(218, 143, 255, 0.35);
   color: #da8fff;
 }
-.action-badge-kan .action-badge-icon svg { fill: #da8fff; }
 
 .action-badge-riichi {
   background: linear-gradient(135deg, rgba(80, 20, 20, 0.9), rgba(48, 10, 10, 0.95));
   border-color: rgba(255, 69, 58, 0.4);
   color: #ff453a;
 }
-.action-badge-riichi .action-badge-icon svg { fill: #ff453a; }
 
 .action-badge-hora {
   background: linear-gradient(135deg, rgba(16, 75, 36, 0.9), rgba(10, 44, 20, 0.95));
   border-color: rgba(48, 209, 88, 0.45);
   color: #30d158;
 }
-.action-badge-hora .action-badge-icon svg { fill: #30d158; }
 
 /* Table Score Diff Cell Highlights */
 .score-pos {
