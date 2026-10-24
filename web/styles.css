@@ -1356,9 +1356,6 @@ code {
 }
 
 @media (max-width: 720px) {
-  :root {
-    --zoom: min(1, max(0.46, calc((100vw - 16px) / 655)));
-  }
   .outer {
     margin: 8px auto;
     padding: 0 4px;
