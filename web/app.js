@@ -481,8 +481,8 @@ function renderCenterSeat(pos, seat, kyoku, snap) {
   if (seat === kyoku.oya) el.classList.add("is-oya");
   if (snap.actor === seat) el.classList.add("is-turn");
   if (snap.riichi[seat]) el.classList.add("is-riichi");
-  el.innerHTML = `<b>${wind}家</b><span class="cs-score">${snap.scores[seat]}</span>`;
-  el.title = `${wind}家 · ${snap.scores[seat]} 点`;
+  el.innerHTML = `<b>${wind}</b><span class="cs-score">${snap.scores[seat]}</span>`;
+  el.title = `${wind}家 ${snap.scores[seat]}`;
 }
 
 function renderPlayerHeader(pos, seat, kyoku, snap) {
@@ -492,14 +492,8 @@ function renderPlayerHeader(pos, seat, kyoku, snap) {
   const label = `${seatWind}家${isOya ? "·亲" : ""}`;
   const riichiHtml = snap.riichi[seat] ? `<span class="riichi-tag">立直</span>` : "";
   el.classList.toggle("is-turn", snap.actor === seat);
-  el.title = label;
-  if (pos === "Bottom") {
-    el.innerHTML = `<span class="tag-name">${label}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
-  } else {
-    el.innerHTML = `
-      <div class="tag-line1"><span class="tag-name">${label}</span>${riichiHtml}</div>
-      <div class="tag-line2"><span class="tag-score">${snap.scores[seat]}</span> 点</div>`;
-  }
+  el.title = `${label} ${snap.scores[seat]}`;
+  el.innerHTML = `<span class="tag-name">${label}</span><span class="tag-score">${snap.scores[seat]}</span>${riichiHtml}`;
 }
 
 function renderPlayerRiver(pos, seat, snap) {
@@ -571,9 +565,14 @@ function renderHeroHand(seat, snap, activeDecision) {
 
   if (activeDecision) {
     verdictPill.className = `verdict-pill ${activeDecision.verdict}`;
-    verdictPill.textContent = activeDecision.is_equal
-      ? `${activeDecision.verdict_cn} · 与 AI 一致`
-      : `${activeDecision.verdict_cn} · AI：${activeDecision.expected_cn}`;
+    const isDahai = activeDecision.expected?.type === "dahai" && activeDecision.expected.pai;
+    if (activeDecision.is_equal) {
+      verdictPill.innerHTML = `${activeDecision.verdict_cn} · 与 AI 一致`;
+    } else if (isDahai) {
+      verdictPill.innerHTML = `${activeDecision.verdict_cn} · AI切 ${renderTileHtml(activeDecision.expected.pai, "t-mini")}`;
+    } else {
+      verdictPill.textContent = `${activeDecision.verdict_cn} · AI：${activeDecision.expected_cn}`;
+    }
   } else {
     verdictPill.className = "verdict-pill hidden";
   }
@@ -650,10 +649,12 @@ function renderHeroHand(seat, snap, activeDecision) {
 // ============================================================================
 // Right Column: Decision panel, candidates, decision list
 // ============================================================================
-function renderActionWithTile(actObj, actionCn) {
+function renderActionWithTile(actObj, actionCn, sizeClass = "t-hmeld") {
   if (!actObj) return `<span>${escapeHtml(actionCn || "--")}</span>`;
-  const tile = actObj.pai && actObj.type === "dahai" ? renderTileHtml(actObj.pai, "t-inline") : "";
-  return `${tile}<span>${escapeHtml(actionCn)}</span>`;
+  if (actObj.type === "dahai" && actObj.pai) {
+    return renderTileHtml(actObj.pai, sizeClass);
+  }
+  return `<span>${escapeHtml(actionCn)}</span>`;
 }
 
 function tagClass(t) {
@@ -669,7 +670,9 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
   const list = $("candidatesList");
   const actualSide = actBox.parentElement;
 
-  const headline = $("decHeadline");
+  const aiLabel = $("compareAiLabel");
+  const actLabel = $("compareActualLabel");
+
   if (!dec) {
     badge.className = "verdict-pill neutral";
     badge.textContent = "还没有";
@@ -678,7 +681,8 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
     $("decQLossChip").textContent = "还没比较";
     $("decQLossChip").title = "和 AI 最想下的那一手比，差多少。";
     $("decFuritenChip").classList.add("hidden");
-    if (headline) headline.textContent = "还没轮到这个玩家做决定。按 ↓ 跳到第一手。";
+    if (aiLabel) aiLabel.textContent = "AI切";
+    if (actLabel) actLabel.textContent = "玩家切";
     aiBox.innerHTML = "--";
     actBox.innerHTML = "--";
     actualSide.classList.remove("is-diff");
@@ -688,15 +692,19 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
 
   badge.className = `verdict-pill ${dec.verdict}`;
   badge.textContent = isExactStep ? dec.verdict_cn : `${dec.verdict_cn}，上一手`;
-  if (headline) headline.textContent = isExactStep ? decisionSentence(dec) : `上一手。${decisionSentence(dec)}`;
   $("decTurnChip").textContent = `第 ${dec.junme} 巡 · 余 ${dec.tiles_left} 张`;
   $("decShantenChip").textContent = shantenText(dec.shanten);
   $("decQLossChip").textContent = VERDICT_NOTE[dec.verdict] || "已比较";
   $("decQLossChip").title = `和 AI 最想下的那一手比，差距是 ${dec.q_loss.toFixed(3)}。数字越大，差得越远。`;
   $("decFuritenChip").classList.toggle("hidden", !dec.at_furiten);
 
-  aiBox.innerHTML = `${renderActionWithTile(dec.expected, dec.expected_cn)}<span class="cc-sub good">${fmtPct(dec.best_prob)}</span>`;
-  actBox.innerHTML = `${renderActionWithTile(dec.actual, dec.actual_cn)}<span class="cc-sub ${dec.is_equal ? "same" : "bad"}">${fmtPct(dec.actual_prob)} · 第 ${dec.actual_rank} 选择</span>`;
+  const isDahaiAi = dec.expected?.type === "dahai";
+  const isDahaiAct = dec.actual?.type === "dahai";
+  if (aiLabel) aiLabel.textContent = isDahaiAi ? "AI切" : "AI选择";
+  if (actLabel) actLabel.textContent = isDahaiAct ? "玩家切" : "玩家选择";
+
+  aiBox.innerHTML = `${renderActionWithTile(dec.expected, dec.expected_cn, "t-hmeld")}<span class="cc-sub good">${fmtPct(dec.best_prob)}</span>`;
+  actBox.innerHTML = `${renderActionWithTile(dec.actual, dec.actual_cn, "t-hmeld")}<span class="cc-sub ${dec.is_equal ? "same" : "bad"}">${fmtPct(dec.actual_prob)} · 第 ${dec.actual_rank} 选择</span>`;
   actualSide.classList.toggle("is-diff", !dec.is_equal);
 
   list.innerHTML = dec.candidates
@@ -730,8 +738,7 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
           <div class="cand-main">
             <span class="cand-rank">#${c.rank}</span>
             <div class="cand-action">
-              ${isDiscard ? renderTileHtml(c.pai, "t-inline") : ""}
-              <span>${escapeHtml(c.action_cn)}</span>
+              ${isDiscard ? renderTileHtml(c.pai, "t-inline") : `<span>${escapeHtml(c.action_cn)}</span>`}
               <span class="cand-badges">${badges.join("")}</span>
             </div>
             <div>
@@ -787,8 +794,11 @@ function scrollIntoContainer(container, el) {
 }
 
 function renderDecActCell(label, actObj, actionCn, pct) {
-  const tile = actObj?.pai && actObj.type === "dahai" ? renderTileHtml(actObj.pai, "t-mini") : "";
-  return `<span class="dr-act"><span class="lbl">${label}</span>${tile}<span class="txt">${escapeHtml(actionCn)}</span><span class="pct">${pct.toFixed(0)}%</span></span>`;
+  const isDiscard = actObj?.type === "dahai" && actObj.pai;
+  const tile = isDiscard ? renderTileHtml(actObj.pai, "t-mini") : "";
+  const txt = isDiscard ? "" : `<span class="txt">${escapeHtml(actionCn)}</span>`;
+  const lbl = isDiscard ? `${label}切` : label;
+  return `<span class="dr-act"><span class="lbl">${lbl}</span>${tile}${txt}<span class="pct">${pct.toFixed(0)}%</span></span>`;
 }
 
 function renderKyokuDecisionList(kyoku) {
@@ -808,7 +818,7 @@ function renderKyokuDecisionList(kyoku) {
       <div class="dec-row v-${d.verdict}" data-decidx="${d.decision_idx}" data-step="${d.step_idx}">
         <span class="dr-turn">第 ${d.junme} 巡</span>
         ${renderDecActCell("AI", d.expected, d.expected_cn, d.best_prob)}
-        ${renderDecActCell("实战", d.actual, d.actual_cn, d.actual_prob)}
+        ${renderDecActCell("玩家", d.actual, d.actual_cn, d.actual_prob)}
         <span class="verdict-pill ${d.verdict}">${VERDICT_SHORT[d.verdict] || d.verdict_cn}</span>
       </div>`)
     .join("");
@@ -1159,6 +1169,31 @@ function bindEvents() {
     setLoading(true, "正在用新设置重新分析...");
     await reanalyzeCurrent(state.targetActor, state.kyokuIdx);
   });
+
+  // Wheel over the table: one notch moves a step. Shift jumps a decision.
+  let wheelQueued = 0;
+  let wheelShift = false;
+  let wheelFrame = 0;
+  $("stageWrap").addEventListener("wheel", (e) => {
+    if (!state.reviewData) return;
+    e.preventDefault();
+    wheelQueued += Math.sign(e.deltaY);
+    wheelShift = e.shiftKey;
+    if (wheelFrame) return;
+    wheelFrame = requestAnimationFrame(() => {
+      const dir = Math.sign(wheelQueued);
+      const ticks = Math.min(4, Math.abs(wheelQueued));
+      const shifted = wheelShift;
+      wheelQueued = 0;
+      wheelFrame = 0;
+      if (!dir) return;
+      if (shifted) {
+        for (let i = 0; i < ticks; i++) (dir > 0 ? jumpNextDecision : jumpPrevDecision)();
+      } else {
+        setStep(state.stepIdx + dir * ticks);
+      }
+    });
+  }, { passive: false });
 
   // Stage scaling
   new ResizeObserver(() => fitStage()).observe($("stageWrap"));
