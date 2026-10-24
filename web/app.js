@@ -277,9 +277,6 @@ function renderSummaryDashboard() {
   $("metricMatchBar").style.width = `${Math.min(100, sum.match_rate || 0)}%`;
   $("metricBlunders").textContent = sum.blunders || 0;
   $("metricInaccuracies").textContent = sum.inaccuracies || 0;
-  $("metricEngineTag").textContent = res.engine?.type === "mortal"
-    ? "这次用神经网络做的判断"
-    : "这次用牌效和防守做的判断";
 
   // 3. Kyoku pills
   renderKyokuPills();
@@ -622,13 +619,13 @@ function renderHeroHand(seat, snap, activeDecision) {
       .map((c) => {
         const isBest = c.rank === 1;
         const isAct = c.action_cn === activeDecision.actual_cn;
+        const isDiscardAction = c.pai && c.label <= 36;
         return `
           <span class="ab-chip ${isBest ? "is-best" : ""} ${isAct ? "is-actual" : ""}">
-            ${c.pai && c.label <= 36 ? renderTileHtml(c.pai, "t-mini") : ""}
-            <span>${escapeHtml(c.action_cn)}</span>
+            ${isDiscardAction ? renderTileHtml(c.pai, "t-mini") : `<span>${escapeHtml(c.action_cn)}</span>`}
             <span class="ab-prob">${fmtPct(c.prob)}</span>
             ${isBest ? `<span class="mini-badge ai">AI</span>` : ""}
-            ${isAct ? `<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">实战</span>` : ""}
+            ${isAct ? `<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">玩家</span>` : ""}
           </span>`;
       })
       .join("");
@@ -651,7 +648,7 @@ function renderHeroHand(seat, snap, activeDecision) {
 
       let badges = "";
       if (barInfo?.is_best) badges += `<span class="mini-badge ai">AI</span>`;
-      if (barInfo?.is_actual) badges += `<span class="mini-badge ${barInfo.is_best ? "act-ok" : "act-bad"}">实战</span>`;
+      if (barInfo?.is_actual) badges += `<span class="mini-badge ${barInfo.is_best ? "act-ok" : "act-bad"}">玩家</span>`;
 
       const probText = barInfo && prob >= 0.5 ? `${prob.toFixed(prob >= 10 ? 0 : 1)}%` : "";
       const tip = barInfo
@@ -816,7 +813,7 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
 
       const badges = [];
       if (isBest) badges.push(`<span class="mini-badge ai">AI</span>`);
-      if (isActual) badges.push(`<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">实战</span>`);
+      if (isActual) badges.push(`<span class="mini-badge ${isBest ? "act-ok" : "act-bad"}">玩家</span>`);
 
       const stats = [];
       if (c.win_prob > 0) stats.push(`<span class="stat-text">和率 ${c.win_prob}%</span>`);
@@ -1065,8 +1062,10 @@ function renderSavedHistoryList(items) {
 function toggleOpenHands() {
   state.openHands = !state.openHands;
   const btn = $("btnToggleOpenHands");
-  btn.textContent = `对手手牌: ${state.openHands ? "显示" : "隐藏"}`;
-  btn.classList.toggle("is-on", state.openHands);
+  if (btn) {
+    btn.textContent = `对手手牌: ${state.openHands ? "显示" : "隐藏"}`;
+    btn.classList.toggle("is-on", state.openHands);
+  }
   if (state.reviewData) setStep(state.stepIdx);
 }
 
@@ -1113,7 +1112,7 @@ function bindEvents() {
   $("btnNextDec").addEventListener("click", jumpNextDecision);
   $("btnNextBlunder").addEventListener("click", jumpNextBlunder);
   $("btnQuickNextBlunder").addEventListener("click", jumpNextBlunder);
-  $("btnToggleOpenHands").addEventListener("click", toggleOpenHands);
+  $("btnToggleOpenHands")?.addEventListener("click", toggleOpenHands);
 
   // Click opponent hand on board to toggle open/closed hands
   document.querySelectorAll(".opp-hand, .opp-row").forEach((el) => {
@@ -1152,6 +1151,16 @@ function bindEvents() {
       e.preventDefault();
       actions[e.key]();
     }
+  });
+
+  // Prevent browser text selection and double-click shadow over tiles and board
+  window.addEventListener("dblclick", (e) => {
+    if (["INPUT", "TEXTAREA"].includes(e.target?.tagName)) return;
+    e.preventDefault();
+  });
+  window.addEventListener("selectstart", (e) => {
+    if (["INPUT", "TEXTAREA"].includes(e.target?.tagName)) return;
+    e.preventDefault();
   });
 
   // Modals open/close
