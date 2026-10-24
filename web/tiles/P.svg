@@ -1,54 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 400" width="300" height="400">
   <defs>
-    <!-- Gentle Jade/Ivory ambient sheen -->
-    <linearGradient id="hakuSheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.65" />
-      <stop offset="35%" stop-color="#f8fafc" stop-opacity="0.2" />
-      <stop offset="100%" stop-color="#e2e8f0" stop-opacity="0.45" />
+    <!-- Soft warm porcelain ambient lighting -->
+    <linearGradient id="porcelainSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="45%" stop-color="#fafaf9" stop-opacity="0.6" />
+      <stop offset="100%" stop-color="#f4f4f5" stop-opacity="0.35" />
     </linearGradient>
 
-    <!-- Subtle inner bevel highlight -->
-    <linearGradient id="innerBevel" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.8" />
-      <stop offset="100%" stop-color="#cbd5e1" stop-opacity="0.2" />
+    <!-- Gentle top-left lighting bevel -->
+    <linearGradient id="bevelLight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="#e4e4e7" stop-opacity="0.4" />
     </linearGradient>
 
-    <!-- Classic Deep Navy Blue for traditional Riichi double frame -->
-    <linearGradient id="frameGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1e4e79" />
-      <stop offset="100%" stop-color="#153655" />
+    <!-- Micro inner bevel stroke -->
+    <linearGradient id="innerEdge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#e2e8f0" stop-opacity="0.5" />
     </linearGradient>
   </defs>
 
-  <!-- Central Inner Beveled Platform (Pure Jade / Ivory Texture) -->
-  <rect x="44" y="54" width="212" height="292" rx="20" ry="20" fill="url(#hakuSheen)" />
+  <!-- Central Inner Beveled Platform (Pure Elegant Bone-China Surface) -->
+  <rect x="42" y="52" width="216" height="296" rx="20" ry="20" fill="url(#porcelainSheen)" />
 
-  <!-- Outer Elegant Frame -->
-  <rect x="48" y="58" width="204" height="284" rx="16" ry="16" fill="none" stroke="url(#frameGrad)" stroke-width="5.5" stroke-linejoin="round" />
+  <!-- Soft porcelain micro-contour (Neutral soft ivory-white, zero blue) -->
+  <rect x="44" y="54" width="212" height="292" rx="18" ry="18" fill="none" stroke="url(#innerEdge)" stroke-width="2.5" />
 
-  <!-- Outer Bevel Micro-Highlight -->
-  <rect x="50" y="60" width="200" height="280" rx="14" ry="14" fill="none" stroke="url(#innerBevel)" stroke-width="1.2" opacity="0.75" />
-
-  <!-- Inner Delicate Frame -->
-  <rect x="62" y="72" width="176" height="256" rx="10" ry="10" fill="none" stroke="url(#frameGrad)" stroke-width="2.5" stroke-opacity="0.9" stroke-linejoin="round" />
-
-  <!-- Traditional 4-Corner Accent Ornaments -->
-  <!-- Top Left -->
-  <path d="M 57 82 L 57 73 Q 57 67 63 67 L 72 67" fill="none" stroke="url(#frameGrad)" stroke-width="2" stroke-linecap="round" />
-  <circle cx="70" cy="80" r="2.5" fill="#1e4e79" />
-
-  <!-- Top Right -->
-  <path d="M 243 82 L 243 73 Q 243 67 237 67 L 228 67" fill="none" stroke="url(#frameGrad)" stroke-width="2" stroke-linecap="round" />
-  <circle cx="230" cy="80" r="2.5" fill="#1e4e79" />
-
-  <!-- Bottom Left -->
-  <path d="M 57 318 L 57 327 Q 57 333 63 333 L 72 333" fill="none" stroke="url(#frameGrad)" stroke-width="2" stroke-linecap="round" />
-  <circle cx="70" cy="320" r="2.5" fill="#1e4e79" />
-
-  <!-- Bottom Right -->
-  <path d="M 243 318 L 243 327 Q 243 333 237 333 L 228 333" fill="none" stroke="url(#frameGrad)" stroke-width="2" stroke-linecap="round" />
-  <circle cx="230" cy="320" r="2.5" fill="#1e4e79" />
-
-  <!-- Center Soft Diamond Watermark Accent -->
-  <path d="M 150 190 L 158 200 L 150 210 L 142 200 Z" fill="none" stroke="#1e4e79" stroke-width="1.5" stroke-opacity="0.35" />
+  <!-- Subtle inner ambient reflection -->
+  <rect x="48" y="58" width="204" height="284" rx="14" ry="14" fill="none" stroke="url(#bevelLight)" stroke-width="1.2" opacity="0.6" />
 </svg>
