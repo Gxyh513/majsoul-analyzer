@@ -8,3 +8,5 @@ data/config.json
 data/config.local.json
 
 .wrangler/
+
+cloudflared.exe
