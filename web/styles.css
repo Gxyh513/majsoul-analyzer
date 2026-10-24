@@ -239,54 +239,110 @@ kbd {
   left: 0;
   top: 4px;
   width: 750px;
-  height: 720px;
+  height: 740px;
   transform-origin: left top;
   transform: scale(var(--stage-scale, 1));
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background: transparent;
-  overflow: hidden;
-}
-
-/* 牌桌 (绿台): 包含四家牌河、中央场况框、对手手牌 */
-.board {
-  position: relative;
-  width: 740px;
-  height: 526px;
-  margin: 0 auto;
-  border-radius: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 8px;
   background: var(--felt);
+  border-radius: 14px;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.05), var(--shadow);
   overflow: hidden;
 }
 
+/* 对手手牌区: 单击切换显示/隐藏 */
+.opp-dock {
+  cursor: pointer;
+  transition: opacity 0.15s ease, filter 0.15s ease;
+}
+.opp-dock:hover {
+  filter: brightness(1.12);
+}
+.opp-dock-top {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.middle-arena {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.opp-dock-left, .opp-dock-right {
+  width: 60px;
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.opp-hand { display: flex; gap: 0; }
+.opp-hand-v {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.opp-hand-v .t-opp {
+  width: 32px;
+  height: 25px;
+}
+.opp-melds-v {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.opp-melds-v .t-meld {
+  width: 30px;
+  height: 24px;
+}
+.melds { display: flex; gap: 6px; align-items: flex-end; }
+.opp-melds-v {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meld-group { display: flex; align-items: flex-end; gap: 0; }
+
+/* 牌桌中庭 (纯牌河与场况框): 480px x 480px 正方形，无手牌杂音 */
+.board {
+  position: relative;
+  width: 480px;
+  height: 480px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.42);
+  box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
 .seat-layer {
-  position: absolute; left: 0; top: 0; width: 740px; height: 500px;
-  transform-origin: 370px 248px; pointer-events: none;
+  position: absolute; left: 0; top: 0; width: 480px; height: 480px;
+  transform-origin: 240px 240px; pointer-events: none;
 }
 .seat-layer.pos-right { transform: rotate(-90deg); }
 .seat-layer.pos-top { transform: rotate(180deg); }
 .seat-layer.pos-left { transform: rotate(90deg); }
 
-/* 牌河: 严格 6 列，宽度与场况框 204px 100% 对齐，紧贴场况框下沿 */
+/* 牌河: 严格 6 列，宽度 204px 与场况框 100% 对齐，紧贴场况框下沿 */
 .river {
   position: absolute;
-  top: 350px;
-  left: 268px;
+  top: 342px;
+  left: 138px;
   width: 204px;
   display: grid;
   grid-template-columns: repeat(6, 34px);
   grid-auto-rows: 46px;
   gap: 0px;
 }
-.opp-row {
-  position: absolute; left: 0; right: 0; bottom: 38px;
-  display: flex; justify-content: center; align-items: flex-end; gap: 10px;
-}
-.opp-hand { display: flex; gap: 0; }
-.melds { display: flex; gap: 6px; align-items: flex-end; }
-.meld-group { display: flex; align-items: flex-end; gap: 0; }
 
 .name-tag, .hero-tag { display: none !important; }
 .name-tag {
@@ -312,8 +368,8 @@ kbd {
 
 .center-box {
   position: absolute;
-  left: 268px;
-  top: 146px;
+  left: 138px;
+  top: 138px;
   width: 204px;
   height: 204px;
   border-radius: 6px;
