@@ -355,37 +355,37 @@ kbd {
 .t-meld.tile-side { margin: 0 5px; }
 .t-hmeld.tile-side { margin: 0 6px; }
 
-.replay { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 14px 4px; }
-.timeline { position: relative; height: 22px; }
-.timeline-ticks { position: absolute; left: 7px; right: 7px; top: 0; height: 22px; pointer-events: none; }
-.tick { position: absolute; top: 2px; width: 4px; height: 8px; margin-left: -2px; border-radius: 2px; pointer-events: auto; cursor: pointer; }
+/* NAGA / KillerDucky 经典双列控制盘 */
+.ctrl-card { padding: 10px 12px 8px; }
+.controls-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.ctrl-btn {
+  height: 34px; padding: 0 10px; border-radius: 6px; font-weight: 700; font-size: 12.5px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  display: flex; align-items: center; justify-content: center; white-space: nowrap;
+}
+.ctrl-btn:hover { background: var(--surface-3); border-color: var(--border-strong); }
+.ctrl-btn:active { transform: translateY(1px); }
+.ctrl-btn.btn-focus { background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.5); color: #93c5fd; }
+.ctrl-btn.btn-focus:hover { background: rgba(59, 130, 246, 0.32); }
+.ctrl-btn.btn-danger { background: rgba(244, 63, 94, 0.15); border-color: rgba(244, 63, 94, 0.45); color: #fda4af; }
+.ctrl-btn.btn-danger:hover { background: rgba(244, 63, 94, 0.26); }
+
+.timeline-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.timeline { position: relative; height: 18px; flex: 1; }
+.timeline-ticks { position: absolute; left: 6px; right: 6px; top: 0; height: 18px; pointer-events: none; }
+.tick { position: absolute; top: 1px; width: 4px; height: 8px; margin-left: -2px; border-radius: 2px; pointer-events: auto; cursor: pointer; }
 .tick.best { background: var(--best); opacity: 0.55; }
 .tick.ok { background: var(--ok); }
 .tick.question { background: var(--question); height: 10px; }
 .tick.blunder { background: var(--blunder); height: 12px; width: 5px; }
-.step-slider { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 8px; -webkit-appearance: none; appearance: none; background: transparent; }
+.step-slider { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 6px; -webkit-appearance: none; appearance: none; background: transparent; }
 .step-slider::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--surface-3); }
-.step-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%; background: var(--gold); border: 2px solid #fff; cursor: pointer; }
+.step-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%; background: var(--gold); border: 2px solid #fff; cursor: pointer; }
 .step-slider::-moz-range-track { height: 4px; border-radius: 2px; background: var(--surface-3); }
 .step-slider::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--gold); border: 2px solid #fff; }
-.replay-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
-.step-counter { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 70px; }
-.ctrl-group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center; }
-.ctrl {
-  height: 30px; min-width: 34px; padding: 0 8px; border-radius: 6px;
-  background: var(--surface-2); border: 1px solid var(--border); color: var(--text); font-size: 12px; font-weight: 600; white-space: nowrap;
-}
-.ctrl:hover { background: var(--surface-3); border-color: var(--border-strong); }
-.ctrl-wide { padding: 0 11px; }
-.ctrl-primary { background: rgba(224, 194, 122, 0.16); border-color: rgba(224, 194, 122, 0.5); color: var(--gold); }
-.ctrl-primary:hover { background: rgba(224, 194, 122, 0.28); }
-.ctrl-danger { background: rgba(180, 51, 42, 0.12); border-color: rgba(180, 51, 42, 0.45); color: var(--bad-ink); }
-.ctrl-danger:hover { background: rgba(212, 83, 74, 0.28); }
-.ctrl.is-on { color: var(--text); }
-.ctrl-sep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 4px; }
-.legend { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-3); white-space: nowrap; }
-.legend .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-left: 6px; }
-.dot.best { background: var(--best); } .dot.ok { background: var(--ok); } .dot.question { background: var(--question); } .dot.blunder { background: var(--blunder); }
+.step-counter { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 55px; }
 
 .panel-col {
   display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0;
