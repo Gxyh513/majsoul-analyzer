@@ -216,7 +216,6 @@ function applyReviewResult(res, preserveKyokuIdx = 0) {
 
   renderSummaryDashboard();
   selectKyoku(state.kyokuIdx, true);
-  requestAnimationFrame(() => updateAdaptiveSizing());
 }
 
 function renderSummaryDashboard() {
@@ -821,14 +820,11 @@ function renderKyokuDecisionList(kyoku) {
 
 function highlightActiveDecisionInList(decIdx) {
   const container = document.getElementById("decisionListContainer");
-  if (!container) return;
   container.querySelectorAll(".decision-row").forEach((row) => {
     const isMatch = parseInt(row.dataset.decidx, 10) === decIdx;
     row.classList.toggle("active", isMatch);
     if (isMatch) {
-      const rowTop = row.offsetTop - container.offsetTop;
-      const targetScroll = rowTop - container.clientHeight / 2 + row.clientHeight / 2;
-      container.scrollTo({ top: Math.max(0, targetScroll), behavior: "smooth" });
+      row.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   });
 }
@@ -897,8 +893,8 @@ function renderSavedHistoryList(items) {
       return `
         <div class="recent-game-item">
           <div>
-            <div style="font-weight:700;color:var(--text-main)">${item.uuid}</div>
-            <div style="font-size:11px;color:var(--text-secondary)">${namesStr}</div>
+            <div style="font-weight:700;color:#e2e8f0">${item.uuid}</div>
+            <div style="font-size:11px;color:#94a3b8">${namesStr}</div>
           </div>
           <button class="btn btn-sm btn-primary btn-analyze-uuid" data-uuid="${item.uuid}">分析此局</button>
         </div>
@@ -912,111 +908,6 @@ function renderSavedHistoryList(items) {
       document.getElementById("accountModal").classList.add("hidden");
       analyzePaipuInput();
     });
-  });
-}
-
-// ============================================================================
-// Adaptive Theme & Responsive Sizing Controller
-// ============================================================================
-const appearance = {
-  theme: localStorage.getItem("mjs_theme") || "majsoul",
-  scale: localStorage.getItem("mjs_scale") || "auto",
-  compact: localStorage.getItem("mjs_compact") || "auto",
-};
-
-function applyTheme(themePref) {
-  appearance.theme = themePref;
-  localStorage.setItem("mjs_theme", themePref);
-  let resolved = themePref;
-  if (themePref === "auto") {
-    const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-    resolved = prefersLight ? "light" : "majsoul";
-  }
-  document.documentElement.dataset.theme = resolved;
-  const sel = document.getElementById("themeSelect");
-  if (sel && sel.value !== themePref) sel.value = themePref;
-}
-
-function applyCompactMode(compactPref) {
-  appearance.compact = compactPref;
-  localStorage.setItem("mjs_compact", compactPref);
-  const isCompact =
-    compactPref === "true" ||
-    (compactPref === "auto" && window.innerHeight < 860 && window.innerWidth >= 960);
-  document.body.classList.toggle("compact-mode", isCompact);
-  const btn = document.getElementById("btnToggleCompact");
-  const txt = document.getElementById("compactToggleText");
-  if (btn) btn.classList.toggle("active-pill", isCompact);
-  if (txt) txt.textContent = isCompact ? "展开概览" : "紧凑一屏";
-}
-
-function updateAdaptiveSizing() {
-  if (appearance.compact === "auto") {
-    applyCompactMode("auto");
-  }
-
-  const scalePref = appearance.scale;
-  const sel = document.getElementById("scaleSelect");
-  if (sel && sel.value !== scalePref) sel.value = scalePref;
-
-  const boardCol = document.querySelector(".board-column");
-  const boardW = boardCol ? boardCol.clientWidth : window.innerWidth * 0.52;
-  const vh = window.innerHeight;
-  const topbarH = document.querySelector(".topbar")?.offsetHeight || 48;
-  const summaryH = document.getElementById("summarySection")?.offsetHeight || 86;
-  const availH = Math.max(420, vh - topbarH - summaryH - 28);
-
-  if (scalePref !== "auto") {
-    const manualScale = parseFloat(scalePref) || 1;
-    document.documentElement.style.setProperty("--ui-scale", manualScale.toFixed(3));
-    const fitW = Math.min(1, Math.max(0.68, boardW / (650 * manualScale)));
-    document.documentElement.style.setProperty("--board-scale", fitW.toFixed(3));
-  } else {
-    document.documentElement.style.setProperty("--ui-scale", "1");
-    const widthScale = Math.min(1.06, Math.max(0.64, boardW / 650));
-    const heightScale =
-      window.innerWidth >= 1080
-        ? Math.min(1.05, Math.max(0.64, (availH - 96) / 655))
-        : 1.0;
-    const autoBoardScale = Math.min(widthScale, heightScale);
-    document.documentElement.style.setProperty("--board-scale", autoBoardScale.toFixed(3));
-  }
-}
-
-function initAppearanceAndSizing() {
-  applyTheme(appearance.theme);
-  applyCompactMode(appearance.compact);
-  updateAdaptiveSizing();
-
-  // Listen for system color-scheme changes
-  if (window.matchMedia) {
-    window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-      if (appearance.theme === "auto") applyTheme("auto");
-    });
-  }
-
-  // Observe board column & window resize
-  window.addEventListener("resize", updateAdaptiveSizing);
-  const boardCol = document.querySelector(".board-column");
-  if (boardCol && window.ResizeObserver) {
-    const ro = new ResizeObserver(() => updateAdaptiveSizing());
-    ro.observe(boardCol);
-  }
-
-  document.getElementById("themeSelect")?.addEventListener("change", (e) => {
-    applyTheme(e.target.value);
-  });
-
-  document.getElementById("scaleSelect")?.addEventListener("change", (e) => {
-    appearance.scale = e.target.value;
-    localStorage.setItem("mjs_scale", appearance.scale);
-    updateAdaptiveSizing();
-  });
-
-  document.getElementById("btnToggleCompact")?.addEventListener("click", () => {
-    const currentlyCompact = document.body.classList.contains("compact-mode");
-    applyCompactMode(currentlyCompact ? "false" : "true");
-    updateAdaptiveSizing();
   });
 }
 
@@ -1204,7 +1095,6 @@ function bindEvents() {
 // Initialize App on DOMContentLoaded
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
-  initAppearanceAndSizing();
   bindEvents();
   await refreshServerStatus();
   await loadDemoGame(0);
