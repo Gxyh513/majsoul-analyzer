@@ -785,7 +785,7 @@ function generateDecisionReason(dec) {
   if (!reasons.length) {
     const bestTags = (best.tags || []).filter((t) => t !== "最");
     if (bestTags.length) {
-      reasons.push(`AI理由：${bestTags.join(" · ")}`);
+      reasons.push(`${bestTags.join(" · ")}`);
     } else {
       reasons.push(`AI判断最优概率达 ${best.prob.toFixed(1)}%（实战 ${actual.prob.toFixed(1)}%）`);
     }
@@ -1021,6 +1021,40 @@ function jumpNextDecision() {
   }
 }
 
+function jumpPrevKyoku() {
+  if (!state.reviewData) return;
+  if (state.kyokuIdx > 0) {
+    selectKyoku(state.kyokuIdx - 1, true);
+  }
+}
+
+function jumpNextKyoku() {
+  if (!state.reviewData) return;
+  if (state.kyokuIdx + 1 < (state.reviewData.kyokus?.length || 0)) {
+    selectKyoku(state.kyokuIdx + 1, true);
+  }
+}
+
+function jumpPrevBlunder() {
+  const res = state.reviewData;
+  if (!res || !res.kyokus) return;
+  const totalKyokus = res.kyokus.length;
+  for (let offset = 0; offset <= totalKyokus; offset++) {
+    const kIdx = (state.kyokuIdx - offset + totalKyokus) % totalKyokus;
+    const decs = [...(res.kyokus[kIdx].decisions || [])].reverse();
+    for (const d of decs) {
+      if (d.verdict !== "blunder" && d.verdict !== "question") continue;
+      if (offset === 0 && d.step_idx >= state.stepIdx) continue;
+      if (kIdx !== state.kyokuIdx) selectKyoku(kIdx, false);
+      setStep(d.step_idx);
+      switchTab("tabDecision");
+      showToast(`${res.kyokus[kIdx].label} 第 ${d.junme} 巡：${d.verdict_cn}`, "info");
+      return;
+    }
+  }
+  showToast("前面没有发现问题手", "info");
+}
+
 function jumpNextBlunder() {
   const res = state.reviewData;
   if (!res || !res.kyokus) return;
@@ -1150,16 +1184,17 @@ function bindEvents() {
   });
   $("btnLoadDemo").addEventListener("click", () => loadDemoGame(0));
 
-  // Replay controls
+  // NAGA / KillerDucky 控制盘事件
   $("stepSlider").addEventListener("input", (e) => setStep(parseInt(e.target.value, 10)));
-  $("btnStepStart").addEventListener("click", () => setStep(0));
-  $("btnPrevStep").addEventListener("click", () => stepDelta(-1));
-  $("btnNextStep").addEventListener("click", () => stepDelta(1));
-  $("btnPrevDec").addEventListener("click", jumpPrevDecision);
-  $("btnNextDec").addEventListener("click", jumpNextDecision);
-  $("btnNextBlunder").addEventListener("click", jumpNextBlunder);
-  $("btnQuickNextBlunder").addEventListener("click", jumpNextBlunder);
-  $("btnToggleOpenHands")?.addEventListener("click", toggleOpenHands);
+  $("btnPrevKyoku")?.addEventListener("click", jumpPrevKyoku);
+  $("btnNextKyoku")?.addEventListener("click", jumpNextKyoku);
+  $("btnPrevDec")?.addEventListener("click", jumpPrevDecision);
+  $("btnNextDec")?.addEventListener("click", jumpNextDecision);
+  $("btnPrevBlunder")?.addEventListener("click", jumpPrevBlunder);
+  $("btnNextBlunder")?.addEventListener("click", jumpNextBlunder);
+  $("btnQuickNextBlunder")?.addEventListener("click", jumpNextBlunder);
+  $("btnPrevStep")?.addEventListener("click", () => stepDelta(-1));
+  $("btnNextStep")?.addEventListener("click", () => stepDelta(1));
 
   // Click opponent hand on board to toggle open/closed hands
   document.querySelectorAll(".opp-hand, .opp-row").forEach((el) => {
