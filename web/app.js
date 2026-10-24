@@ -939,11 +939,7 @@ function renderMeldHtml(m, ownerSeat, pov = "bottom") {
 }
 
 function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
-  if (pai && pai !== "none" && pai !== "pass" && !pai.startsWith("none")) {
-    return `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg">`;
-  }
-
-  const actType = (actionObj?.type || actionObj?.action || actionCn || "pass").toLowerCase();
+  const actType = (actionObj?.type || actionObj?.action || actionCn || (pai ? "dahai" : "pass")).toLowerCase();
 
   if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过")) {
     return `
@@ -987,6 +983,10 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
         <span class="action-badge-text">${label}</span>
       </div>
     `;
+  }
+
+  if (pai && pai !== "none" && pai !== "pass" && !pai.startsWith("none")) {
+    return `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg">`;
   }
 
   const defaultLabel = actionCn ? escapeHtml(actionCn) : "等待";
@@ -1348,13 +1348,29 @@ function renderDecisionCard(dec, isExactStep, snap) {
     const rowsHtml = cands
       .map((c, i) => {
         const pai = c.pai || c.action?.pai;
-        const isTile = pai && pai !== "none" && pai !== "pass";
+        const actType = (c.action?.type || "").toLowerCase();
+        const isMeld = actType && actType !== "dahai";
+
+        let actionLabel = "切";
+        if (actType.includes("chi") || actType.includes("吃")) actionLabel = "吃";
+        else if (actType.includes("pon") || actType.includes("碰")) actionLabel = "碰";
+        else if (actType.includes("kan") || actType.includes("杠")) actionLabel = "杠";
+        else if (actType.includes("reach") || actType.includes("立直")) actionLabel = "立直";
+        else if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
+          actionLabel = (actType.includes("ron") || (c.action_cn && c.action_cn.includes("荣"))) ? "荣和" : (actType.includes("tsumo") || (c.action_cn && c.action_cn.includes("自摸"))) ? "自摸" : "和牌";
+        } else if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过")) {
+          actionLabel = "跳过";
+        } else if (isMeld) {
+          actionLabel = c.short_cn || c.action_cn || "动作";
+        }
+
+        const isTile = !isMeld && pai && pai !== "none" && pai !== "pass";
         const prob = fmtPct(c.prob);
         const isAct = (pai && pai === actPai) || c.action_cn === dec.actual_cn;
         const isAi = c.rank === 1;
-        const tileDisplay = isTile
+        const tileDisplay = (isTile || (pai && pai !== "none" && pai !== "pass"))
           ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="kd-cand-tile-img" title="${tileCn(pai)}">`
-          : `<span class="kd-cand-action" style="padding:3px 7px;">${escapeHtml(c.action_cn || "跳过")}</span>`;
+          : `<span class="kd-cand-action" style="padding:3px 7px;">${escapeHtml(actionLabel)}</span>`;
         const rowBg = isAct
           ? "background:rgba(255, 69, 58, 0.16);"
           : isAi
@@ -1390,7 +1406,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
         return `
           <tr class="kd-cand-row ${isExpanded ? 'is-expanded' : ''}" style="${rowBg}" onclick="toggleCandUkeire(event, ${i})">
-            <td><span class="kd-cand-action">${isTile ? "切" : escapeHtml(c.action_cn || "跳过")}</span></td>
+            <td><span class="kd-cand-action">${escapeHtml(actionLabel)}</span></td>
             <td style="text-align:center;">${tileDisplay}</td>
             <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
             <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal)}</span></td>
