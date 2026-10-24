@@ -170,9 +170,7 @@ function updateTopbarStatus(st) {
   }
 
   const eng = st.engine || {};
-  $("engineStatusText").textContent = eng.has_mortal_weights
-    ? `${eng.model_name || "神经网络"} · ${eng.device || "CUDA"}`
-    : "牌效";
+  $("engineStatusText").textContent = `${eng.model_name || "神经网络"} · ${eng.device || "CUDA"}`;
 
   const sel = $("engineSelect");
   if (sel && eng.available_models && eng.available_models.length) {
@@ -180,9 +178,10 @@ function updateTopbarStatus(st) {
     eng.available_models.forEach((m) => {
       opts += `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`;
     });
-    opts += `<option value="builtin">内置规则引擎（牌效与防守）</option>`;
     sel.innerHTML = opts;
-    if (eng.selected_model) sel.value = eng.selected_model;
+    if (eng.selected_model && eng.selected_model !== "builtin") {
+      sel.value = eng.selected_model;
+    }
   }
 
   $("engineModalDetail").innerHTML = `
@@ -190,7 +189,7 @@ function updateTopbarStatus(st) {
     <div><span class="k">权重文件</span>${
       eng.has_mortal_weights
         ? `<span class="good">已载入（${escapeHtml(eng.model_path)}）</span>`
-        : `<span class="warn">未检测到模型文件，使用内置规则引擎</span>`
+        : `<span class="warn">未检测到模型文件，请将 akagi.pth 或 mortal.pth 放入 data/models/</span>`
     }</div>
     <div><span class="k">计算硬件</span>${escapeHtml(eng.device || "CPU")} ${eng.device === "CUDA" ? '<span class="good">（英伟达显卡 CUDA 硬件加速已开启）</span>' : ""}</div>
     ${eng.load_error ? `<div><span class="k">加载异常</span><span class="bad">${escapeHtml(eng.load_error)}</span></div>` : ""}
@@ -916,9 +915,10 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
     row.addEventListener("click", () => toggleCandidate(parseInt(row.dataset.label, 10)));
   });
 
-  // Re-open previously expanded row (same step), otherwise expand the AI top choice
-  const openLabel = state.openCandLabel ?? dec.candidates[0]?.label;
-  if (openLabel !== undefined) toggleCandidate(openLabel, true, false);
+  // Only expand candidate ukeire if explicitly clicked by the user (do not default expand)
+  if (state.openCandLabel !== null && state.openCandLabel !== undefined) {
+    toggleCandidate(state.openCandLabel, true, false);
+  }
 }
 
 function toggleCandidate(label, forceOpen = false, scroll = true) {
@@ -1104,16 +1104,26 @@ const stackedMq = window.matchMedia("(max-width: 1099px)");
 function fitStage() {
   const wrap = $("stageWrap");
   const stage = $("stage");
-  const w = wrap.clientWidth;
-  let scale;
+  const col = wrap?.parentElement;
+  if (!wrap || !stage) return;
+
   if (stackedMq.matches) {
-    scale = Math.min(1, w / STAGE_W);
+    const w = wrap.clientWidth;
+    const scale = Math.min(1, w / STAGE_W);
     wrap.style.height = `${Math.ceil(STAGE_H * scale)}px`;
-  } else {
-    wrap.style.height = "";
-    scale = Math.min(w / STAGE_W, wrap.clientHeight / STAGE_H);
+    stage.style.setProperty("--stage-scale", Math.max(0.3, scale).toFixed(4));
+    return;
   }
+
+  wrap.style.height = "";
+  const availableH = wrap.clientHeight || (window.innerHeight - 100);
+  const maxAvailableW = Math.max(500, window.innerWidth - 440 - 48);
+  const scale = Math.min(1.0, availableH / STAGE_H, maxAvailableW / STAGE_W);
   stage.style.setProperty("--stage-scale", Math.max(0.3, scale).toFixed(4));
+
+  if (col) {
+    col.style.width = `${Math.ceil(STAGE_W * scale)}px`;
+  }
 }
 
 function openModal(id) {
