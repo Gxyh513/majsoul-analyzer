@@ -53,6 +53,47 @@ if _cfg.get("model_path"):
     p = Path(_cfg["model_path"])
     if p.is_file():
         engine_mgr.custom_pth = p
+if _cfg.get("selected_model"):
+    engine_mgr.selected_model = _cfg["selected_model"]
+
+
+def _download_akagi_if_missing():
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    akagi_path = MODELS_DIR / "akagi.pth"
+    if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
+        return
+    log.info("Starting background download of Akagi (v4 582k) weights...")
+    urls = [
+        "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
+        "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
+    ]
+    tmp_path = MODELS_DIR / "akagi.pth.tmp"
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=300) as resp, open(tmp_path, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
+                tmp_path.replace(akagi_path)
+                log.info("Akagi (v4 582k) weights downloaded successfully! Size: %d bytes", akagi_path.stat().st_size)
+                break
+        except Exception as e:
+            log.warning("Failed downloading Akagi from %s: %s", url, e)
+            if tmp_path.is_file():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+
+
+import threading
+import urllib.request
+
+threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
 
 ms_client = MajsoulClient(CACHE_DIR)
 
@@ -397,6 +438,12 @@ async def api_engine_config(req: EngineConfigReq):
             cfg.pop("model_path", None)
     save_config(cfg)
     return engine_mgr.status()
+
+
+@app.post("/api/engine/download_akagi")
+async def api_download_akagi():
+    threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
+    return {"status": "started", "message": "已在后台启动赤木 Akagi (v4 582k) 权重下载"}
 
 
 app.mount("/tiles", StaticFiles(directory=str(WEB_DIR / "tiles")), name="tiles")
