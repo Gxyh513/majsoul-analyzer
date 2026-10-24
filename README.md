@@ -2,6 +2,9 @@
 
 基于深度学习神经网络（Akagi / Mortal）与 NAGA 风格交互界面的雀魂牌谱复盘检讨系统。
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Gxyh513/majsoul-analyzer/blob/main/colab_run.ipynb)
+[![Cloudflare Pages](https://img.shields.io/badge/Cloudflare_Pages-Online-orange?logo=cloudflare)](https://majsoul-analyzer.pages.dev)
+
 ## 🌟 特性
 
 - **现代化牌桌 UI**：紧凑自适应牌桌布局，支持点击切换对手手牌视角、高对比度切牌与副露高亮。
