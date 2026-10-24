@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=6.0" />
+  <link rel="stylesheet" href="/styles.css?v=14.0" />
 </head>
 <body>
   <header class="app-header">
@@ -19,17 +19,12 @@
     </div>
 
     <div class="header-actions">
-      <details id="moreMenu" class="more">
-        <summary class="chip-btn">更多</summary>
-        <div class="more-panel">
-          <button id="btnOpenJsonModal" class="menu-item">导入牌谱文件</button>
-          <button id="btnOpenEngineModal" class="menu-item">
-            分析方式
-            <span id="engineStatusText" class="menu-note">牌效</span>
-          </button>
-          <button id="btnOpenHelp" class="menu-item">怎么用</button>
-        </div>
-      </details>
+      <button id="btnOpenEngineModal" class="chip-btn" title="点击切换 AI 分析模型与设置">
+        <span class="chip-ico">⚙</span>
+        <span id="engineStatusText">赤木 Akagi · CUDA</span>
+      </button>
+      <button id="btnOpenJsonModal" class="chip-btn" title="导入本地牌谱文件 (JSON / MJAI)">导入文件</button>
+      <button id="btnOpenHelp" class="chip-btn chip-icon-only" title="使用说明与快捷键">?</button>
     </div>
   </header>
 
@@ -275,19 +270,19 @@
       <div class="modal-body">
         <div id="engineModalDetail" class="engine-detail"></div>
         <label class="field">
-          <span>用哪种判断</span>
+          <span>分析模型</span>
           <select id="engineSelect">
-            <option value="auto">自动。有神经网络权重时优先用它</option>
-            <option value="builtin">内置。只看牌效和防守</option>
+            <option value="auto">自动选择（优先使用最强模型）</option>
+            <option value="akagi">赤木 Akagi (v4 582k步 进攻强化)</option>
+            <option value="mortal">Mortal 官方核心 (v3 天凤十段)</option>
           </select>
         </label>
         <label class="field">
-          <span>神经网络权重的位置（可不填）</span>
-          <input id="modelPathInput" type="text" placeholder="不填就自动找 data/models/mortal.pth" />
+          <span>模型权重文件路径（可选，默认自动识别 data/models/）</span>
+          <input id="modelPathInput" type="text" placeholder="默认自动检测 data/models/ 下的模型" />
         </label>
         <p class="muted small">
-          不设置也能用。内置方式会算向听、进张、和率和放铳风险。把 mortal.pth 放到
-          data/models/，或在上面填好位置，就会改用神经网络。
+          系统完全使用深度神经网络进行推理评估，支持赤木（Akagi v4）与 Mortal 官方核心模型，并已自动启用显卡硬件加速。
         </p>
         <div class="form-actions">
           <button id="btnSaveEngineConfig" class="btn btn-primary">保存</button>

@@ -776,8 +776,10 @@ def review_game(
     force_engine: str = "auto",
 ) -> dict[str, Any]:
     assert 0 <= target_actor <= 3
-    mortal = None if force_engine == "builtin" else engine_mgr.get_mortal()
-    obs_version = mortal.version if mortal is not None else 4
+    mortal = engine_mgr.get_mortal()
+    if mortal is None:
+        raise ValueError("未检测到可用的神经网络模型，请确认 data/models/ 中存在 akagi.pth 或 mortal.pth")
+    obs_version = mortal.version
 
     names = (meta or {}).get("names") or ["东家", "南家", "西家", "北家"]
     for ev in mjai_events:
