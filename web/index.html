@@ -5,17 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=2.7" />
+  <link rel="stylesheet" href="/styles.css?v=4.0" />
 </head>
 <body>
   <header class="app-header">
-    <div class="brand">
-      <div class="brand-title">雀魂复盘</div>
-    </div>
-
     <div class="import-bar">
       <div class="import-input">
-        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" /></svg>
         <input id="paipuInput" type="text" autocomplete="off" spellcheck="false"
           placeholder="把雀魂牌谱链接或牌谱号贴在这里，回车开始" aria-label="牌谱链接或牌谱号" />
       </div>
@@ -24,10 +19,6 @@
     </div>
 
     <div class="header-actions">
-      <button id="btnOpenAccountModal" class="chip-btn" title="打开网上的牌谱需要先登录">
-        <span id="msStatusDot" class="status-dot offline"></span>
-        <span id="msStatusText">登录雀魂</span>
-      </button>
       <details id="moreMenu" class="more">
         <summary class="chip-btn">更多</summary>
         <div class="more-panel">
@@ -180,6 +171,7 @@
             </div>
           </div>
 
+          <div id="decDiffReason" class="diff-reason hidden"></div>
           <div id="decCompareBox" class="compare">
             <div class="compare-side ai">
               <div id="compareAiLabel" class="compare-label">AI切</div>
@@ -191,10 +183,6 @@
             </div>
           </div>
 
-          <div class="section-head">
-            <span>其他打法</span>
-            <span class="hint">点一行，看打出后能进哪些牌。手牌上的柱子是 AI 有多想打这张。</span>
-          </div>
           <div id="candidatesList" class="cand-list">
             <div class="empty">载入牌谱后，每一手的打法会列在这里。</div>
           </div>
@@ -206,7 +194,7 @@
               <button id="filterAllDecs" class="seg active">全部</button>
               <button id="filterIssueDecs" class="seg">只看有问题的</button>
             </div>
-            <span class="hint">点一行就跳到那一手</span>
+            
           </div>
           <div id="decisionListContainer" class="dec-list"></div>
         </div>
@@ -339,6 +327,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=2.7"></script>
+  <script src="/app.js?v=3.0"></script>
 </body>
 </html>

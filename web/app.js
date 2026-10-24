@@ -136,21 +136,37 @@ function updateTopbarStatus(st) {
   const banner = $("modalAccountStatusBanner");
   const ms = st.majsoul || {};
 
-  if (ms.logged_in) {
-    dot.className = "status-dot online";
-    txt.textContent = "已登录";
-    banner.className = "banner ok";
-    banner.textContent = `已登录：${ms.nickname || "未知昵称"}（ID ${ms.account_id || "-"}）`;
-  } else if (ms.has_saved_token || ms.saved_account) {
-    dot.className = "status-dot saved";
-    txt.textContent = "已保存";
-    banner.className = "banner warn";
-    banner.textContent = `已保存登录凭证（${ms.saved_account || "Token"}），分析在线牌谱时会自动登录。`;
-  } else {
-    dot.className = "status-dot offline";
-    txt.textContent = "登录雀魂";
-    banner.className = "banner";
-    banner.textContent = "未登录。你仍然可以使用示例牌谱或导入牌谱文件。";
+  if (dot) {
+    if (ms.logged_in) {
+      dot.className = "status-dot online";
+    } else if (ms.has_saved_token || ms.saved_account) {
+      dot.className = "status-dot saved";
+    } else {
+      dot.className = "status-dot offline";
+    }
+  }
+
+  if (txt) {
+    if (ms.logged_in) {
+      txt.textContent = "已登录";
+    } else if (ms.has_saved_token || ms.saved_account) {
+      txt.textContent = "已保存";
+    } else {
+      txt.textContent = "登录雀魂";
+    }
+  }
+
+  if (banner) {
+    if (ms.logged_in) {
+      banner.className = "banner ok";
+      banner.textContent = `已登录：${ms.nickname || "未知昵称"}（ID ${ms.account_id || "-"}）`;
+    } else if (ms.has_saved_token || ms.saved_account) {
+      banner.className = "banner warn";
+      banner.textContent = `已保存登录凭证（${ms.saved_account || "Token"}），分析在线牌谱时会自动登录。`;
+    } else {
+      banner.className = "banner";
+      banner.textContent = "未登录。你仍然可以使用示例牌谱或导入牌谱文件。";
+    }
   }
 
   const eng = st.engine || {};
@@ -362,6 +378,33 @@ function renderTimelineTicks(kyoku) {
 // ============================================================================
 // Step Navigation & 4-Player Board Rendering
 // ============================================================================
+function stepDelta(delta) {
+  const res = state.reviewData;
+  if (!res || !res.kyokus || !res.kyokus.length) return;
+  const kyoku = res.kyokus[state.kyokuIdx];
+  if (!kyoku || !kyoku.steps || !kyoku.steps.length) return;
+
+  const target = state.stepIdx + delta;
+  if (target > kyoku.steps.length - 1) {
+    if (state.kyokuIdx + 1 < res.kyokus.length) {
+      selectKyoku(state.kyokuIdx + 1, false);
+      setStep(0);
+    } else {
+      setStep(kyoku.steps.length - 1);
+    }
+  } else if (target < 0) {
+    if (state.kyokuIdx > 0) {
+      selectKyoku(state.kyokuIdx - 1, false);
+      const prevKyoku = res.kyokus[state.kyokuIdx];
+      setStep(Math.max(0, (prevKyoku.steps?.length || 1) - 1));
+    } else {
+      setStep(0);
+    }
+  } else {
+    setStep(target);
+  }
+}
+
 function setStep(stepIdx) {
   const res = state.reviewData;
   if (!res) return;
@@ -403,11 +446,9 @@ function formatStepEventToast(ev, names) {
   const actorName = ev.actor !== undefined ? names[ev.actor] || `玩家${ev.actor}` : "";
   switch (ev.type) {
     case "start_kyoku":
-      return `${ev.bakaze === "S" ? "南" : ev.bakaze === "W" ? "西" : "东"}${ev.kyoku}局 开始`;
     case "tsumo":
-      return `${actorName} 摸牌`;
     case "dahai":
-      return `${actorName} ${ev.tsumogiri ? "摸切" : "手切"} ${tileCn(ev.pai)}`;
+      return "";
     case "chi":
       return `${actorName} 吃 ${tileCn(ev.pai)}`;
     case "pon":
@@ -419,13 +460,13 @@ function formatStepEventToast(ev, names) {
     case "kakan":
       return `${actorName} 加杠 ${tileCn(ev.pai)}`;
     case "reach":
-      return `${actorName} 立直！`;
+      return `${actorName} 立直`;
     case "reach_accepted":
       return `${actorName} 立直成立`;
     case "dora":
-      return `新宝牌指示牌 ${tileCn(ev.dora_marker)}`;
+      return `新宝牌 ${tileCn(ev.dora_marker)}`;
     case "hora":
-      return `${actorName} ${ev.actor === ev.target ? "自摸" : "荣和"}！`;
+      return `${actorName} ${ev.actor === ev.target ? "自摸" : "荣和"}`;
     case "ryukyoku":
       return "流局";
     case "end_kyoku":
@@ -440,8 +481,9 @@ const REL_POS = ["Bottom", "Right", "Top", "Left"];
 function renderBoard(kyoku, snap, activeDecision) {
   const hero = state.targetActor;
 
-  // Center status box
-  $("centerRoundLabel").textContent = kyoku.label;
+  // Center status box: round name only without duplicate honba
+  const roundName = (kyoku.label || "").split(" ")[0];
+  $("centerRoundLabel").textContent = roundName;
   $("centerTilesLeft").textContent = `余 ${snap.tiles_left} 张`;
   $("centerKyotaku").textContent = `供托 ${snap.kyotaku}`;
   $("centerHonba").textContent = `${snap.honba} 本场`;
@@ -658,6 +700,56 @@ function tagClass(t) {
   return "";
 }
 
+function generateDecisionReason(dec) {
+  if (!dec || dec.is_equal) return "";
+  const best = dec.candidates?.[0];
+  const actual = dec.candidates?.find((c) => c.action_cn === dec.actual_cn && c.rank === dec.actual_rank) || dec.candidates?.[dec.actual_rank - 1];
+  if (!best || !actual) return "";
+
+  const reasons = [];
+
+  // 1. Shanten difference (退向)
+  if (actual.shanten_after > best.shanten_after) {
+    const diff = actual.shanten_after - best.shanten_after;
+    reasons.push(`实战退向 ${diff} 向听（AI维持 ${shantenText(best.shanten_after)}）`);
+  }
+
+  // 2. Defense / Danger comparison (放铳率)
+  const actDanger = actual.danger || 0;
+  const bestDanger = best.danger || 0;
+  if (actDanger >= 8 && actDanger - bestDanger >= 5) {
+    reasons.push(`实战放铳率高 (${actDanger.toFixed(1)}% vs ${bestDanger.toFixed(1)}%)，AI选择防守`);
+  }
+
+  // 3. Ukeire difference (进张)
+  const ukeireDiff = (best.ukeire || 0) - (actual.ukeire || 0);
+  if (ukeireDiff >= 4) {
+    reasons.push(`AI进张多 ${ukeireDiff} 张（${best.ukeire} 张 vs ${actual.ukeire} 张）`);
+  }
+
+  // 4. EV / Win prob difference (打点与和率)
+  const evDiff = (best.ev || 0) - (actual.ev || 0);
+  if (evDiff >= 600) {
+    reasons.push(`AI打点期望高 ${evDiff} 点`);
+  }
+  const winDiff = (best.win_prob || 0) - (actual.win_prob || 0);
+  if (winDiff >= 4) {
+    reasons.push(`AI和率高 ${winDiff.toFixed(1)}%`);
+  }
+
+  // Fallback
+  if (!reasons.length) {
+    const bestTags = (best.tags || []).filter((t) => t !== "最");
+    if (bestTags.length) {
+      reasons.push(`AI理由：${bestTags.join(" · ")}`);
+    } else {
+      reasons.push(`AI判断最优概率达 ${best.prob.toFixed(1)}%（实战 ${actual.prob.toFixed(1)}%）`);
+    }
+  }
+
+  return reasons.slice(0, 2).join("；");
+}
+
 function renderDecisionPanel(kyoku, dec, isExactStep) {
   const badge = $("decVerdictBadge");
   const aiBox = $("compareAiContent");
@@ -667,6 +759,18 @@ function renderDecisionPanel(kyoku, dec, isExactStep) {
 
   const aiLabel = $("compareAiLabel");
   const actLabel = $("compareActualLabel");
+
+  const reasonEl = $("decDiffReason");
+  if (reasonEl) {
+    if (dec && !dec.is_equal) {
+      const rText = generateDecisionReason(dec);
+      reasonEl.innerHTML = `<span class="dr-icon">💡</span><span>AI理由：${escapeHtml(rText)}</span>`;
+      reasonEl.classList.remove("hidden");
+    } else {
+      reasonEl.innerHTML = "";
+      reasonEl.classList.add("hidden");
+    }
+  }
 
   if (!dec) {
     badge.className = "verdict-pill neutral";
@@ -1003,13 +1107,21 @@ function bindEvents() {
   // Replay controls
   $("stepSlider").addEventListener("input", (e) => setStep(parseInt(e.target.value, 10)));
   $("btnStepStart").addEventListener("click", () => setStep(0));
-  $("btnPrevStep").addEventListener("click", () => setStep(state.stepIdx - 1));
-  $("btnNextStep").addEventListener("click", () => setStep(state.stepIdx + 1));
+  $("btnPrevStep").addEventListener("click", () => stepDelta(-1));
+  $("btnNextStep").addEventListener("click", () => stepDelta(1));
   $("btnPrevDec").addEventListener("click", jumpPrevDecision);
   $("btnNextDec").addEventListener("click", jumpNextDecision);
   $("btnNextBlunder").addEventListener("click", jumpNextBlunder);
   $("btnQuickNextBlunder").addEventListener("click", jumpNextBlunder);
   $("btnToggleOpenHands").addEventListener("click", toggleOpenHands);
+
+  // Click opponent hand on board to toggle open/closed hands
+  document.querySelectorAll(".opp-hand, .opp-row").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleOpenHands();
+    });
+  });
 
   // Tabs & filters
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
@@ -1026,8 +1138,8 @@ function bindEvents() {
     if (document.querySelector(".modal-backdrop:not(.hidden)")) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const actions = {
-      ArrowLeft: () => setStep(state.stepIdx - 1),
-      ArrowRight: () => setStep(state.stepIdx + 1),
+      ArrowLeft: () => stepDelta(-1),
+      ArrowRight: () => stepDelta(1),
       ArrowUp: jumpPrevDecision,
       ArrowDown: jumpNextDecision,
       Home: () => setStep(0),
@@ -1043,7 +1155,7 @@ function bindEvents() {
   });
 
   // Modals open/close
-  $("btnOpenAccountModal").addEventListener("click", () => openModal("accountModal"));
+  $("btnOpenAccountModal")?.addEventListener("click", () => openModal("accountModal"));
   $("btnOpenJsonModal").addEventListener("click", () => openModal("jsonModal"));
   $("btnOpenEngineModal").addEventListener("click", () => openModal("engineModal"));
   $("btnOpenHelp").addEventListener("click", () => openModal("helpModal"));
@@ -1185,7 +1297,7 @@ function bindEvents() {
       if (shifted) {
         for (let i = 0; i < ticks; i++) (dir > 0 ? jumpNextDecision : jumpPrevDecision)();
       } else {
-        setStep(state.stepIdx + dir * ticks);
+        stepDelta(dir * ticks);
       }
     });
   }, { passive: false });
