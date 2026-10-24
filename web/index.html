@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>雀魂复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=19.0" />
+  <link rel="stylesheet" href="/styles.css?v=21.0" />
 </head>
 <body>
   <header class="app-header">
@@ -44,45 +44,53 @@
     <section class="stage-col">
       <div id="stageWrap" class="stage-wrap">
         <div id="stage" class="stage">
-          <div id="board" class="board">
-            <div class="seat-layer pos-bottom"><div id="riverBottom" class="river"></div></div>
-            <div class="seat-layer pos-right">
-              <div id="riverRight" class="river"></div>
-              <div class="opp-row"><div id="handRight" class="opp-hand"></div><div id="meldsRight" class="melds"></div></div>
-            </div>
-            <div class="seat-layer pos-top">
-              <div id="riverTop" class="river"></div>
-              <div class="opp-row"><div id="handTop" class="opp-hand"></div><div id="meldsTop" class="melds"></div></div>
-            </div>
-            <div class="seat-layer pos-left">
-              <div id="riverLeft" class="river"></div>
-              <div class="opp-row"><div id="handLeft" class="opp-hand"></div><div id="meldsLeft" class="melds"></div></div>
+          <!-- 对家 (上方) 独立手牌区，点击切换隐藏/显示 -->
+          <div id="dockTop" class="opp-dock opp-dock-top" title="点击隐藏/显示对手手牌">
+            <div id="meldsTop" class="melds opp-melds"></div>
+            <div id="handTop" class="opp-hand"></div>
+          </div>
+
+          <!-- 中庭竞技场: 左侧上家手牌 + 中央纯牌河场况桌 + 右侧下家手牌 -->
+          <div class="middle-arena">
+            <div id="dockLeft" class="opp-dock opp-dock-left" title="点击隐藏/显示对手手牌">
+              <div id="meldsLeft" class="melds opp-melds opp-melds-v"></div>
+              <div id="handLeft" class="opp-hand opp-hand-v"></div>
             </div>
 
-            
-            
-            
+            <!-- 牌桌中庭: 仅保留四方牌河与中央场况框，绝无手牌干扰 -->
+            <div id="board" class="board">
+              <div class="seat-layer pos-bottom"><div id="riverBottom" class="river"></div></div>
+              <div class="seat-layer pos-right"><div id="riverRight" class="river"></div></div>
+              <div class="seat-layer pos-top"><div id="riverTop" class="river"></div></div>
+              <div class="seat-layer pos-left"><div id="riverLeft" class="river"></div></div>
 
-            <div class="center-box">
-              <div id="cseatTop" class="cseat cseat-top"></div>
-              <div id="cseatLeft" class="cseat cseat-left"></div>
-              <div id="cseatRight" class="cseat cseat-right"></div>
-              <div id="cseatBottom" class="cseat cseat-bottom"></div>
-              <div class="center-mid">
-                <div id="centerRoundLabel" class="round-label">东1局</div>
-                <div class="center-sub">
-                  <span id="centerHonba">0 本场</span>
-                  <span id="centerKyotaku">供托 0</span>
-                </div>
-                <div id="centerDoraMarkers" class="dora-row" title="宝牌指示牌"></div>
-                <div class="center-sub">
-                  <span id="centerTilesLeft">余 70</span>
-                  <span id="centerJunme">第 0 巡</span>
+              <div class="center-box">
+                <div id="cseatTop" class="cseat cseat-top"></div>
+                <div id="cseatLeft" class="cseat cseat-left"></div>
+                <div id="cseatRight" class="cseat cseat-right"></div>
+                <div id="cseatBottom" class="cseat cseat-bottom"></div>
+                <div class="center-mid">
+                  <div id="centerRoundLabel" class="round-label">东1局</div>
+                  <div class="center-sub">
+                    <span id="centerHonba">0 本场</span>
+                    <span id="centerKyotaku">供托 0</span>
+                  </div>
+                  <div id="centerDoraMarkers" class="dora-row" title="宝牌指示牌"></div>
+                  <div class="center-sub">
+                    <span id="centerTilesLeft">余 70</span>
+                    <span id="centerJunme">第 0 巡</span>
+                  </div>
                 </div>
               </div>
             </div>
+
+            <div id="dockRight" class="opp-dock opp-dock-right" title="点击隐藏/显示对手手牌">
+              <div id="meldsRight" class="melds opp-melds opp-melds-v"></div>
+              <div id="handRight" class="opp-hand opp-hand-v"></div>
+            </div>
           </div>
 
+          <!-- 玩家 (下方) 专属独立手牌托盘 -->
           <div class="hero-dock">
             <div class="dock-head">
               
@@ -318,6 +326,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=3.0"></script>
+  <script src="/app.js?v=20.0"></script>
 </body>
 </html>
