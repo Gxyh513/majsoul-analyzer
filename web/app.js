@@ -1118,10 +1118,9 @@ function bindEvents() {
 
   // Toggle Hands Visibility
   $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
-  $("handBottomClosed")?.addEventListener("click", toggleHandsVisibility);
-  $("handRightClosed")?.addEventListener("click", toggleHandsVisibility);
-  $("handTopClosed")?.addEventListener("click", toggleHandsVisibility);
-  $("handLeftClosed")?.addEventListener("click", toggleHandsVisibility);
+  document.querySelectorAll(".grid-hand, .grid-hand-p0-container, [id^='hand']").forEach((el) => {
+    el.addEventListener("click", toggleHandsVisibility);
+  });
 
   // Step timeline slider
   $("stepSlider")?.addEventListener("input", (e) => {
@@ -1240,10 +1239,18 @@ function bindEvents() {
   }, { passive: false });
 }
 
+function updateResponsiveZoom() {
+  const w = window.innerWidth;
+  const zoom = Math.min(1.0, Math.max(0.46, (w - 24) / 655));
+  document.documentElement.style.setProperty("--zoom", zoom.toFixed(3));
+}
+window.addEventListener("resize", updateResponsiveZoom);
+
 // ============================================================================
 // Initialization
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
+  updateResponsiveZoom();
   bindEvents();
   await refreshServerStatus();
 
