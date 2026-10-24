@@ -87,7 +87,7 @@
         <!-- 655x735 Mahjong Board Grid -->
         <div class="grid-main" id="gridMain">
           <!-- P0 (Bottom / Hero) Hand Container with Discard Probability Bars -->
-          <span class="grid-hand-p0-container" title="点击可切换对手明牌/暗牌">
+          <span class="grid-hand-p0-container">
             <span id="discard-bars" class="discard-bars">
               <svg id="discardBarsSvg" class="discard-bars-svg"></svg>
             </span>
@@ -160,7 +160,7 @@
             <div class="kd-hero-compare-vertical">
               <!-- 1. Actual Player Choice (On Top) -->
               <div class="kd-choice-block kd-choice-actual">
-                <div class="kd-choice-badge-label">玩家切</div>
+                <div class="kd-choice-badge-label">玩家</div>
                 <div class="kd-choice-content">
                   <div id="decActualTileWrap" class="kd-choice-tile-wrap"></div>
                 </div>
@@ -168,7 +168,7 @@
 
               <!-- 2. AI Recommended Choice (On Bottom) -->
               <div class="kd-choice-block kd-choice-ai">
-                <div class="kd-choice-badge-label">模型切</div>
+                <div class="kd-choice-badge-label">模型</div>
                 <div class="kd-choice-content">
                   <div id="decAiTileWrap" class="kd-choice-tile-wrap"></div>
                 </div>
@@ -178,13 +178,20 @@
             <!-- Candidates Table with Legible Sized Tiles -->
             <div class="kd-cand-section-title">候选舍牌 AI 评分明细</div>
             <table class="kd-cand-table">
+              <colgroup>
+                <col style="width: 48px;" />
+                <col style="width: 64px;" />
+                <col style="width: 80px;" />
+                <col style="width: 66px;" />
+                <col style="width: 72px;" />
+              </colgroup>
               <thead>
                 <tr>
-                  <th style="width:48px;">动作</th>
-                  <th>牌面</th>
-                  <th>模型权重</th>
-                  <th>向听</th>
-                  <th>进张</th>
+                  <th style="width:48px; text-align:center;">动作</th>
+                  <th style="width:64px; text-align:center;">牌面</th>
+                  <th style="width:80px; text-align:center;">模型权重</th>
+                  <th style="width:66px; text-align:center;">向听</th>
+                  <th style="width:72px; text-align:center;">进张</th>
                 </tr>
               </thead>
               <tbody id="decCandTableBody"></tbody>
