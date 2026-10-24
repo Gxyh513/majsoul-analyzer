@@ -15,6 +15,9 @@ const state = window.state = {
   serverStatus: null,
   isPlaying: false,
   playTimer: null,
+  currentTheme: localStorage.getItem("majsoul_theme_pref") || "apple-dark",
+  customBack: localStorage.getItem("majsoul_back_pref") || "auto",
+  hidePlayerId: localStorage.getItem("majsoul_hide_id") === "true",
 };
 
 const WIND_CN = ["东", "南", "西", "北"];
@@ -24,6 +27,81 @@ const TILE_CN_MAP = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+function getPlayerDisplayName(seat) {
+  if (state.hidePlayerId) {
+    return `雀氏${(seat ?? 0) + 1}`;
+  }
+  return state.reviewData?.names?.[seat] || `雀氏${(seat ?? 0) + 1}`;
+}
+
+function sanitizeSummaryText(text) {
+  if (!text) return "";
+  if (!state.hidePlayerId || !state.reviewData?.names) return text;
+  let s = String(text);
+  state.reviewData.names.forEach((origName, seat) => {
+    if (origName) {
+      s = s.split(origName).join(`雀氏${seat + 1}`);
+    }
+  });
+  return s;
+}
+
+function toggleHidePlayerId() {
+  state.hidePlayerId = !state.hidePlayerId;
+  localStorage.setItem("majsoul_hide_id", state.hidePlayerId ? "true" : "false");
+  applyHidePlayerId();
+}
+
+function applyHidePlayerId() {
+  const btn = $("btnToggleHideId");
+  if (btn) {
+    btn.textContent = state.hidePlayerId ? "显示ID" : "隐藏ID";
+    if (state.hidePlayerId) btn.classList.add("active");
+    else btn.classList.remove("active");
+  }
+  document.body.classList.toggle("hide-player-ids", state.hidePlayerId);
+  renderSeatTabs();
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (kyoku) {
+    const snap = kyoku?.steps?.[state.stepIdx];
+    const dec = kyoku?.decisions?.find((d) => d.step_idx === state.stepIdx);
+    renderDecisionCard(dec, true, snap);
+  }
+}
+
+function getTileBackSrc() {
+  const custom = state.customBack || "auto";
+  if (custom !== "auto") return `/tiles/${custom}.svg`;
+  const theme = state.currentTheme || "apple-dark";
+  if (theme === "majsoul-green") return "/tiles/back-green.svg";
+  if (theme === "midnight-navy") return "/tiles/back-navy.svg";
+  if (theme === "true-black") return "/tiles/back-dark.svg";
+  return "/tiles/back-red.svg";
+}
+
+function applyTheme(themeName, save = true) {
+  state.currentTheme = themeName;
+  if (save) localStorage.setItem("majsoul_theme_pref", themeName);
+  document.documentElement.setAttribute("data-theme", themeName);
+  const sel1 = $("themeSelect");
+  if (sel1 && sel1.value !== themeName) sel1.value = themeName;
+  const sel2 = $("themeSelectCard");
+  if (sel2 && sel2.value !== themeName) sel2.value = themeName;
+  if (state.reviewData) {
+    setStep(state.stepIdx);
+  }
+}
+
+function applyBack(backName, save = true) {
+  state.customBack = backName;
+  if (save) localStorage.setItem("majsoul_back_pref", backName);
+  const sel = $("backSelectCard");
+  if (sel && sel.value !== backName) sel.value = backName;
+  if (state.reviewData) {
+    setStep(state.stepIdx);
+  }
+}
 
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -265,7 +343,7 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
   }
 }
 
-async function startAnalysisFromInput(rawInput, model = "akagi", seat = 0) {
+async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   if (!rawInput) {
     showToast("请先输入雀魂牌谱链接或牌谱号", "error");
     return;
@@ -274,8 +352,8 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = 0) {
   state.selectedModel = model;
 
   // 检查是否已有缓存
-  const cacheKey = `${paipuId}_${model}_${seat}`;
-  if (state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+  const cacheKey = seat !== null && seat !== undefined ? `${paipuId}_${model}_${seat}` : null;
+  if (cacheKey && state.perspectiveCache && state.perspectiveCache[cacheKey]) {
     const cachedRes = state.perspectiveCache[cacheKey];
     state.reviewData = cachedRes;
     state.gameId = cachedRes.game_id || paipuId;
@@ -298,14 +376,18 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = 0) {
   setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
 
   try {
+    const postBody = { paipu: rawInput.trim(), engine: model };
+    if (seat !== null && seat !== undefined) {
+      postBody.target_actor = seat;
+    }
     const res = await apiFetch("/api/analyze/paipu", {
       method: "POST",
-      body: JSON.stringify({ paipu: paipuId, target_actor: seat, engine: model }),
+      body: JSON.stringify(postBody),
     });
 
     state.reviewData = res;
     state.gameId = res.game_id || paipuId;
-    state.targetActor = res.target_actor !== undefined ? res.target_actor : seat;
+    state.targetActor = res.target_actor !== undefined ? res.target_actor : (seat ?? 0);
     state.kyokuIdx = 0;
 
     if (!state.perspectiveCache) state.perspectiveCache = {};
@@ -343,6 +425,9 @@ async function switchSeatPerspective(newSeat) {
     state.targetActor = newSeat;
     renderSummaryDashboard();
     selectKyoku(state.kyokuIdx);
+    if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
+      renderKyokuTable();
+    }
     return;
   }
 
@@ -367,6 +452,9 @@ async function switchSeatPerspective(newSeat) {
     state.targetActor = res.target_actor !== undefined ? res.target_actor : newSeat;
     renderSummaryDashboard();
     selectKyoku(state.kyokuIdx);
+    if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
+      renderKyokuTable();
+    }
   } catch (err) {
     showToast(`切换视角失败：${err.message}`, "error");
   } finally {
@@ -407,12 +495,14 @@ function renderSeatTabs() {
   const oya = res.kyokus?.[state.kyokuIdx]?.oya ?? 0;
   const seatTabs = $("seatTabs");
   if (!seatTabs) return;
-  seatTabs.innerHTML = res.names
+  const names = res.names || ["雀氏1", "雀氏2", "雀氏3", "雀氏4"];
+  seatTabs.innerHTML = names
     .map((name, seat) => {
       const wind = WIND_CN[(seat - oya + 4) % 4];
       const active = seat === res.target_actor ? "active" : "";
-      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${escapeHtml(name)}">
-        <b>${wind}家</b> ${escapeHtml(name)}
+      const displayName = getPlayerDisplayName(seat);
+      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${escapeHtml(displayName)}">
+        <b>${wind}家</b> ${escapeHtml(displayName)}
       </button>`;
     })
     .join("");
@@ -472,7 +562,7 @@ function togglePlay(forcePlay) {
     }
     state.isPlaying = true;
     if (btn) {
-      btn.textContent = "⏸ 暂停";
+      btn.textContent = "暂停";
       btn.classList.add("playing");
     }
     if (state.playTimer) {
@@ -500,7 +590,7 @@ function togglePlay(forcePlay) {
       state.playTimer = null;
     }
     if (btn) {
-      btn.textContent = "▶ 播放";
+      btn.textContent = "播放";
       btn.classList.remove("playing");
     }
   }
@@ -512,9 +602,57 @@ function toggleHandsVisibility() {
   if (textEl) {
     textEl.textContent = state.openHands ? "明牌" : "暗牌";
   }
-  showToast(state.openHands ? "已开启全场明牌" : "已切换为别家暗牌", "info");
+  // 静默切换，不再弹出任何打扰的 Toast 提示
   if (state.reviewData) {
     setStep(state.stepIdx);
+  }
+}
+
+function getStepActionDesc(snap, kyoku) {
+  if (!snap || !snap.event) return "";
+  const ev = snap.event;
+  const currentKyoku = kyoku || state.reviewData?.kyokus?.[state.kyokuIdx];
+  const names = state.reviewData?.names || [];
+  const getPlayerLabel = (seat) => {
+    if (seat === undefined || seat === null) return "";
+    const w = currentKyoku ? handWind(seat, currentKyoku) : "";
+    const isHero = seat === state.targetActor;
+    const pName = names[seat] ? ` ${names[seat]}` : "";
+    return `${w}家${isHero ? "(自家)" : pName}`;
+  };
+
+  const actorLabel = getPlayerLabel(ev.actor);
+  const targetLabel = getPlayerLabel(ev.target);
+
+  switch (ev.type) {
+    case "tsumo":
+      return `${actorLabel} 摸牌 ${tileCn(ev.pai)}`;
+    case "dahai":
+      return `${actorLabel} ${ev.tsumogiri ? "摸切" : "手切"} ${tileCn(ev.pai)}`;
+    case "chi":
+      return `${actorLabel} 吃 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
+    case "pon":
+      return `${actorLabel} 碰 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
+    case "ankan":
+      return `${actorLabel} 暗杠 ${tileCn(ev.consumed?.[0] || ev.pai)}`;
+    case "kakan":
+      return `${actorLabel} 加杠 ${tileCn(ev.pai)}`;
+    case "daiminkan":
+      return `${actorLabel} 大明杠 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
+    case "reach":
+      return `${actorLabel} 宣告立直`;
+    case "hora":
+      if (ev.actor !== ev.target && ev.target !== undefined && ev.target !== null) {
+        const deltaStr = ev.deltas?.[ev.actor] ? ` (+${ev.deltas[ev.actor]}点)` : "";
+        return `${actorLabel} 荣和 ${targetLabel}${deltaStr}`;
+      } else {
+        const deltaStr = ev.deltas?.[ev.actor] ? ` (+${ev.deltas[ev.actor]}点)` : "";
+        return `${actorLabel} 自摸和牌${deltaStr}`;
+      }
+    case "ryuukyoku":
+      return `荒牌流局结算`;
+    default:
+      return `${actorLabel} 行动`;
   }
 }
 
@@ -535,7 +673,7 @@ function setStep(stepIdx) {
   const decision = isExactDecisionStep ? kyoku.decisions[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, clamped);
 
   renderBoard(kyoku, snap, isExactDecisionStep ? decision : null);
-  renderDecisionCard(decision, isExactDecisionStep);
+  renderDecisionCard(decision, isExactDecisionStep, snap);
 }
 
 function findLatestDecisionBeforeStep(kyoku, stepIdx) {
@@ -571,10 +709,26 @@ function renderBoard(kyoku, snap, activeDecision) {
     let doraHtml = "";
     for (let i = 0; i < 5; i++) {
       const m = markers[i];
-      const img = m ? `/tiles/${encodeURIComponent(m)}.svg` : `/tiles/back.svg`;
+      const img = m ? `/tiles/${encodeURIComponent(m)}.svg` : getTileBackSrc();
       doraHtml += `<div class="tileDiv"><img src="${img}" class="tileImg"></div>`;
     }
     dorasEl.innerHTML = doraHtml;
+  }
+
+  // Check Hora agari tile & actors
+  const isHora = snap.event?.type === "hora";
+  const winActor = isHora ? snap.event.actor : null;
+  const targetActor = isHora ? snap.event.target : null;
+  const isRon = isHora && winActor !== targetActor && targetActor !== undefined && targetActor !== null;
+
+  let agariTile = null;
+  if (isHora) {
+    if (isRon && targetActor !== null && targetActor !== undefined) {
+      const river = snap.rivers[targetActor] || [];
+      if (river.length > 0) agariTile = river[river.length - 1].pai;
+    } else if (winActor !== null) {
+      agariTile = snap.drawn[winActor];
+    }
   }
 
   // 4 Seat positions relative to hero
@@ -592,23 +746,24 @@ function renderBoard(kyoku, snap, activeDecision) {
   if (giP3) giP3.textContent = `${handWind(p3, kyoku)} ${snap.scores[p3] ?? 25000}`;
 
   // Rivers
-  renderPlayerRiver("Bottom", hero, snap);
-  renderPlayerRiver("Right", p1, snap);
-  renderPlayerRiver("Top", p2, snap);
-  renderPlayerRiver("Left", p3, snap);
+  renderPlayerRiver("Bottom", hero, snap, isRon, targetActor);
+  renderPlayerRiver("Right", p1, snap, isRon, targetActor);
+  renderPlayerRiver("Top", p2, snap, isRon, targetActor);
+  renderPlayerRiver("Left", p3, snap, isRon, targetActor);
 
   // Hands
-  renderHeroHand(hero, snap, activeDecision);
-  renderOpponentHand("Right", p1, snap);
-  renderOpponentHand("Top", p2, snap);
-  renderOpponentHand("Left", p3, snap);
+  renderHeroHand(hero, snap, activeDecision, agariTile, winActor, isRon);
+  renderOpponentHand("Right", p1, snap, agariTile, winActor, isRon);
+  renderOpponentHand("Top", p2, snap, agariTile, winActor, isRon);
+  renderOpponentHand("Left", p3, snap, agariTile, winActor, isRon);
 }
 
-function renderPlayerRiver(pos, seat, snap) {
+function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const container = $(`river${pos}`);
   if (!container) return;
   const river = snap.rivers[seat] || [];
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
+  const isRonTarget = isRon && seat === targetActor;
 
   // Exactly 6 tiles per row horizontal, exactly 3 rows vertical
   const rows = [[], [], []];
@@ -623,13 +778,15 @@ function renderPlayerRiver(pos, seat, snap) {
     let rowHtml = `<div class="river-row">`;
     rowTiles.forEach((r) => {
       const isLast = isLastDiscardActor && r.origIdx === river.length - 1;
+      const isRonTile = isRonTarget && r.origIdx === river.length - 1;
       const cls = ["tileImg"];
       if (r.tsumogiri) cls.push("tsumogiri");
       if (r.riichi) cls.push("rotate");
       if (r.called) cls.push("called");
       if (isLast) cls.push("last-discard");
+      if (isRonTile) cls.push("ron-claimed");
 
-      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}）`;
+      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}${isRonTile ? " · 放铳 (被荣和)" : ""}）`;
       const divCls = ["tileDiv"];
       if (r.riichi) divCls.push("has-rotate");
       if (isLast) divCls.push("has-last-discard");
@@ -643,7 +800,7 @@ function renderPlayerRiver(pos, seat, snap) {
   container.innerHTML = html;
 }
 
-function renderHeroHand(seat, snap, activeDecision) {
+function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor = null, isRon = false) {
   const closedWrap = $("handBottomClosed");
   const callsWrap = $("handBottomCalls");
   const svgEl = $("discardBarsSvg");
@@ -660,28 +817,14 @@ function renderHeroHand(seat, snap, activeDecision) {
     actualPai = snap.event.pai;
   }
 
-  // Render Green Discard Recommendation Bars (SVG)
-  let svgHtml = "";
   let highlightedIdx = -1;
-
-  allTiles.forEach(({ pai, isDrawn }, idx) => {
-    const barInfo = tileBars[pai];
-    const prob = barInfo ? barInfo.prob : 0;
-    const slot = isDrawn ? idx + 0.3 : idx;
-    const xloc = 15 + 17 + slot * 34; // 15px hand padding + 17px half-tile + idx*34px
-    if (prob > 0) {
-      const height = Math.max(3, Math.round((prob / 100) * 45));
-      const y = 50 - height;
-      svgHtml += `<rect x="${xloc - 5}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
-    }
+  allTiles.forEach(({ pai }, idx) => {
     if (actualPai === pai && highlightedIdx === -1) {
       highlightedIdx = idx;
     }
   });
 
-  if (svgEl) svgEl.innerHTML = svgHtml;
-
-  // Render Closed Hand Tiles
+  // 1. Render Closed Hand Tiles into DOM first
   let handHtml = "";
   hand.forEach((pai, idx) => {
     const isAct = highlightedIdx === idx;
@@ -690,20 +833,43 @@ function renderHeroHand(seat, snap, activeDecision) {
 
   if (drawn) {
     const isAct = highlightedIdx === hand.length;
+    const isWinTile = seat === winActor;
     handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    handHtml += `<div class="tileDiv" data-pai="${escapeHtml(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""}"></div>`;
+    handHtml += `<div class="tileDiv ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸和牌: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
+  } else if (seat === winActor && isRon && agariTile) {
+    handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
+    handHtml += `<div class="tileDiv agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和牌: ${tileCn(agariTile)}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
   }
 
   closedWrap.innerHTML = handHtml;
 
-  // Render Calls
+  // 2. Render Green Discard Recommendation Bars (SVG) — Absolutely Centered on Actual DOM Tiles
+  let svgHtml = "";
+  const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
+  renderedTiles.forEach((tileEl, idx) => {
+    if (idx < allTiles.length) {
+      const pai = allTiles[idx].pai;
+      const barInfo = tileBars[pai];
+      const prob = barInfo ? barInfo.prob : 0;
+      if (prob > 0) {
+        const centerX = tileEl.offsetLeft + tileEl.offsetWidth / 2;
+        const height = Math.max(3, Math.round((prob / 100) * 45));
+        const y = 50 - height;
+        svgHtml += `<rect x="${centerX - 5}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
+      }
+    }
+  });
+
+  if (svgEl) svgEl.innerHTML = svgHtml;
+
+  // 3. Render Calls
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
-    callsWrap.innerHTML = melds.map((m) => renderMeldHtml(m, seat, "p0")).join("");
+    callsWrap.innerHTML = melds.map((m) => renderMeldHtml(m, seat, "bottom")).join("");
   }
 }
 
-function renderOpponentHand(pos, seat, snap) {
+function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, isRon = false) {
   const closedWrap = $(`hand${pos}Closed`);
   const callsWrap = $(`hand${pos}Calls`);
   if (!closedWrap) return;
@@ -711,16 +877,22 @@ function renderOpponentHand(pos, seat, snap) {
   const hand = snap.hands[seat] || [];
   const drawn = snap.drawn[seat];
   let html = "";
+  const backSrc = getTileBackSrc();
+  const isWinner = seat === winActor;
+  const showTiles = state.openHands || isWinner;
 
   hand.forEach((pai) => {
-    const src = state.openHands ? `/tiles/${encodeURIComponent(pai)}.svg` : `/tiles/back.svg`;
+    const src = showTiles ? `/tiles/${encodeURIComponent(pai)}.svg` : backSrc;
     html += `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
   });
 
   if (drawn) {
-    const src = state.openHands ? `/tiles/${encodeURIComponent(drawn)}.svg` : `/tiles/back.svg`;
+    const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
     html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    html += `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
+    html += `<div class="tileDiv ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""}" title="${isWinner ? `自摸和牌: ${tileCn(drawn)}` : ""}"></div>`;
+  } else if (isWinner && isRon && agariTile) {
+    html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
+    html += `<div class="tileDiv agari-tile"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" title="荣和牌: ${tileCn(agariTile)}"></div>`;
   }
 
   closedWrap.innerHTML = html;
@@ -731,19 +903,22 @@ function renderOpponentHand(pos, seat, snap) {
   }
 }
 
-function renderMeldHtml(m, ownerSeat, pov) {
+function renderMeldHtml(m, ownerSeat, pov = "bottom") {
   const tiles = [...(m.tiles || [])];
   if (!tiles.length) return "";
-  let sideIdx = -1;
-  let order = tiles;
+  const backSrc = getTileBackSrc();
+
   if (m.type === "ankan") {
-    return `<div style="display:flex;">${tiles
+    return `<div class="meld-block meld-block-${pov}">${tiles
       .map((t, i) => {
-        const src = i === 0 || i === tiles.length - 1 ? "/tiles/back.svg" : `/tiles/${encodeURIComponent(t)}.svg`;
+        const src = i === 0 || i === tiles.length - 1 ? backSrc : `/tiles/${encodeURIComponent(t)}.svg`;
         return `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
       })
       .join("")}</div>`;
   }
+
+  let sideIdx = -1;
+  let order = tiles;
   if (m.from !== undefined && m.from !== null) {
     const called = tiles[0];
     const rest = tiles.slice(1);
@@ -752,18 +927,97 @@ function renderMeldHtml(m, ownerSeat, pov) {
     else if (rel === 2) { order = [rest[0], called, ...rest.slice(1)]; sideIdx = 1; }
     else { order = [...rest, called]; sideIdx = order.length - 1; }
   }
-  return `<div style="display:flex;">${order
+
+  return `<div class="meld-block meld-block-${pov}">${order
     .map((t, i) => {
       const isRotated = i === sideIdx;
-      return `<div class="tileDiv"><img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg ${isRotated ? "rotate" : ""}"></div>`;
+      const divCls = ["tileDiv"];
+      if (isRotated) divCls.push("has-rotate");
+      return `<div class="${divCls.join(" ")}"><img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg ${isRotated ? "rotate" : ""}"></div>`;
     })
     .join("")}</div>`;
+}
+
+function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
+  if (pai && pai !== "none" && pai !== "pass" && !pai.startsWith("none")) {
+    return `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg">`;
+  }
+
+  const actType = (actionObj?.type || actionObj?.action || actionCn || "pass").toLowerCase();
+
+  if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过")) {
+    return `
+      <div class="action-badge action-badge-pass" title="跳过 / 不鸣">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><path d="M5 4l8 8-8 8V4zm9 0l8 8-8 8V4z"/></svg>
+        </div>
+        <div class="action-badge-text">PASS</div>
+      </div>
+    `;
+  }
+  if (actType.includes("chi") || actType.includes("吃")) {
+    return `
+      <div class="action-badge action-badge-chi" title="吃牌">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+        </div>
+        <div class="action-badge-text">CHI</div>
+      </div>
+    `;
+  }
+  if (actType.includes("pon") || actType.includes("碰")) {
+    return `
+      <div class="action-badge action-badge-pon" title="碰牌">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="4" fill="currentColor"/><circle cx="16" cy="12" r="4" fill="currentColor"/></svg>
+        </div>
+        <div class="action-badge-text">PON</div>
+      </div>
+    `;
+  }
+  if (actType.includes("kan") || actType.includes("杠")) {
+    return `
+      <div class="action-badge action-badge-kan" title="杠牌">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="8" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="16" cy="12" r="1.5" fill="currentColor"/></svg>
+        </div>
+        <div class="action-badge-text">KAN</div>
+      </div>
+    `;
+  }
+  if (actType.includes("riichi") || actType.includes("立直")) {
+    return `
+      <div class="action-badge action-badge-riichi" title="立直宣言">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><rect x="2" y="10" width="20" height="4" rx="2" fill="currentColor"/><circle cx="12" cy="12" r="2.2" fill="#ffffff"/></svg>
+        </div>
+        <div class="action-badge-text">RIICHI</div>
+      </div>
+    `;
+  }
+  if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
+    return `
+      <div class="action-badge action-badge-hora" title="和牌">
+        <div class="action-badge-icon">
+          <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/></svg>
+        </div>
+        <div class="action-badge-text">WIN</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="action-badge action-badge-pass" style="opacity:0.65;">
+      <div class="action-badge-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5" fill="currentColor"/></svg></div>
+      <div class="action-badge-text">--</div>
+    </div>
+  `;
 }
 
 // ============================================================================
 // Active Decision Details Card (In Right Sidebar)
 // ============================================================================
-function renderDecisionCard(dec, isExactStep) {
+function renderDecisionCard(dec, isExactStep, snap) {
   const card = $("decisionCard");
   if (!card) return;
 
@@ -783,87 +1037,278 @@ function renderDecisionCard(dec, isExactStep) {
 
   const tableBody = $("decCandTableBody");
 
+  const targetActor = state.targetActor ?? 0;
+  const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  const wind = currentKyoku ? handWind(targetActor, currentKyoku) : "";
+  const names = state.reviewData?.names || [];
+  const isHora = snap?.event?.type === "hora";
+  const isRyuukyoku = snap?.event?.type === "ryuukyoku";
+
+  // CASE 1: Round End (Hora / 和牌结算)
+  if (isHora) {
+    const winActor = snap.event.actor;
+    const tgtActor = snap.event.target;
+    const isRon = winActor !== tgtActor && tgtActor !== undefined && tgtActor !== null;
+    const isHeroWin = winActor === targetActor;
+    const isHeroLoser = isRon && tgtActor === targetActor;
+
+    const winName = names[winActor] || `玩家 ${winActor + 1}`;
+    const winWind = currentKyoku ? handWind(winActor, currentKyoku) : "";
+    const tgtName = isRon ? (names[tgtActor] || `玩家 ${tgtActor + 1}`) : "";
+    const tgtWind = isRon && currentKyoku ? handWind(tgtActor, currentKyoku) : "";
+
+    const scoreDelta = snap.event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
+    const summaryText = currentKyoku?.end_summaries?.length
+      ? currentKyoku.end_summaries.join("<br>")
+      : (isRon ? `${winWind}家 ${escapeHtml(winName)} 荣和 ${tgtWind}家 ${escapeHtml(tgtName)} +${scoreDelta}` : `${winWind}家 ${escapeHtml(winName)} 自摸 +${scoreDelta}`);
+
+    if (turnEl) turnEl.textContent = `本局终局结算 (${isRon ? "荣和" : "自摸"})`;
+    if (badgeEl) {
+      if (isHeroWin) {
+        badgeEl.textContent = "自家和牌";
+        badgeEl.className = "kd-dec-verdict best";
+      } else if (isHeroLoser) {
+        badgeEl.textContent = "自家放铳";
+        badgeEl.className = "kd-dec-verdict blunder";
+      } else {
+        badgeEl.textContent = `${winWind}家和牌`;
+        badgeEl.className = "kd-dec-verdict agari";
+      }
+    }
+
+    // Identify Winning Tile
+    let agariTile = null;
+    if (isRon && tgtActor !== null && tgtActor !== undefined) {
+      const river = snap.rivers[tgtActor] || [];
+      if (river.length > 0) agariTile = river[river.length - 1].pai;
+    } else if (winActor !== null) {
+      agariTile = snap.drawn[winActor];
+    }
+
+    if (actualTileWrap) {
+      actualTileWrap.innerHTML = agariTile
+        ? `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile">`
+        : renderDecisionTileOrBadge(null, { type: "hora" }, "和牌");
+    }
+    if (actualTileName) {
+      actualTileName.style.display = "block";
+      actualTileName.textContent = isRon ? `荣和 ${agariTile ? tileCn(agariTile) : ""}` : `自摸 ${agariTile ? tileCn(agariTile) : ""}`;
+    }
+    if (actualProbBadge) actualProbBadge.textContent = `+${scoreDelta} 点`;
+    if (actualVerdictText) {
+      actualVerdictText.textContent = isHeroWin ? "自家和牌" : isHeroLoser ? "放铳" : "终局";
+      actualVerdictText.className = isHeroWin ? "kd-tag-verdict best" : isHeroLoser ? "kd-tag-verdict blunder" : "kd-tag-verdict question";
+    }
+    if (actualBlock) {
+      if (isHeroLoser) actualBlock.classList.add("is-blunder");
+      else actualBlock.classList.remove("is-blunder");
+    }
+
+    // AI choice block: Settlement Details
+    if (aiTileWrap) {
+      aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "hora" }, "WIN");
+    }
+    if (aiTileName) {
+      aiTileName.style.display = "block";
+      aiTileName.textContent = isRon ? `放铳者: ${tgtWind}家 ${tgtName}` : "自摸终局";
+    }
+    if (aiProbBadge) aiProbBadge.textContent = "终局结算";
+    if (aiShantenBadge) aiShantenBadge.textContent = "和牌";
+    if (aiUkeireBadge) {
+      const uras = snap.event.ura_markers || [];
+      aiUkeireBadge.textContent = uras.length ? `里宝: ${uras.map(tileCn).join(" ")}` : "本局结束";
+    }
+
+    // Settlement Table in Candidates Area
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="padding:8px 2px;">
+            <div class="kd-settlement-card">
+              <div class="kd-settlement-title-row">
+                <span>${isRon ? "荣和 (放铳终局)" : "自摸 (和牌终局)"}</span>
+                <span style="font-size:14px; font-weight:800; color:#30d158;">+${scoreDelta} 点</span>
+              </div>
+              <div class="kd-settlement-summary-text">${summaryText}</div>
+              <div class="kd-settlement-delta-grid">
+                ${[0, 1, 2, 3].map((seat) => {
+                  const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
+                  const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
+                  const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
+                  const isWin = seat === winActor;
+                  const isLos = isRon && seat === tgtActor;
+                  const cellClass = isWin ? "winner" : isLos ? "loser" : "";
+                  const pName = names[seat] || `P${seat + 1}`;
+                  const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
+                  return `
+                    <div class="kd-settlement-delta-cell ${cellClass}">
+                      <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                      <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
+                    </div>
+                  `;
+                }).join("")}
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+    return;
+  }
+
+  // CASE 2: Round End (Ryuukyoku / 流局结算)
+  if (isRyuukyoku) {
+    if (turnEl) turnEl.textContent = "本局终局结算 (荒牌流局)";
+    if (badgeEl) {
+      badgeEl.textContent = "荒牌流局";
+      badgeEl.className = "kd-dec-verdict cruise";
+    }
+    if (actualTileWrap) actualTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "流局");
+    if (actualTileName) {
+      actualTileName.style.display = "block";
+      actualTileName.textContent = "荒牌流局";
+    }
+    if (actualProbBadge) actualProbBadge.textContent = "";
+    if (aiTileWrap) aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "流局");
+    if (aiTileName) {
+      aiTileName.style.display = "block";
+      aiTileName.textContent = "荒牌流局";
+    }
+    if (aiProbBadge) aiProbBadge.textContent = "荒牌流局";
+    if (aiShantenBadge) aiShantenBadge.textContent = "流局";
+    if (aiUkeireBadge) aiUkeireBadge.textContent = "荒牌";
+
+    const summaryText = currentKyoku?.end_summaries?.length ? currentKyoku.end_summaries.join("<br>") : (currentKyoku?.result || "荒牌流局");
+
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="padding:8px 2px;">
+            <div class="kd-settlement-card">
+              <div class="kd-settlement-title-row">
+                <span>荒牌流局结算</span>
+                <span style="font-size:12px; color:var(--color-text-secondary);">局末听牌与罚符</span>
+              </div>
+              <div class="kd-settlement-summary-text">${summaryText}</div>
+              <div class="kd-settlement-delta-grid">
+                ${[0, 1, 2, 3].map((seat) => {
+                  const delta = currentKyoku?.score_deltas?.[seat] ?? 0;
+                  const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
+                  const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
+                  const pName = names[seat] || `P${seat + 1}`;
+                  const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
+                  return `
+                    <div class="kd-settlement-delta-cell">
+                      <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                      <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
+                    </div>
+                  `;
+                }).join("")}
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+    return;
+  }
+
+  // CASE 3: Normal or Cruise Steps
   if (!dec) {
-    if (turnEl) turnEl.textContent = "当前巡目";
+    if (turnEl) turnEl.textContent = `${wind}家 (巡航中)`;
     if (badgeEl) {
       badgeEl.textContent = "巡航中";
-      badgeEl.className = "kd-dec-verdict best";
+      badgeEl.className = "kd-dec-verdict cruise";
     }
-    if (aiTileWrap) aiTileWrap.innerHTML = `<img src="/tiles/back.svg" class="tileImg">`;
-    if (aiTileName) aiTileName.textContent = "暂无建议";
-    if (aiProbBadge) aiProbBadge.textContent = "--%";
+    if (aiTileWrap) aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "等待决策");
+    if (aiTileName) {
+      aiTileName.style.display = "block";
+      aiTileName.textContent = "等待决策";
+    }
+    if (aiProbBadge) aiProbBadge.textContent = "";
     if (aiShantenBadge) aiShantenBadge.textContent = "--";
     if (aiUkeireBadge) aiUkeireBadge.textContent = "进张 --";
 
-    if (actualTileWrap) actualTileWrap.innerHTML = `<img src="/tiles/back.svg" class="tileImg">`;
-    if (actualTileName) actualTileName.textContent = "等待切牌";
-    if (actualProbBadge) actualProbBadge.textContent = "--%";
+    if (actualTileWrap) actualTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "等待切牌");
+    if (actualTileName) {
+      actualTileName.style.display = "block";
+      actualTileName.textContent = "等待切牌";
+    }
+    if (actualProbBadge) actualProbBadge.textContent = "";
     if (actualVerdictText) {
       actualVerdictText.textContent = "巡航";
-      actualVerdictText.className = "kd-tag-verdict best";
+      actualVerdictText.className = "kd-tag-verdict cruise";
     }
     if (actualBlock) actualBlock.classList.remove("is-blunder");
 
-    if (tableBody) tableBody.innerHTML = `<tr><td colspan="5" style="padding:12px; opacity:0.6;">暂无 AI 决策打法建议</td></tr>`;
+    const dynamicDesc = getStepActionDesc(snap, currentKyoku);
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="padding:14px 8px;">
+            <div class="kd-step-dynamic-desc">${dynamicDesc ? `当前步: ${escapeHtml(dynamicDesc)}` : "暂无 AI 决策建议 (巡航中)"}</div>
+          </td>
+        </tr>
+      `;
+    }
     return;
   }
 
   const isMatch = dec.is_equal;
-  const currentKyoku = state.reviewData?.kyokus[state.kyokuIdx];
-  if (turnEl) turnEl.textContent = `${currentKyoku ? handWind(dec.actor ?? 0, currentKyoku) : ""}家切牌决策`;
+  const isCallDec = dec.decision_type === "call_response";
+  const isReachDec = dec.decision_type === "reach";
+
+  if (turnEl) {
+    if (!isExactStep) {
+      turnEl.textContent = `${wind}家 (巡航中 · 别家行动)`;
+    } else if (isCallDec) {
+      turnEl.textContent = `${wind}家 鸣牌响应决策`;
+    } else if (isReachDec) {
+      turnEl.textContent = `${wind}家 立直宣言决策`;
+    } else {
+      turnEl.textContent = `${wind}家 切牌决策`;
+    }
+  }
 
   if (badgeEl) {
-    if (isMatch) {
-      badgeEl.textContent = "✓ 与 AI 一致";
+    if (!isExactStep) {
+      badgeEl.textContent = "巡航中";
+      badgeEl.className = "kd-dec-verdict cruise";
+    } else if (isMatch) {
+      badgeEl.textContent = "AI 一致";
       badgeEl.className = "kd-dec-verdict best";
     } else if (dec.verdict === "blunder") {
-      badgeEl.textContent = "⚠️ 恶手";
+      badgeEl.textContent = "恶手";
       badgeEl.className = "kd-dec-verdict blunder";
     } else {
-      badgeEl.textContent = `❓ ${dec.verdict_cn || "微差"}`;
+      badgeEl.textContent = dec.verdict_cn || "微差";
       badgeEl.className = "kd-dec-verdict question";
     }
   }
 
-  // AI Recommended Choice (Top, Big Tile)
-  const expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
-  const bestCand = dec.candidates?.[0];
-  if (aiTileWrap) {
-    aiTileWrap.innerHTML = expPai
-      ? `<img src="/tiles/${encodeURIComponent(expPai)}.svg" class="tileImg">`
-      : `<img src="/tiles/back.svg" class="tileImg">`;
-  }
-  if (aiTileName) {
-    aiTileName.textContent = expPai ? `${tileCn(expPai)}` : (dec.expected_cn || "--");
-  }
-  if (aiProbBadge) {
-    aiProbBadge.textContent = `${fmtPct(dec.expected?.prob ?? bestCand?.prob)} 推荐度`;
-  }
-  if (aiShantenBadge) {
-    const sVal = bestCand?.shanten_after ?? bestCand?.shanten ?? dec.shanten;
-    aiShantenBadge.textContent = shantenText(sVal);
-  }
-  if (aiUkeireBadge) {
-    const uk = bestCand?.ukeire ?? dec.expected?.ukeire;
-    aiUkeireBadge.textContent = uk !== undefined && uk !== null ? `进张 ${uk} 张` : "进张 --";
-  }
-
-  // Actual Choice (Bottom, Big Tile)
+  // 1. Actual Choice (On Top)
   const actPai = dec.actual?.pai;
-  const actCand = dec.candidates?.find((c) => (c.pai && c.pai === actPai) || c.action_cn === dec.actual_cn);
+  const isActTile = actPai && actPai !== "none" && actPai !== "pass";
   if (actualTileWrap) {
-    actualTileWrap.innerHTML = actPai
-      ? `<img src="/tiles/${encodeURIComponent(actPai)}.svg" class="tileImg">`
-      : `<img src="/tiles/back.svg" class="tileImg">`;
+    actualTileWrap.innerHTML = renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn);
   }
   if (actualTileName) {
-    actualTileName.textContent = actPai ? `${tileCn(actPai)}` : (dec.actual_cn || "--");
+    if (isActTile) {
+      actualTileName.textContent = "";
+      actualTileName.style.display = "none";
+    } else {
+      actualTileName.style.display = "block";
+      actualTileName.textContent = dec.actual_cn || "跳过 (Pass)";
+    }
   }
   if (actualProbBadge) {
-    actualProbBadge.textContent = `${fmtPct(actCand?.prob ?? 0)}`;
+    actualProbBadge.textContent = "";
   }
   if (actualVerdictText) {
-    if (isMatch) {
+    if (!isExactStep) {
+      actualVerdictText.textContent = "上一决策";
+      actualVerdictText.className = "kd-tag-verdict cruise";
+    } else if (isMatch) {
       actualVerdictText.textContent = "AI 一致";
       actualVerdictText.className = "kd-tag-verdict best";
     } else if (dec.verdict === "blunder") {
@@ -875,22 +1320,58 @@ function renderDecisionCard(dec, isExactStep) {
     }
   }
   if (actualBlock) {
-    if (dec.verdict === "blunder") actualBlock.classList.add("is-blunder");
+    if (isExactStep && dec.verdict === "blunder") actualBlock.classList.add("is-blunder");
     else actualBlock.classList.remove("is-blunder");
   }
 
-  // Top Candidates Table with Large 28x38 Tiles
+  // 2. AI Recommended Choice (On Bottom)
+  const expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
+  const isExpTile = expPai && expPai !== "none" && expPai !== "pass";
+  const bestCand = dec.candidates?.[0];
+  if (aiTileWrap) {
+    aiTileWrap.innerHTML = renderDecisionTileOrBadge(expPai, dec.expected, dec.expected_cn);
+  }
+  if (aiTileName) {
+    if (isExpTile) {
+      aiTileName.textContent = "";
+      aiTileName.style.display = "none";
+    } else {
+      aiTileName.style.display = "block";
+      aiTileName.textContent = dec.expected_cn || "跳过 (Pass)";
+    }
+  }
+  if (aiProbBadge) {
+    aiProbBadge.textContent = "";
+  }
+  if (aiShantenBadge) {
+    const sVal = bestCand?.shanten_after ?? bestCand?.shanten ?? dec.shanten;
+    aiShantenBadge.textContent = shantenText(sVal);
+  }
+  if (aiUkeireBadge) {
+    const uk = bestCand?.ukeire ?? dec.expected?.ukeire;
+    aiUkeireBadge.textContent = uk !== undefined && uk !== null ? `进张 ${uk} 张` : "进张 --";
+  }
+
+  // 3. Top Candidates Table with Pure Graphic & Expandable Ukeire Detail Drawer
   const cands = (dec.candidates || []).slice(0, 5);
+  const dynamicDesc = !isExactStep ? getStepActionDesc(snap, currentKyoku) : "";
+
   if (tableBody) {
-    tableBody.innerHTML = cands
+    let headerRow = "";
+    if (!isExactStep && dynamicDesc) {
+      headerRow = `<tr><td colspan="5" style="padding:6px 6px;"><div class="kd-step-dynamic-desc">${escapeHtml(dynamicDesc)}</div></td></tr>`;
+    }
+
+    const rowsHtml = cands
       .map((c, i) => {
         const pai = c.pai || c.action?.pai;
+        const isTile = pai && pai !== "none" && pai !== "pass";
         const prob = fmtPct(c.prob);
         const isAct = (pai && pai === actPai) || c.action_cn === dec.actual_cn;
         const isAi = c.rank === 1;
-        const tileDisplay = pai
-          ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="kd-cand-tile-img"> <b>${tileCn(pai)}</b>`
-          : `<b>${escapeHtml(c.action_cn || "-")}</b>`;
+        const tileDisplay = isTile
+          ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="kd-cand-tile-img" title="${tileCn(pai)}">`
+          : `<span class="kd-cand-action" style="padding:3px 7px;">${escapeHtml(c.action_cn || "跳过")}</span>`;
         const rowBg = isAct
           ? "background:rgba(255, 69, 58, 0.16);"
           : isAi
@@ -898,19 +1379,60 @@ function renderDecisionCard(dec, isExactStep) {
           : "";
         const sVal = c.shanten_after ?? c.shanten ?? dec.shanten;
         const uVal = c.ukeire !== undefined && c.ukeire !== null ? `${c.ukeire} 张` : "-";
+        const ukeireList = c.ukeire_tiles || [];
+        const hasUkeireTiles = ukeireList.length > 0;
+        const isExpanded = (i === 0);
+        const uCell = hasUkeireTiles
+          ? `<div class="kd-ukeire-cell" title="点击展开/收起具体进张有效牌"><span>${uVal}</span><span class="kd-ukeire-arrow">▾</span></div>`
+          : `<span>${uVal}</span>`;
+
+        const detailRow = hasUkeireTiles
+          ? `
+          <tr class="kd-cand-detail-row ${isExpanded ? '' : 'hidden'}" id="candDetail_${i}">
+            <td colspan="5" style="padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);">
+              <div class="kd-ukeire-container">
+                <div class="kd-ukeire-grid">
+                  ${ukeireList.map(u => `
+                    <div class="kd-ukeire-item">
+                      <img src="/tiles/${encodeURIComponent(u.pai)}.svg" class="kd-ukeire-img" alt="${u.pai}">
+                      <span class="kd-ukeire-mul">×${u.count}</span>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            </td>
+          </tr>
+          `
+          : "";
+
         return `
-          <tr style="${rowBg}">
-            <td style="font-weight:bold; color:var(--color-text);">${i + 1}</td>
-            <td style="text-align:left; padding-left:8px;">${tileDisplay}</td>
+          <tr class="kd-cand-row ${isExpanded ? 'is-expanded' : ''}" style="${rowBg}" onclick="toggleCandUkeire(event, ${i})">
+            <td><span class="kd-cand-action">${isTile ? "切" : escapeHtml(c.action_cn || "跳过")}</span></td>
+            <td style="text-align:center;">${tileDisplay}</td>
             <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
             <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal)}</span></td>
-            <td>${uVal}</td>
+            <td>${uCell}</td>
           </tr>
+          ${detailRow}
         `;
       })
       .join("");
+
+    tableBody.innerHTML = headerRow + rowsHtml;
   }
 }
+
+window.toggleCandUkeire = function(e, idx) {
+  if (e) e.stopPropagation();
+  const detail = document.getElementById(`candDetail_${idx}`);
+  if (!detail) return;
+  const isHidden = detail.classList.toggle("hidden");
+  const row = detail.previousElementSibling;
+  if (row) {
+    if (isHidden) row.classList.remove("is-expanded");
+    else row.classList.add("is-expanded");
+  }
+};
 
 // ============================================================================
 // Navigation Jumps
@@ -926,13 +1448,17 @@ function jumpNextKyoku() {
 
 function jumpPrevDecision() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
-  const decs = kyoku.decisions;
+  if (!kyoku?.steps?.length) return;
+  const decs = kyoku.decisions || [];
   for (let i = decs.length - 1; i >= 0; i--) {
     if (decs[i].step_idx < state.stepIdx) {
       setStep(decs[i].step_idx);
       return;
     }
+  }
+  if (state.stepIdx > 0) {
+    setStep(0);
+    return;
   }
   if (state.kyokuIdx > 0) {
     jumpPrevKyoku();
@@ -945,15 +1471,22 @@ function jumpPrevDecision() {
 
 function jumpNextDecision() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
-  for (const d of kyoku.decisions) {
+  if (!kyoku?.steps?.length) return;
+  for (const d of kyoku.decisions || []) {
     if (d.step_idx > state.stepIdx) {
       setStep(d.step_idx);
       return;
     }
   }
+  // If there are no more decisions for Hero, but we have not reached the final step of the kyoku:
+  if (state.stepIdx < kyoku.steps.length - 1) {
+    setStep(kyoku.steps.length - 1);
+    return;
+  }
   if (state.kyokuIdx < state.reviewData.kyokus.length - 1) {
     jumpNextKyoku();
+  } else {
+    showToast("已经是最后一局的终局了", "info");
   }
 }
 
@@ -1022,28 +1555,168 @@ function closeModal(id) {
   if (bd) bd.classList.add("hidden");
 }
 
-function openRoundScoresModal() {
+function getRoundDeltas(k) {
+  if (k.end_scores && k.init_scores && k.end_scores.length === 4 && k.init_scores.length === 4) {
+    return [
+      k.end_scores[0] - k.init_scores[0],
+      k.end_scores[1] - k.init_scores[1],
+      k.end_scores[2] - k.init_scores[2],
+      k.end_scores[3] - k.init_scores[3],
+    ];
+  }
+  if (k.score_deltas && Array.isArray(k.score_deltas) && k.score_deltas.length === 4) {
+    return k.score_deltas;
+  }
+  return [0, 0, 0, 0];
+}
+
+function fmtInt(n) {
+  return Number(n || 0).toLocaleString();
+}
+
+function fmtDeltaHtml(n) {
+  const num = Number(n || 0);
+  if (num > 0) return `<span class="delta-badge delta-plus">+${num.toLocaleString()}</span>`;
+  if (num < 0) return `<span class="delta-badge delta-minus">${num.toLocaleString()}</span>`;
+  return `<span class="delta-badge delta-zero">0</span>`;
+}
+
+function renderKyokuTable() {
   const res = state.reviewData;
   if (!res || !res.kyokus) return;
+  const thead = $("roundTableHead");
   const tbody = $("roundTableBody");
+  const tfoot = $("roundTableFoot");
   if (!tbody) return;
+
+  const names = [0, 1, 2, 3].map((s) => getPlayerDisplayName(s));
+  const targetActor = state.targetActor ?? 0;
+
+  // Subtitle info & Quick Pov switcher
+  const subEl = $("roundModalSub");
+  if (subEl) {
+    subEl.innerHTML = `当前检讨视角：<strong style="color:var(--color-text-bright);">${escapeHtml(names[targetActor])}</strong> (起${WIND_CN[targetActor]} / P${targetActor}) · 点击任意局可直接跳转该局检讨`;
+  }
+
+  const povTabs = $("roundModalPovTabs");
+  if (povTabs) {
+    povTabs.innerHTML = `
+      <span style="font-size:12px; color:var(--color-text-secondary); margin-right:4px;">切换视角:</span>
+      ${names.map((name, s) => {
+        const active = s === targetActor ? "active" : "";
+        return `<button class="round-modal-pov-btn ${active}" data-seat="${s}">
+          <b>P${s}</b> ${escapeHtml(name)} ${s === targetActor ? "(自家)" : ""}
+        </button>`;
+      }).join("")}
+    `;
+    povTabs.querySelectorAll(".round-modal-pov-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const s = parseInt(btn.dataset.seat, 10);
+        if (s !== state.targetActor) {
+          await switchSeatPerspective(s);
+          renderKyokuTable();
+        }
+      });
+    });
+  }
+
+  // 1. Table Header
+  if (thead) {
+    thead.innerHTML = `
+      <tr>
+        <th style="width:68px;">局名</th>
+        <th style="width:64px;">本场</th>
+        <th style="width:110px;">庄家</th>
+        <th style="text-align:left; min-width:180px;">和牌 / 结算</th>
+        ${names.map((name, s) => {
+          const isTarget = s === targetActor;
+          const thClass = isTarget ? "active-pov-th" : "";
+          const povBadge = isTarget ? " <span style='font-size:10px; color:#ffcc00;'>(我)</span>" : "";
+          return `<th class="${thClass}" style="text-align:right;">P${s} ${escapeHtml(name)} (起${WIND_CN[s]})${povBadge}</th>`;
+        }).join("")}
+        <th style="width:85px; text-align:right;">当前增减</th>
+        <th style="width:96px; text-align:center;" title="分子为与AI一致决策数，分母为有效决策总数">AI 一致率</th>
+        <th style="width:60px; text-align:center;">恶手</th>
+      </tr>
+    `;
+  }
+
+  // 2. Table Body (12 Kyokus)
+  const cumDeltas = [0, 0, 0, 0];
+  let totDecs = 0;
+  let totMatches = 0;
+  let totBlunders = 0;
 
   tbody.innerHTML = res.kyokus
     .map((k, idx) => {
-      const oyaWind = handWind(k.oya, k);
-      const decCount = k.decision_count || (k.decisions ? k.decisions.length : 0);
-      const matchCount = k.match_count || (k.decisions ? k.decisions.filter((d) => d.is_equal).length : 0);
+      const oyaName = names[k.oya] ? `${names[k.oya]} (P${k.oya})` : `P${k.oya}家`;
+      const isOya = k.oya === targetActor;
+      const oyaDisplay = `<span style="${isOya ? 'color:#ffcc00; font-weight:700;' : ''}">${escapeHtml(oyaName)}</span>`;
+
+      // Label & Honba separation
+      const fullLabel = k.label || `第 ${idx + 1} 局`;
+      const labelParts = fullLabel.split(" ");
+      const kyokuName = labelParts[0];
+      const honbaStr = `${k.honba ?? 0}本场`;
+
+      // Deltas calculation
+      const deltas = getRoundDeltas(k);
+      for (let s = 0; s < 4; s++) {
+        cumDeltas[s] += deltas[s];
+      }
+
+      // 统计与一致率 (当前视角玩家)
+      const stats = k.stats || {};
+      const decCount = k.decision_count ?? stats.total ?? (k.decisions ? k.decisions.length : 0);
+      const matchCount = k.match_count ?? stats.matches ?? (k.decisions ? k.decisions.filter((d) => d.is_equal).length : 0);
       const matchPct = decCount > 0 ? ((matchCount / decCount) * 100).toFixed(1) + "%" : "--";
-      const resultText = k.end_summaries && k.end_summaries.length ? k.end_summaries.join("<br>") : k.result || "流局";
-      const blunders = k.blunder_count || 0;
+      const matchText = decCount > 0 ? `${matchPct} <span style="font-size:11px; color:rgba(235,235,245,0.6);">(${matchCount}/${decCount})</span>` : "--";
+
+      const blunders = k.blunder_count ?? stats.blunders ?? (k.decisions ? k.decisions.filter((d) => d.verdict === "blunder").length : 0);
+
+      totDecs += decCount;
+      totMatches += matchCount;
+      totBlunders += blunders;
+
+      // 结算文本
+      const rawSummaries = k.end_summaries && k.end_summaries.length
+        ? k.end_summaries.join("<br>")
+        : (k.result || "流局");
+      const resultText = escapeHtml(sanitizeSummaryText(rawSummaries)).replace(/&lt;br&gt;/g, "<br>");
+
+      // 一致率颜色阶
+      const matchNum = decCount > 0 ? (matchCount / decCount) * 100 : 0;
+      const matchColor = decCount === 0 ? "rgba(235,235,245,0.4)" : matchNum >= 80 ? "#30d158" : matchNum >= 65 ? "#0a84ff" : "#ff9f0a";
+
+      const currentDelta = deltas[targetActor] ?? 0;
+
+      // 4 Players columns HTML
+      const playersColsHtml = [0, 1, 2, 3].map((s) => {
+        const scoreVal = k.end_scores ? k.end_scores[s] : 25000;
+        const dVal = deltas[s];
+        const isTarget = s === targetActor;
+        const tdClass = isTarget ? "active-pov-td" : "";
+        return `
+          <td class="${tdClass}" style="text-align:right;">
+            <span class="score-num">${fmtInt(scoreVal)}</span>
+            ${fmtDeltaHtml(dVal)}
+          </td>
+        `;
+      }).join("");
+
+      const isCurrentKyoku = idx === state.kyokuIdx;
       return `
-        <tr data-kidx="${idx}">
-          <td style="font-weight:bold; color:var(--color-text-bright);">${escapeHtml(k.label || `东${idx + 1}`)}</td>
-          <td>${oyaWind}家</td>
-          <td>${resultText}</td>
-          <td>${k.points_delta !== undefined ? k.points_delta : "--"}</td>
-          <td style="color:#30d158; font-weight:bold;">${matchPct}</td>
-          <td style="color:${blunders > 0 ? "#ff453a" : "inherit"}; font-weight:${blunders > 0 ? "bold" : "normal"};">${blunders}</td>
+        <tr data-kidx="${idx}" class="${isCurrentKyoku ? 'active-kyoku-row' : ''}">
+          <td style="font-weight:700; color:var(--color-text-bright); text-align:center;">${escapeHtml(kyokuName)}</td>
+          <td style="text-align:center; color:var(--color-text-secondary);">${escapeHtml(honbaStr)}</td>
+          <td style="text-align:center;">${oyaDisplay}</td>
+          <td style="text-align:left; font-size:12px; line-height:1.4;">${resultText}</td>
+          ${playersColsHtml}
+          <td style="text-align:right; font-weight:700;">${fmtDeltaHtml(currentDelta)}</td>
+          <td style="color:${matchColor}; font-weight:700; text-align:center;" title="${stats.discard_total !== undefined ? `切牌: ${stats.discard_matches}/${stats.discard_total}, 鸣牌: ${stats.call_matches}/${stats.call_total}` : `${matchCount}/${decCount}`}">${matchText}</td>
+          <td style="text-align:center;">
+            <span class="blunder-badge-num ${blunders > 0 ? 'has-blunder' : 'zero'}">${blunders}</span>
+          </td>
         </tr>
       `;
     })
@@ -1057,6 +1730,51 @@ function openRoundScoresModal() {
     });
   });
 
+  // 3. Table Footer (全庄终局汇总)
+  if (tfoot && res.kyokus.length > 0) {
+    const lastKyoku = res.kyokus[res.kyokus.length - 1];
+    const finalScores = lastKyoku.end_scores || [25000, 25000, 25000, 25000];
+    const totalMatchPct = totDecs > 0 ? ((totMatches / totDecs) * 100).toFixed(1) + "%" : "--";
+    const totalMatchText = `${totalMatchPct} <span style="font-size:11px; color:rgba(235,235,245,0.6);">(${totMatches}/${totDecs})</span>`;
+    const targetCumDelta = cumDeltas[targetActor] ?? 0;
+
+    // Calculate ranking 1位..4位
+    const sortedSeats = [0, 1, 2, 3].sort((a, b) => finalScores[b] - finalScores[a]);
+    const ranks = {};
+    sortedSeats.forEach((s, r) => { ranks[s] = r + 1; });
+
+    tfoot.innerHTML = `
+      <tr>
+        <td style="text-align:center; font-weight:700; color:#ffcc00;">全庄终局</td>
+        <td style="text-align:center; color:var(--color-text-secondary);">${res.kyokus.length} 局</td>
+        <td style="text-align:center; color:var(--color-text-secondary);">-</td>
+        <td style="text-align:left; font-weight:700; color:var(--color-text-bright);">全庄结算总分</td>
+        ${[0, 1, 2, 3].map((s) => {
+          const isTarget = s === targetActor;
+          const tdClass = isTarget ? "active-pov-td" : "";
+          const rankBadge = `<span style="font-size:10px; color:${ranks[s] === 1 ? '#ffcc00' : 'rgba(235,235,245,0.6)'}; margin-left:3px;">[${ranks[s]}位]</span>`;
+          return `
+            <td class="${tdClass}" style="text-align:right;">
+              <span class="score-num">${fmtInt(finalScores[s])}</span>
+              ${fmtDeltaHtml(cumDeltas[s])}
+              ${rankBadge}
+            </td>
+          `;
+        }).join("")}
+        <td style="text-align:right; font-weight:700;">${fmtDeltaHtml(targetCumDelta)}</td>
+        <td style="text-align:center; font-weight:700; color:#30d158;">${totalMatchText}</td>
+        <td style="text-align:center;">
+          <span class="blunder-badge-num ${totBlunders > 0 ? 'has-blunder' : 'zero'}">${totBlunders}</span>
+        </td>
+      </tr>
+    `;
+  }
+}
+
+function openRoundScoresModal() {
+  const res = state.reviewData;
+  if (!res || !res.kyokus) return;
+  renderKyokuTable();
   openModal("roundModal");
 }
 
@@ -1118,9 +1836,23 @@ function bindEvents() {
 
   // Toggle Hands Visibility
   $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
-  document.querySelectorAll(".grid-hand, .grid-hand-p0-container, [id^='hand']").forEach((el) => {
-    el.addEventListener("click", toggleHandsVisibility);
+
+  // Toggle Hide/Show Player ID
+  $("btnToggleHideId")?.addEventListener("click", toggleHidePlayerId);
+
+  // Global robust delegation for clicking anywhere on hands / tiles / back tiles / blank area:
+  document.addEventListener("click", (e) => {
+    const handTarget = e.target.closest(".grid-hand, .grid-hand-p0-container, [id^='hand'], .hand-closed-p0, .hand-closed-p1, .hand-closed-p2, .hand-closed-p3");
+    if (handTarget) {
+      if (e.target.closest("button, a, select, input")) return;
+      toggleHandsVisibility();
+    }
   });
+
+  // Theme & Appearance Selectors
+  $("themeSelect")?.addEventListener("change", (e) => applyTheme(e.target.value));
+  $("themeSelectCard")?.addEventListener("change", (e) => applyTheme(e.target.value));
+  $("backSelectCard")?.addEventListener("change", (e) => applyBack(e.target.value));
 
   // Step timeline slider
   $("stepSlider")?.addEventListener("input", (e) => {
@@ -1128,42 +1860,28 @@ function bindEvents() {
     setStep(parseInt(e.target.value, 10));
   });
 
-  // Navigation controls
-  $("btnPrevKyoku")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpPrevKyoku();
-  });
-  $("btnNextKyoku")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpNextKyoku();
-  });
-  $("btnPrevBlunder")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpPrevBlunder();
-  });
-  $("btnNextBlunder")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpNextBlunder();
-  });
-  $("btnPrevDec")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpPrevDecision();
-  });
-  $("btnNextDec")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    jumpNextDecision();
-  });
-  $("btnPrevStep")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    stepDelta(-1);
-  });
-  $("btnNextStep")?.addEventListener("click", () => {
-    if (state.isPlaying) togglePlay(false);
-    stepDelta(1);
-  });
+  // Navigation controls (Bound to both top header stepper & sidebar buttons)
+  const bindNavClick = (ids, fn) => {
+    ids.forEach((id) => {
+      $(id)?.addEventListener("click", () => {
+        if (state.isPlaying) togglePlay(false);
+        fn();
+      });
+    });
+  };
+  bindNavClick(["btnPrevKyoku"], jumpPrevKyoku);
+  bindNavClick(["btnNextKyoku"], jumpNextKyoku);
+  bindNavClick(["btnPrevBlunder", "btnPrevBlunderTop"], jumpPrevBlunder);
+  bindNavClick(["btnNextBlunder", "btnNextBlunderTop"], jumpNextBlunder);
+  bindNavClick(["btnPrevDec", "btnPrevDecTop"], jumpPrevDecision);
+  bindNavClick(["btnNextDec", "btnNextDecTop"], jumpNextDecision);
+  bindNavClick(["btnPrevStep", "btnPrevStepTop"], () => stepDelta(-1));
+  bindNavClick(["btnNextStep", "btnNextStepTop"], () => stepDelta(1));
 
   // Round modal
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);
+  $("btnRoundScoreHeader")?.addEventListener("click", openRoundScoresModal);
+  $("gameSummaryPill")?.addEventListener("click", openRoundScoresModal);
   $("roundModalClose")?.addEventListener("click", () => closeModal("roundModal"));
 
   // Engine modal
@@ -1251,6 +1969,9 @@ window.addEventListener("resize", updateResponsiveZoom);
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
   updateResponsiveZoom();
+  applyTheme(state.currentTheme, false);
+  applyBack(state.customBack, false);
+  applyHidePlayerId();
   bindEvents();
   await refreshServerStatus();
 
@@ -1260,7 +1981,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (paipuParam) {
     const input = $("homePaipuInput");
     if (input) input.value = paipuParam;
-    await startAnalysisFromInput(paipuParam, "akagi", 0);
+    await startAnalysisFromInput(paipuParam, "akagi", null);
   } else {
     const input = $("homePaipuInput");
     if (input) input.value = "";

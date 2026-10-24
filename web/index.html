@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>牌谱检讨 · 雀魂 AI 复盘</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🀄</text></svg>" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -28,11 +28,11 @@
 
         <div class="kd-model-group">
           <button type="button" class="kd-model-btn active" data-model="akagi" id="btnModelAkagi">
-            <span>🔥 赤木 Akagi (v4)</span>
+            <span>赤木 Akagi (v4)</span>
             <span style="font-size:11px; opacity:0.75;">582k步 进攻强化</span>
           </button>
           <button type="button" class="kd-model-btn" data-model="mortal" id="btnModelMortal">
-            <span>🍃 Mortal 核心 (v3)</span>
+            <span>Mortal 核心 (v3)</span>
             <span style="font-size:11px; opacity:0.75;">天凤十段 平衡型</span>
           </button>
         </div>
@@ -48,28 +48,52 @@
   <section id="tier2Screen" class="kd-tier2 hidden">
     <!-- Top Header -->
     <header class="kd-header">
-      <div class="kd-header-left">
-        <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
-        <select id="kyokuSelect" class="kd-kyoku-select" title="直接切换局数"></select>
-        <div id="seatTabs" class="kd-seat-tabs"></div>
+      <!-- Tier 1: Global Toolbar (Brand, Seats & Preferences) -->
+      <div class="kd-header-row kd-header-top">
+        <div class="kd-header-left">
+          <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
+          <div id="seatTabs" class="kd-seat-tabs"></div>
+        </div>
+
+        <div class="kd-header-right">
+          <select id="themeSelect" class="kd-kyoku-select" title="切换界面与牌桌主题" style="padding:5px 8px; font-size:12px; background:rgba(255,255,255,0.08); border-radius:18px;">
+            <option value="apple-dark">深空暗黑</option>
+            <option value="majsoul-green">雀庄翠绿</option>
+            <option value="midnight-navy">深海藏青</option>
+            <option value="true-black">极夜纯黑</option>
+          </select>
+          <button id="btnToggleHideId" class="kd-chip-btn" title="切换是否隐藏玩家ID与昵称">隐藏ID</button>
+          <button id="btnToggleHands" class="kd-chip-btn" title="切换别家明牌/暗牌 (快捷键 H)">
+            <span id="toggleHandsText">明牌</span>
+          </button>
+          <button id="btnOpenEngineModal" class="kd-chip-btn" title="点击切换分析模型">
+            <span id="engineStatusText">赤木 Akagi · CPU</span>
+          </button>
+          <div id="gameSummaryPill" class="kd-match-badge" title="点击查看全庄得点表">AI 一致率: --%</div>
+        </div>
       </div>
 
-      <div class="kd-header-mid">
-        <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">▶ 播放</button>
-        <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
-        <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
-      </div>
+      <!-- Tier 2: Step Controller & Timeline Scrubber Bar -->
+      <div class="kd-header-row kd-header-bottom">
+        <div class="kd-step-left">
+          <select id="kyokuSelect" class="kd-kyoku-select" title="直接切换局数"></select>
+          <button id="btnRoundScoreHeader" class="kd-chip-btn" title="查看全庄得点变动与 AI 一致率表">全庄得点</button>
+        </div>
 
-      <div class="kd-header-right">
-        <button id="btnToggleHands" class="kd-chip-btn" title="切换别家明牌/暗牌 (快捷键 H)">
-          <span>👁</span>
-          <span id="toggleHandsText">明牌</span>
-        </button>
-        <button id="btnOpenEngineModal" class="kd-chip-btn" title="点击切换分析模型">
-          <span>⚙</span>
-          <span id="engineStatusText">赤木 Akagi · CPU</span>
-        </button>
-        <div id="gameSummaryPill" class="kd-match-badge">AI 一致率: --%</div>
+        <div class="kd-step-mid">
+          <button id="btnPrevStepTop" class="kd-step-btn" title="后退一步 (←)">后退</button>
+          <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
+          <button id="btnNextStepTop" class="kd-step-btn" title="前进一步 (→)">前进</button>
+          <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
+          <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
+        </div>
+
+        <div class="kd-step-right">
+          <button id="btnPrevDecTop" class="kd-step-btn" title="上一切牌决策 (↑)">&lt; 决策</button>
+          <button id="btnNextDecTop" class="kd-step-btn" title="下一切牌决策 (↓)">决策 &gt;</button>
+          <button id="btnPrevBlunderTop" class="kd-step-btn blunder" title="上一错误手 (,)">&lt; 错误</button>
+          <button id="btnNextBlunderTop" class="kd-step-btn blunder" title="下一错误手 (.)">错误 &gt;</button>
+        </div>
       </div>
     </header>
 
@@ -147,36 +171,21 @@
               <span id="decVerdictBadge" class="kd-dec-verdict best">与 AI 一致</span>
             </div>
 
-            <!-- Vertical Large Decision Comparison Cards -->
+            <!-- Vertical Large Decision Comparison Cards: Player Choice on Top, AI on Bottom -->
             <div class="kd-hero-compare-vertical">
-              <!-- AI Recommended Choice -->
-              <div class="kd-choice-block kd-choice-ai">
-                <div class="kd-choice-badge-label">🔥 AI 推荐打法</div>
+              <!-- 1. Actual Player Choice (On Top) -->
+              <div class="kd-choice-block kd-choice-actual">
+                <div class="kd-choice-badge-label">玩家切</div>
                 <div class="kd-choice-content">
-                  <div id="decAiTileWrap" class="kd-choice-tile-wrap"></div>
-                  <div class="kd-choice-meta">
-                    <div id="decAiTileName" class="kd-choice-tilename">--</div>
-                    <div class="kd-choice-tags">
-                      <span id="decAiProbBadge" class="kd-tag-prob">--%</span>
-                      <span id="decAiShantenBadge" class="kd-tag-shanten">--</span>
-                      <span id="decAiUkeireBadge" class="kd-tag-ukeire">进张 --</span>
-                    </div>
-                  </div>
+                  <div id="decActualTileWrap" class="kd-choice-tile-wrap"></div>
                 </div>
               </div>
 
-              <!-- Actual Player Choice -->
-              <div class="kd-choice-block kd-choice-actual">
-                <div class="kd-choice-badge-label">👤 实战玩家打出</div>
+              <!-- 2. AI Recommended Choice (On Bottom) -->
+              <div class="kd-choice-block kd-choice-ai">
+                <div class="kd-choice-badge-label">模型切</div>
                 <div class="kd-choice-content">
-                  <div id="decActualTileWrap" class="kd-choice-tile-wrap"></div>
-                  <div class="kd-choice-meta">
-                    <div id="decActualTileName" class="kd-choice-tilename">--</div>
-                    <div class="kd-choice-tags">
-                      <span id="decActualProbBadge" class="kd-tag-prob">--%</span>
-                      <span id="decActualVerdictText" class="kd-tag-verdict">--</span>
-                    </div>
-                  </div>
+                  <div id="decAiTileWrap" class="kd-choice-tile-wrap"></div>
                 </div>
               </div>
             </div>
@@ -186,9 +195,9 @@
             <table class="kd-cand-table">
               <thead>
                 <tr>
-                  <th style="width:32px;">#</th>
+                  <th style="width:44px;">动作</th>
                   <th>牌面</th>
-                  <th>AI 推荐度</th>
+                  <th>模型权重</th>
                   <th>向听</th>
                   <th>进张</th>
                 </tr>
@@ -196,10 +205,13 @@
               <tbody id="decCandTableBody"></tbody>
             </table>
           </div>
+        </div>
 
-          <!-- Extracted Keyboard Shortcuts Card -->
-          <div class="kd-shortcuts-card">
-            <div class="kd-shortcuts-title">⌨️ 快捷操作速查</div>
+        <!-- Right Column 2: Secondary Sidebar (Shortcuts & Theme Cards on the Right) -->
+        <div class="sidebar-secondary">
+          <!-- Standalone Prominent Keyboard Shortcuts Card on the Right -->
+          <div class="kd-shortcuts-card" id="shortcutsCard">
+            <div class="kd-shortcuts-title">快捷操作速查</div>
             <table class="kd-shortcuts-table">
               <tbody>
                 <tr><td><code>空格</code></td><td>自动播放 / 暂停</td></tr>
@@ -211,6 +223,26 @@
               </tbody>
             </table>
           </div>
+
+          <!-- Appearance & Tile Back Customizer Card -->
+          <div class="kd-shortcuts-card kd-appearance-card">
+            <div class="kd-shortcuts-title">视觉主题与外观</div>
+            <div style="font-size:12px; margin-bottom:6px; color:var(--color-text-secondary);">牌桌主题配色</div>
+            <select id="themeSelectCard" class="kd-kyoku-select" style="width:100%; margin-bottom:12px; padding:6px 10px; font-size:12px;">
+              <option value="apple-dark">深空暗黑 (Apple Dark 默认)</option>
+              <option value="majsoul-green">经典雀庄翠绿 (Majsoul Green)</option>
+              <option value="midnight-navy">深海藏青 (Midnight Navy)</option>
+              <option value="true-black">极夜 OLED 纯黑 (True Black)</option>
+            </select>
+            <div style="font-size:12px; margin-bottom:6px; color:var(--color-text-secondary);">暗牌背面颜色</div>
+            <select id="backSelectCard" class="kd-kyoku-select" style="width:100%; padding:6px 10px; font-size:12px;">
+              <option value="auto">随主题自动适配 (推荐)</option>
+              <option value="back-red">经典赤红 (保留原版)</option>
+              <option value="back-navy">沉稳藏青 (低饱和深海)</option>
+              <option value="back-green">翡翠竹青 (雅致墨玉)</option>
+              <option value="back-dark">曜石深灰 (深空高级感)</option>
+            </select>
+          </div>
         </div>
       </div>
     </main>
@@ -220,20 +252,18 @@
   <div id="roundModalBackdrop" class="modal-backdrop hidden"></div>
   <div id="roundModal" class="modal hidden">
     <button id="roundModalClose" class="close">×</button>
-    <h3 style="margin-bottom:12px; font-size:16px;">全庄得点变动与 AI 一致率表</h3>
+    <div class="round-modal-header" style="margin-bottom:12px;">
+      <h3 style="margin-bottom:4px; font-size:17px; font-weight:700; display:flex; align-items:center; gap:8px;">
+        <span>全庄得点变动与 AI 一致率表</span>
+      </h3>
+      <div id="roundModalSub" style="font-size:12px; color:var(--color-text-secondary); margin-bottom:10px;"></div>
+      <div id="roundModalPovTabs" class="round-modal-pov-tabs"></div>
+    </div>
     <div class="info-round-table">
-      <table>
-        <thead>
-          <tr>
-            <th>局</th>
-            <th>庄家</th>
-            <th>和牌 / 结算</th>
-            <th>得分变动</th>
-            <th>AI 一致率</th>
-            <th>恶手数</th>
-          </tr>
-        </thead>
+      <table id="roundTable">
+        <thead id="roundTableHead"></thead>
         <tbody id="roundTableBody"></tbody>
+        <tfoot id="roundTableFoot"></tfoot>
       </table>
     </div>
   </div>
@@ -242,7 +272,7 @@
   <div id="engineModalBackdrop" class="modal-backdrop hidden"></div>
   <div id="engineModal" class="modal hidden">
     <button id="engineModalClose" class="close">×</button>
-    <h3 style="margin-bottom:12px; font-size:16px;">⚙ 切换 AI 推理模型</h3>
+    <h3 style="margin-bottom:12px; font-size:16px;">切换 AI 推理模型</h3>
     <div id="engineModalDetail" style="font-size:12px; line-height:1.8; margin-bottom:14px; background:var(--color-main); padding:10px; border-radius:4px;"></div>
     <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
       <label>
