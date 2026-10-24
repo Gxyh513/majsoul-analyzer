@@ -181,6 +181,7 @@ async def ensure_ms_logged_in():
 async def api_status():
     cfg = load_config()
     return {
+        "ok": True,
         "majsoul": {
             "logged_in": ms_client.logged_in,
             "account_id": ms_client.account_id,
