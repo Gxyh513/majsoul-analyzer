@@ -118,11 +118,21 @@ function tileCn(pai) {
   return pai;
 }
 
-function shantenText(s) {
+function shantenText(s, agariLabel = "自摸") {
   if (s === undefined || s === null) return "-";
-  if (s < 0) return "和牌";
+  if (s < 0) return agariLabel || "自摸";
   if (s === 0) return "听牌";
   return `${s} 向听`;
+}
+
+function tileSortOrder(pai) {
+  if (!pai) return 999;
+  const suitOrder = { m: 100, p: 200, s: 300, z: 400 };
+  const charOrder = { E: 401, S: 402, W: 403, N: 404, P: 405, F: 406, C: 407, "1z": 401, "2z": 402, "3z": 403, "4z": 404, "5z": 405, "6z": 406, "7z": 407 };
+  if (charOrder[pai]) return charOrder[pai];
+  const num = pai[0] === "0" ? 5.5 : parseInt(pai[0], 10);
+  const suit = pai[1];
+  return (suitOrder[suit] || 900) + (isNaN(num) ? 0 : num);
 }
 
 function fmtPct(v, digits = 1) {
@@ -647,7 +657,7 @@ function getStepActionDesc(snap, kyoku) {
         return `${actorLabel} 荣和 ${targetLabel}${deltaStr}`;
       } else {
         const deltaStr = ev.deltas?.[ev.actor] ? ` (+${ev.deltas[ev.actor]}点)` : "";
-        return `${actorLabel} 自摸和牌${deltaStr}`;
+        return `${actorLabel} 自摸${deltaStr}`;
       }
     case "ryuukyoku":
       return `荒牌流局结算`;
@@ -835,10 +845,10 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     const isAct = highlightedIdx === hand.length;
     const isWinTile = seat === winActor;
     handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    handHtml += `<div class="tileDiv ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸和牌: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
+    handHtml += `<div class="tileDiv ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
   } else if (seat === winActor && isRon && agariTile) {
     handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    handHtml += `<div class="tileDiv agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和牌: ${tileCn(agariTile)}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
+    handHtml += `<div class="tileDiv agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${tileCn(agariTile)}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
   }
 
   closedWrap.innerHTML = handHtml;
@@ -889,10 +899,10 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
   if (drawn) {
     const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
     html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    html += `<div class="tileDiv ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""}" title="${isWinner ? `自摸和牌: ${tileCn(drawn)}` : ""}"></div>`;
+    html += `<div class="tileDiv ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
   } else if (isWinner && isRon && agariTile) {
     html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    html += `<div class="tileDiv agari-tile"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" title="荣和牌: ${tileCn(agariTile)}"></div>`;
+    html += `<div class="tileDiv agari-tile"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" title="荣和: ${tileCn(agariTile)}"></div>`;
   }
 
   closedWrap.innerHTML = html;
@@ -977,7 +987,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     `;
   }
   if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
-    const label = (actType.includes("ron") || actType.includes("荣")) ? "荣和" : (actType.includes("tsumo") || actType.includes("自摸")) ? "自摸" : "和牌";
+    const label = (actType.includes("ron") || actType.includes("荣")) ? "荣和" : "自摸";
     return `
       <div class="action-badge action-badge-hora" title="${label}">
         <span class="action-badge-text">${label}</span>
@@ -1027,7 +1037,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const isHora = snap?.event?.type === "hora";
   const isRyuukyoku = snap?.event?.type === "ryuukyoku";
 
-  // CASE 1: Round End (Hora / 和牌结算)
+  // CASE 1: Round End (Hora / 自摸/荣和结算)
   if (isHora) {
     const winActor = snap.event.actor;
     const tgtActor = snap.event.target;
@@ -1045,16 +1055,16 @@ function renderDecisionCard(dec, isExactStep, snap) {
       ? currentKyoku.end_summaries.join("<br>")
       : (isRon ? `${winWind}家 ${escapeHtml(winName)} 荣和 ${tgtWind}家 ${escapeHtml(tgtName)} +${scoreDelta}` : `${winWind}家 ${escapeHtml(winName)} 自摸 +${scoreDelta}`);
 
-    if (turnEl) turnEl.textContent = `本局终局结算 (${isRon ? "荣和" : "自摸"})`;
+    if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
       if (isHeroWin) {
-        badgeEl.textContent = "自家和牌";
+        badgeEl.textContent = isRon ? "自家荣和" : "自家自摸";
         badgeEl.className = "kd-dec-verdict best";
       } else if (isHeroLoser) {
         badgeEl.textContent = "自家放铳";
         badgeEl.className = "kd-dec-verdict blunder";
       } else {
-        badgeEl.textContent = `${winWind}家和牌`;
+        badgeEl.textContent = `${winWind}家${isRon ? "荣和" : "自摸"}`;
         badgeEl.className = "kd-dec-verdict agari";
       }
     }
@@ -1071,7 +1081,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
     if (actualTileWrap) {
       actualTileWrap.innerHTML = agariTile
         ? `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile">`
-        : renderDecisionTileOrBadge(null, { type: "hora" }, "和牌");
+        : renderDecisionTileOrBadge(null, { type: "hora" }, isRon ? "荣和" : "自摸");
     }
     if (actualTileName) {
       actualTileName.style.display = "block";
@@ -1079,7 +1089,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
     }
     if (actualProbBadge) actualProbBadge.textContent = `+${scoreDelta} 点`;
     if (actualVerdictText) {
-      actualVerdictText.textContent = isHeroWin ? "自家和牌" : isHeroLoser ? "放铳" : "终局";
+      actualVerdictText.textContent = isHeroWin ? (isRon ? "自家荣和" : "自家自摸") : isHeroLoser ? "放铳" : (isRon ? "荣和" : "自摸");
       actualVerdictText.className = isHeroWin ? "kd-tag-verdict best" : isHeroLoser ? "kd-tag-verdict blunder" : "kd-tag-verdict question";
     }
     if (actualBlock) {
@@ -1096,7 +1106,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
       aiTileName.textContent = isRon ? `放铳者: ${tgtWind}家 ${tgtName}` : "自摸终局";
     }
     if (aiProbBadge) aiProbBadge.textContent = "终局结算";
-    if (aiShantenBadge) aiShantenBadge.textContent = "和牌";
+    if (aiShantenBadge) aiShantenBadge.textContent = isRon ? "荣和" : "自摸";
     if (aiUkeireBadge) {
       const uras = snap.event.ura_markers || [];
       aiUkeireBadge.textContent = uras.length ? `里宝: ${uras.map(tileCn).join(" ")}` : "本局结束";
@@ -1109,7 +1119,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
           <td colspan="5" style="padding:8px 2px;">
             <div class="kd-settlement-card">
               <div class="kd-settlement-title-row">
-                <span>${isRon ? "荣和 (放铳终局)" : "自摸 (和牌终局)"}</span>
+                <span>${isRon ? "荣和 (放铳终局)" : "自摸终局"}</span>
                 <span style="font-size:14px; font-weight:800; color:#30d158;">+${scoreDelta} 点</span>
               </div>
               <div class="kd-settlement-summary-text">${summaryText}</div>
@@ -1141,7 +1151,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   // CASE 2: Round End (Ryuukyoku / 流局结算)
   if (isRyuukyoku) {
-    if (turnEl) turnEl.textContent = "本局终局结算 (荒牌流局)";
+    if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
       badgeEl.textContent = "荒牌流局";
       badgeEl.className = "kd-dec-verdict cruise";
@@ -1198,7 +1208,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   // CASE 3: Normal or Cruise Steps
   if (!dec) {
-    if (turnEl) turnEl.textContent = `${wind}家 (巡航中)`;
+    if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
       badgeEl.textContent = "巡航中";
       badgeEl.className = "kd-dec-verdict cruise";
@@ -1224,12 +1234,11 @@ function renderDecisionCard(dec, isExactStep, snap) {
     }
     if (actualBlock) actualBlock.classList.remove("is-blunder");
 
-    const dynamicDesc = getStepActionDesc(snap, currentKyoku);
     if (tableBody) {
       tableBody.innerHTML = `
         <tr>
           <td colspan="5" style="padding:14px 8px;">
-            <div class="kd-step-dynamic-desc">${dynamicDesc ? `当前步: ${escapeHtml(dynamicDesc)}` : "暂无 AI 决策建议 (巡航中)"}</div>
+            <div style="text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">暂无 AI 决策建议 (巡航中)</div>
           </td>
         </tr>
       `;
@@ -1241,30 +1250,20 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const isCallDec = dec.decision_type === "call_response";
   const isReachDec = dec.decision_type === "reach";
 
-  if (turnEl) {
-    if (!isExactStep) {
-      turnEl.textContent = `${wind}家 (巡航中 · 别家行动)`;
-    } else if (isCallDec) {
-      turnEl.textContent = `${wind}家 鸣牌响应决策`;
-    } else if (isReachDec) {
-      turnEl.textContent = `${wind}家 立直宣言决策`;
-    } else {
-      turnEl.textContent = `${wind}家 切牌决策`;
-    }
-  }
+  if (turnEl) turnEl.textContent = "";
 
   if (badgeEl) {
     if (!isExactStep) {
       badgeEl.textContent = "巡航中";
       badgeEl.className = "kd-dec-verdict cruise";
     } else if (isMatch) {
-      badgeEl.textContent = "AI 一致";
+      badgeEl.textContent = "模型一致";
       badgeEl.className = "kd-dec-verdict best";
     } else if (dec.verdict === "blunder") {
       badgeEl.textContent = "恶手";
       badgeEl.className = "kd-dec-verdict blunder";
     } else {
-      badgeEl.textContent = dec.verdict_cn || "微差";
+      badgeEl.textContent = dec.verdict_cn || "疑问手";
       badgeEl.className = "kd-dec-verdict question";
     }
   }
@@ -1276,12 +1275,13 @@ function renderDecisionCard(dec, isExactStep, snap) {
     actualTileWrap.innerHTML = renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn);
   }
   if (actualTileName) {
-    if (isActTile) {
+    if (isActTile && (!dec.actual || dec.actual.type === "dahai")) {
       actualTileName.textContent = "";
       actualTileName.style.display = "none";
     } else {
       actualTileName.style.display = "block";
-      actualTileName.textContent = dec.actual_cn || "跳过 (Pass)";
+      const actText = (dec.actual_cn || "跳过 (Pass)").replace(/和牌/g, isCallDec ? "荣和" : "自摸");
+      actualTileName.textContent = actText;
     }
   }
   if (actualProbBadge) {
@@ -1292,13 +1292,13 @@ function renderDecisionCard(dec, isExactStep, snap) {
       actualVerdictText.textContent = "上一决策";
       actualVerdictText.className = "kd-tag-verdict cruise";
     } else if (isMatch) {
-      actualVerdictText.textContent = "AI 一致";
+      actualVerdictText.textContent = "模型一致";
       actualVerdictText.className = "kd-tag-verdict best";
     } else if (dec.verdict === "blunder") {
       actualVerdictText.textContent = "恶手";
       actualVerdictText.className = "kd-tag-verdict blunder";
     } else {
-      actualVerdictText.textContent = dec.verdict_cn || "微差";
+      actualVerdictText.textContent = dec.verdict_cn || "疑问手";
       actualVerdictText.className = "kd-tag-verdict question";
     }
   }
@@ -1315,12 +1315,13 @@ function renderDecisionCard(dec, isExactStep, snap) {
     aiTileWrap.innerHTML = renderDecisionTileOrBadge(expPai, dec.expected, dec.expected_cn);
   }
   if (aiTileName) {
-    if (isExpTile) {
+    if (isExpTile && (!dec.expected || dec.expected.type === "dahai")) {
       aiTileName.textContent = "";
       aiTileName.style.display = "none";
     } else {
       aiTileName.style.display = "block";
-      aiTileName.textContent = dec.expected_cn || "跳过 (Pass)";
+      const expText = (dec.expected_cn || "跳过 (Pass)").replace(/和牌/g, isCallDec ? "荣和" : "自摸");
+      aiTileName.textContent = expText;
     }
   }
   if (aiProbBadge) {
@@ -1328,7 +1329,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   }
   if (aiShantenBadge) {
     const sVal = bestCand?.shanten_after ?? bestCand?.shanten ?? dec.shanten;
-    aiShantenBadge.textContent = shantenText(sVal);
+    aiShantenBadge.textContent = shantenText(sVal, isCallDec ? "荣和" : "自摸");
   }
   if (aiUkeireBadge) {
     const uk = bestCand?.ukeire ?? dec.expected?.ukeire;
@@ -1337,40 +1338,118 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   // 3. Top Candidates Table with Pure Graphic & Expandable Ukeire Detail Drawer
   const cands = (dec.candidates || []).slice(0, 5);
-  const dynamicDesc = !isExactStep ? getStepActionDesc(snap, currentKyoku) : "";
 
   if (tableBody) {
-    let headerRow = "";
-    if (!isExactStep && dynamicDesc) {
-      headerRow = `<tr><td colspan="5" style="padding:6px 6px;"><div class="kd-step-dynamic-desc">${escapeHtml(dynamicDesc)}</div></td></tr>`;
-    }
-
     const rowsHtml = cands
       .map((c, i) => {
-        const pai = c.pai || c.action?.pai;
-        const actType = (c.action?.type || "").toLowerCase();
-        const isMeld = actType && actType !== "dahai";
+        const act = c.action || {};
+        const rawType = (act.type || "").toLowerCase();
+        const cn = (c.action_cn || c.short_cn || "").toLowerCase();
 
+        let actionType = "dahai";
         let actionLabel = "切";
-        if (actType.includes("chi") || actType.includes("吃")) actionLabel = "吃";
-        else if (actType.includes("pon") || actType.includes("碰")) actionLabel = "碰";
-        else if (actType.includes("kan") || actType.includes("杠")) actionLabel = "杠";
-        else if (actType.includes("reach") || actType.includes("立直")) actionLabel = "立直";
-        else if (actType.includes("hora") || actType.includes("ron") || actType.includes("tsumo") || actType.includes("和")) {
-          actionLabel = (actType.includes("ron") || (c.action_cn && c.action_cn.includes("荣"))) ? "荣和" : (actType.includes("tsumo") || (c.action_cn && c.action_cn.includes("自摸"))) ? "自摸" : "和牌";
-        } else if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过")) {
-          actionLabel = "跳过";
-        } else if (isMeld) {
-          actionLabel = c.short_cn || c.action_cn || "动作";
+        let badgeClass = "action-dahai";
+
+        if (rawType.includes("chi") || cn.includes("吃")) {
+          actionType = "chi";
+          actionLabel = "吃";
+          badgeClass = "action-chi";
+        } else if (rawType.includes("pon") || cn.includes("碰")) {
+          actionType = "pon";
+          actionLabel = "碰";
+          badgeClass = "action-pon";
+        } else if (rawType.includes("kan") || cn.includes("杠")) {
+          actionType = "kan";
+          actionLabel = "杠";
+          badgeClass = "action-kan";
+        } else if (rawType.includes("ron") || cn.includes("荣") || (isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
+          actionType = "ron";
+          actionLabel = "荣和";
+          badgeClass = "action-hora";
+        } else if (rawType.includes("tsumo") || cn.includes("自摸") || (!isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
+          actionType = "tsumo";
+          actionLabel = "自摸";
+          badgeClass = "action-hora";
+        } else if (rawType.includes("reach") || rawType.includes("riichi") || cn.includes("立直")) {
+          actionType = "riichi";
+          actionLabel = "立直";
+          badgeClass = "action-riichi";
+        } else if (rawType.includes("none") || rawType.includes("pass") || cn.includes("pass") || cn.includes("跳过") || cn.includes("过") || cn.includes("不鸣")) {
+          actionType = "pass";
+          actionLabel = "切";
+          badgeClass = "action-dahai";
+        } else if (isCallDec) {
+          actionType = "pass";
+          actionLabel = "切";
+          badgeClass = "action-dahai";
+        } else {
+          actionType = "dahai";
+          actionLabel = "切";
+          badgeClass = "action-dahai";
         }
 
-        const isTile = !isMeld && pai && pai !== "none" && pai !== "pass";
+        // 牌面列
+        let tileDisplay = "";
+        const mainPai = c.pai || act.pai;
+        const consumed = act.consumed || [];
+
+        if (actionType === "chi" || actionType === "pon" || actionType === "kan") {
+          let comboTiles = [];
+          if (consumed.length > 0) {
+            comboTiles = [mainPai, ...consumed].filter(Boolean);
+          } else if (mainPai) {
+            if (actionType === "pon") comboTiles = [mainPai, mainPai, mainPai];
+            else if (actionType === "kan") comboTiles = [mainPai, mainPai, mainPai, mainPai];
+            else comboTiles = [mainPai];
+          }
+          comboTiles.sort((a, b) => tileSortOrder(a) - tileSortOrder(b));
+          if (comboTiles.length > 0) {
+            tileDisplay = `<div class="kd-cand-tile-combo">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="kd-cand-tile-img" title="${tileCn(t)}">`).join("")}</div>`;
+          } else {
+            tileDisplay = `<span class="kd-cand-pass-text">${escapeHtml(actionLabel)}</span>`;
+          }
+        } else if (actionType === "pass") {
+          if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(mainPai)}.svg" class="kd-cand-tile-img" title="${tileCn(mainPai)}">`;
+          } else {
+            tileDisplay = `<span class="kd-cand-pass-text">跳过</span>`;
+          }
+        } else if (actionType === "ron" || actionType === "tsumo") {
+          const agariTile = mainPai || dec.context_tile || dec.actual?.pai || dec.expected?.pai;
+          if (agariTile && agariTile !== "none" && agariTile !== "pass") {
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="kd-cand-tile-img agari-tile" title="${actionType === "ron" ? "荣和" : "自摸"}: ${tileCn(agariTile)}">`;
+          } else {
+            tileDisplay = `<span class="kd-cand-pass-text" style="color:#30d158; font-weight:700;">${actionType === "ron" ? "荣和" : "自摸"}</span>`;
+          }
+        } else {
+          if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(mainPai)}.svg" class="kd-cand-tile-img" title="${tileCn(mainPai)}">`;
+          } else {
+            tileDisplay = `<span class="kd-cand-pass-text">--</span>`;
+          }
+        }
+
+        // 判定是否是实际出牌/动作
+        let isAct = false;
+        if (dec.actual) {
+          if (actionType === "pass" && (dec.actual.type === "none" || dec.actual.type === "pass")) {
+            isAct = true;
+          } else if (act.type && dec.actual.type === act.type) {
+            if (mainPai && dec.actual.pai) {
+              isAct = mainPai === dec.actual.pai;
+            } else {
+              isAct = true;
+            }
+          } else if (mainPai && dec.actual.pai && mainPai === dec.actual.pai) {
+            isAct = true;
+          }
+          if (!isAct && c.action_cn && dec.actual_cn) {
+            isAct = c.action_cn === dec.actual_cn;
+          }
+        }
+
         const prob = fmtPct(c.prob);
-        const isAct = (pai && pai === actPai) || c.action_cn === dec.actual_cn;
         const isAi = c.rank === 1;
-        const tileDisplay = (isTile || (pai && pai !== "none" && pai !== "pass"))
-          ? `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="kd-cand-tile-img" title="${tileCn(pai)}">`
-          : `<span class="kd-cand-action" style="padding:3px 7px;">${escapeHtml(actionLabel)}</span>`;
         const rowBg = isAct
           ? "background:rgba(255, 69, 58, 0.16);"
           : isAi
@@ -1406,10 +1485,10 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
         return `
           <tr class="kd-cand-row ${isExpanded ? 'is-expanded' : ''}" style="${rowBg}" onclick="toggleCandUkeire(event, ${i})">
-            <td><span class="kd-cand-action">${escapeHtml(actionLabel)}</span></td>
+            <td><span class="kd-cand-action ${badgeClass}">${escapeHtml(actionLabel)}</span></td>
             <td style="text-align:center;">${tileDisplay}</td>
             <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
-            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal)}</span></td>
+            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal, actionType === "ron" ? "荣和" : "自摸")}</span></td>
             <td>${uCell}</td>
           </tr>
           ${detailRow}
@@ -1417,7 +1496,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
       })
       .join("");
 
-    tableBody.innerHTML = headerRow + rowsHtml;
+    tableBody.innerHTML = rowsHtml;
   }
 }
 
@@ -1626,7 +1705,7 @@ function renderKyokuTable() {
         <th style="width:68px;">局名</th>
         <th style="width:64px;">本场</th>
         <th style="width:110px;">庄家</th>
-        <th style="text-align:left; min-width:180px;">和牌 / 结算</th>
+        <th style="text-align:left; min-width:180px;">自摸 / 荣和 / 结算</th>
         ${names.map((name, s) => {
           const isTarget = s === targetActor;
           const thClass = isTarget ? "active-pov-th" : "";
