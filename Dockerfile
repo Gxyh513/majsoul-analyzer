@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build Rust native extension (libriichi.so)
 # =============================================================================
-FROM rust:1.80-slim AS builder
+FROM rust:latest AS builder
 
 WORKDIR /build
 
@@ -45,8 +45,9 @@ COPY --from=builder /build/vendor/Mortal/target/release/libriichi.so /app/server
 # Ensure data directories exist
 RUN mkdir -p data/models data/records data/cache
 
-# Download default Mortal (v3) lightweight model weights if not provided
+# Download default Mortal (v3) lightweight model weights if not provided (with hf-mirror fallback)
 RUN if [ ! -f data/models/mortal.pth ]; then \
+      curl -L -o data/models/mortal.pth https://hf-mirror.com/VoidShine/mortal-298k/resolve/main/mortal_298k.pth || \
       curl -L -o data/models/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth; \
     fi
 
