@@ -35,8 +35,14 @@ cargo_bin = os.path.expanduser("~/.cargo/bin")
 if cargo_bin not in os.environ.get("PATH", ""):
     os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
 
-so_path = os.path.join("server", "engine", "libriichi.so")
+so_path = os.path.join(root_dir, "server", "engine", "libriichi.so")
 if not os.path.isfile(so_path):
+    mortal_cargo = os.path.join(root_dir, "vendor", "Mortal", "Cargo.toml")
+    if not os.path.isfile(mortal_cargo):
+        print("📦 拉取 Mortal 核心源码库...")
+        shutil.rmtree(os.path.join(root_dir, "vendor", "Mortal"), ignore_errors=True)
+        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/Equim-chan/Mortal.git", os.path.join(root_dir, "vendor", "Mortal")], check=True)
+
     if shutil.which("cargo") is None:
         print("🦀 安装 Rust/Cargo 编译工具链...")
         subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q", shell=True, check=True)
@@ -47,12 +53,17 @@ if not os.path.isfile(so_path):
     env = os.environ.copy()
     env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
     try:
-        subprocess.run(["cargo", "build", "-p", "libriichi", "--release"], cwd="vendor/Mortal", env=env, check=True)
-        for fname in ["libriichi.so", "riichi.so"]:
-            cand = os.path.join("vendor", "Mortal", "target", "release", fname)
-            if os.path.isfile(cand):
-                shutil.copyfile(cand, so_path)
-                print(f"✅ {fname} -> {so_path} 拷贝成功！")
+        subprocess.run(["cargo", "build", "-p", "libriichi", "--release"], cwd=os.path.join(root_dir, "vendor", "Mortal"), env=env, check=True)
+        found = False
+        for root, dirs, files in os.walk(os.path.join(root_dir, "vendor", "Mortal", "target", "release")):
+            for f in files:
+                if f.endswith(".so") and "riichi" in f:
+                    src = os.path.join(root, f)
+                    shutil.copyfile(src, so_path)
+                    print(f"✅ {f} -> {so_path} 拷贝成功！")
+                    found = True
+                    break
+            if found:
                 break
     except Exception as e:
         print(f"⚠️ Cargo 编译提示: {e}")
