@@ -4,6 +4,7 @@
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -19,24 +20,44 @@ if not os.path.isdir("majsoul-analyzer"):
     os.chdir("majsoul-analyzer")
 else:
     os.chdir("majsoul-analyzer")
+    subprocess.run(["git", "pull"], check=False)
 
 # 2. Install Python dependencies
 print("📥 安装 Python 依赖...")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], check=True)
 
-# 3. Compile Linux native libriichi.so if not exists
+# 3. Ensure Rust/Cargo is installed & compile Linux native libriichi.so
+cargo_bin = os.path.expanduser("~/.cargo/bin")
+if cargo_bin not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
+
 so_path = os.path.join("server", "engine", "libriichi.so")
 if not os.path.isfile(so_path):
+    if shutil.which("cargo") is None:
+        print("🦀 安装 Rust/Cargo 编译工具链...")
+        subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q", shell=True, check=True)
+        if cargo_bin not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
+
     print("⚙️ 编译 Linux libriichi 核心计算库 (使用 Rust)...")
+    env = os.environ.copy()
+    env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
     try:
-        subprocess.run(["cargo", "build", "-p", "libriichi", "--release"], cwd="vendor/Mortal", check=True)
-        rel_so = os.path.join("vendor", "Mortal", "target", "release", "libriichi.so")
-        if os.path.isfile(rel_so):
-            import shutil
-            shutil.copyfile(rel_so, so_path)
-            print("✅ libriichi.so 编译成功！")
+        subprocess.run(["cargo", "build", "-p", "libriichi", "--release"], cwd="vendor/Mortal", env=env, check=True)
+        for fname in ["libriichi.so", "riichi.so"]:
+            cand = os.path.join("vendor", "Mortal", "target", "release", fname)
+            if os.path.isfile(cand):
+                shutil.copyfile(cand, so_path)
+                print(f"✅ {fname} -> {so_path} 拷贝成功！")
+                break
     except Exception as e:
-        print(f"⚠️ Cargo 编译提示: {e}，尝试继续...")
+        print(f"⚠️ Cargo 编译提示: {e}")
+
+# Verify libriichi import
+try:
+    subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, 'server/engine'); import libriichi; print('✅ libriichi 核心库已正常加载！')"], check=True)
+except Exception:
+    print("⚠️ libriichi 验证未通过，可能影响 AI 检讨执行")
 
 # 4. Download AI weights if missing
 models_dir = os.path.join("data", "models")
@@ -44,12 +65,12 @@ os.makedirs(models_dir, exist_ok=True)
 mortal_path = os.path.join(models_dir, "mortal.pth")
 if not os.path.isfile(mortal_path):
     print("🧠 下载 Mortal (v3) 神经网络权重...")
-    subprocess.run(["curl", "-sSL", "-o", mortal_path, "https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth"])
+    subprocess.run(["curl", "-sSL", "-o", mortal_path, "https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth"], check=True)
 
 akagi_path = os.path.join(models_dir, "akagi.pth")
 if not os.path.isfile(akagi_path):
     print("🔥 下载 赤木 Akagi (v4 582k) 强化模型权重...")
-    subprocess.run(["curl", "-sSL", "-o", akagi_path, "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth"])
+    subprocess.run(["curl", "-sSL", "-o", akagi_path, "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth"], check=True)
 
 # 5. Download cloudflared for public tunneling
 if not os.path.isfile("cloudflared"):
@@ -73,12 +94,12 @@ while time.time() - start_t < 30:
         break
 
 if tunnel_url:
-    one_click_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}"
+    web_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}"
     print("\n" + "=" * 65)
     print(" 🎉 云端 GPU AI 引擎已成功启动！")
     print(f" 👉 您的云端 API 服务地址为:  {tunnel_url}")
-    print(f" 🔗 点击直接进入复盘网页 (已自动连接):")
-    print(f"    👉 {one_click_url}")
+    print("\n 🔗 点击直接进入复盘网页 (已自动连接):")
+    print(f"    👉 {web_url}")
     print("=" * 65 + "\n")
 else:
     print("⚠️ 隧道地址解析超时，请检查日志。")
