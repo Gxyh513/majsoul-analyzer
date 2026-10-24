@@ -237,33 +237,52 @@ kbd {
 .stage {
   position: absolute;
   left: 0;
-  top: 50%;
-  width: 820px;
-  height: 870px;
-  transform-origin: left center;
-  transform: translateY(-50%) scale(var(--stage-scale, 1));
-  border-radius: 14px;
+  top: 4px;
+  width: 750px;
+  height: 720px;
+  transform-origin: left top;
+  transform: scale(var(--stage-scale, 1));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: transparent;
+  overflow: hidden;
+}
+
+/* 牌桌 (绿台): 包含四家牌河、中央场况框、对手手牌 */
+.board {
+  position: relative;
+  width: 740px;
+  height: 526px;
+  margin: 0 auto;
+  border-radius: 12px;
   background: var(--felt);
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.05), var(--shadow);
   overflow: hidden;
 }
 
-.board { position: relative; width: 720px; height: 664px; margin: 0 auto; }
 .seat-layer {
-  position: absolute; left: 0; top: 0; width: 720px; height: 720px;
-  transform-origin: 360px 360px; pointer-events: none;
+  position: absolute; left: 0; top: 0; width: 740px; height: 500px;
+  transform-origin: 370px 248px; pointer-events: none;
 }
 .seat-layer.pos-right { transform: rotate(-90deg); }
 .seat-layer.pos-top { transform: rotate(180deg); }
 .seat-layer.pos-left { transform: rotate(90deg); }
 
+/* 牌河: 严格 6 列，宽度与场况框 204px 100% 对齐，紧贴场况框下沿 */
 .river {
-  position: absolute; top: 456px; left: 265px; width: 190px;
-  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 1px;
+  position: absolute;
+  top: 350px;
+  left: 268px;
+  width: 204px;
+  display: grid;
+  grid-template-columns: repeat(6, 34px);
+  grid-auto-rows: 46px;
+  gap: 0px;
 }
 .opp-row {
-  position: absolute; left: 0; right: 0; bottom: 8px;
-  display: flex; justify-content: center; align-items: flex-end; gap: 12px;
+  position: absolute; left: 0; right: 0; bottom: 38px;
+  display: flex; justify-content: center; align-items: flex-end; gap: 10px;
 }
 .opp-hand { display: flex; gap: 0; }
 .melds { display: flex; gap: 6px; align-items: flex-end; }
@@ -292,77 +311,94 @@ kbd {
 .riichi-tag { font-size: 10px; font-weight: 800; color: #fff; background: var(--blunder); border-radius: 4px; padding: 0 5px; line-height: 16px; }
 
 .center-box {
-  position: absolute; left: 282px; top: 282px; width: 156px; height: 156px;
-  border-radius: 12px; background: rgba(9, 24, 19, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  position: absolute;
+  left: 268px;
+  top: 146px;
+  width: 204px;
+  height: 204px;
+  border-radius: 6px;
+  background: #000000 !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.7);
+  z-index: 2;
 }
 .cseat {
-  position: absolute; display: flex; align-items: center; justify-content: center; gap: 4px;
-  font-variant-numeric: tabular-nums; color: #a9bac7; font-size: 11px; border-radius: 4px;
+  position: absolute; display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-variant-numeric: tabular-nums; color: #cbd5e1; font-size: 12px; border-radius: 4px;
 }
-.cseat b { color: #ffffff; font-size: 13px; }
-.cseat .cs-score { color: #ffffff; font-weight: 700; white-space: nowrap; font-size: 11px; }
+.cseat b { color: #f8fafc; font-size: 13px; font-weight: 700; }
+.cseat .cs-score { color: #ffffff; font-weight: 800; white-space: nowrap; font-size: 12px; }
 .cseat.is-oya b { color: var(--gold); }
-.cseat.is-turn { background: rgba(245, 158, 11, 0.2); box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.6); }
-.cseat.is-riichi::after { content: ""; position: absolute; width: 32px; height: 3px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px var(--blunder); }
-.cseat-top, .cseat-bottom { left: 24px; right: 24px; height: 22px; }
-.cseat-top { top: 4px; } .cseat-bottom { bottom: 4px; }
+.cseat.is-turn { background: rgba(245, 158, 11, 0.25); box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.7); }
+.cseat.is-riichi::after { content: ""; position: absolute; width: 36px; height: 3px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px var(--blunder); }
+.cseat-top, .cseat-bottom { left: 24px; right: 24px; height: 24px; }
+.cseat-top { top: 3px; } .cseat-bottom { bottom: 3px; }
 .cseat-top.is-riichi::after { bottom: -3px; } .cseat-bottom.is-riichi::after { top: -3px; }
-.cseat-left, .cseat-right { top: 24px; bottom: 24px; width: 38px; flex-direction: column; gap: 1px; font-size: 10.5px; }
-.cseat-left { left: 4px; } .cseat-right { right: 4px; }
-.cseat-left.is-riichi::after, .cseat-right.is-riichi::after { width: 3px; height: 32px; }
+.cseat-left, .cseat-right {
+  top: 24px; bottom: 24px; width: 24px;
+  display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 4px;
+  writing-mode: vertical-rl; text-orientation: sideways; font-size: 12px;
+}
+.cseat-left { left: 3px; }
+.cseat-right { right: 3px; transform: rotate(180deg); }
+.cseat-left.is-riichi::after, .cseat-right.is-riichi::after { width: 3px; height: 36px; }
 .cseat-left.is-riichi::after { right: -3px; } .cseat-right.is-riichi::after { left: -3px; }
 .center-mid {
-  position: absolute; left: 40px; right: 40px; top: 22px; bottom: 22px;
+  position: absolute; left: 32px; right: 32px; top: 28px; bottom: 28px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
 }
-.round-label { font-family: var(--kai); font-size: 20px; color: var(--gold); letter-spacing: 0.04em; line-height: 1.1; }
-.center-sub { display: flex; gap: 6px; font-size: 10px; color: #a9bac7; white-space: nowrap; }
-.dora-row { display: flex; gap: 2px; }
+.round-label { font-family: var(--kai); font-size: 22px; color: var(--gold); letter-spacing: 0.05em; line-height: 1.1; }
+.center-sub { display: flex; gap: 8px; font-size: 11px; color: #94a3b8; white-space: nowrap; }
+.dora-row { display: flex; gap: 3px; }
 
+/* 独立手牌托盘 (画一个独立的卡片容器，彻底与上方牌桌及牌河隔离) */
 .hero-dock {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 200px;
-  padding: 6px 14px 10px; background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.22) 100%);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  display: flex; flex-direction: column; gap: 4px;
+  position: relative;
+  width: 740px;
+  height: 186px;
+  margin: 0 auto;
+  padding: 6px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 10;
 }
-.dock-head { display: flex; align-items: center; gap: 10px; height: 30px; }
-.hero-tag {
-  display: flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 8px;
-  background: rgba(6, 20, 17, 0.55); border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 12px; flex-shrink: 0; max-width: 260px; color: #f4f7f5;
-}
-.event-text { flex: 1; min-width: 0; font-size: 12px; color: #d7e4dd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
-.action-banner { height: 30px; display: flex; align-items: center; gap: 6px; overflow: hidden; }
-.action-banner.is-empty { visibility: hidden; }
-.action-banner .ab-label { font-size: 11px; color: #cfe0d8; font-weight: 600; margin-right: 2px; }
+.dock-head { display: flex; align-items: center; justify-content: center; gap: 8px; height: 20px; }
+.hero-tag { display: none !important; }
+.event-text { font-size: 11px; color: #d7e4dd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.action-banner { height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px; overflow: hidden; }
+.action-banner.is-empty { visibility: hidden; height: 0; margin: 0; }
+.action-banner .ab-label { font-size: 12px; color: #cfe0d8; font-weight: 700; margin-right: 4px; }
 .ab-chip {
-  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 6px;
-  background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.1);
-  font-size: 12px; font-weight: 600; white-space: nowrap; color: #f4f7f5;
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6); border: 1.5px solid rgba(255, 255, 255, 0.18);
+  font-size: 13px; font-weight: 700; white-space: nowrap; color: #ffffff;
 }
-.ab-chip .ab-prob { color: #b7d4e4; }
+.ab-chip .ab-prob { color: #38bdf8; font-size: 13px; font-weight: 800; }
 .ab-chip.is-best { border-color: var(--best); }
 .ab-chip.is-actual:not(.is-best) { border-color: var(--blunder); }
 
-.hero-hand-row { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 12px; }
+.hero-hand-row { flex: 1; display: flex; align-items: flex-start; justify-content: center; gap: 10px; }
 .hero-hand { display: flex; gap: 0; align-items: flex-end; }
-.hero-melds { padding-bottom: 20px; }
+.hero-melds { padding-bottom: 16px; }
 .hero-slot { display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: pointer; }
-.hero-slot.drawn { margin-left: 12px; }
+.hero-slot.drawn { margin-left: 10px; }
 .bar-area {
-  height: 34px; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px;
+  height: 30px; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px;
 }
 .bar-text {
-  font-size: 12px; font-weight: 800; color: #ffffff; line-height: 1.1; font-variant-numeric: tabular-nums;
-  padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.65); text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  font-size: 11px; font-weight: 800; color: #ffffff; line-height: 1.1; font-variant-numeric: tabular-nums;
+  padding: 1px 3px; border-radius: 3px; background: rgba(0, 0, 0, 0.65); text-shadow: 0 1px 2px rgba(0,0,0,0.8);
 }
 .bar-track {
-  width: 22px; height: 22px; border-radius: 3px; background: rgba(0, 0, 0, 0.45); display: flex; align-items: flex-end; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);
+  width: 18px; height: 20px; border-radius: 3px; background: rgba(0, 0, 0, 0.45); display: flex; align-items: flex-end; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);
 }
 .bar-fill {
-  width: 100%; background: #38bdf8; border-radius: 3px;
+  width: 100%; background: #38bdf8; border-radius: 2px;
 }
 .hero-slot.best .bar-fill { background: #22c55e; }
 .hero-slot.best .bar-text { color: #86efac; background: rgba(22, 101, 52, 0.85); box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.4); }
@@ -373,7 +409,7 @@ kbd {
 .hero-slot.mismatch .mj-tile { box-shadow: 0 0 0 2px var(--blunder), 0 3px 6px rgba(0, 0, 0, 0.4); }
 .slot-badges { height: 14px; display: flex; gap: 2px; }
 
-.mini-badge { font-size: 10px; font-weight: 800; padding: 0 5px; border-radius: 4px; line-height: 16px; color: #fff; white-space: nowrap; }
+.mini-badge { font-size: 9.5px; font-weight: 800; padding: 0 4px; border-radius: 3px; line-height: 14px; color: #fff; white-space: nowrap; }
 .mini-badge.ai { background: var(--best); }
 .mini-badge.act-ok { background: #3d7d9a; }
 .mini-badge.act-bad { background: var(--blunder); }
@@ -381,7 +417,7 @@ kbd {
 .mj-tile {
   position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
   background: linear-gradient(180deg, #fffdf8 0%, #f3ede2 85%, #ddd3c0 100%);
-  border: 1px solid #b9b0a1; border-bottom: 3px solid #978d7b; border-radius: 4px;
+  border: 1px solid #b9b0a1; border-bottom: 3px solid #978d7b; border-radius: 3px;
   box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
 }
 .mj-tile img { width: 94%; height: 94%; object-fit: contain; pointer-events: none; }
@@ -399,17 +435,17 @@ kbd {
 .mj-tile.tile-called { opacity: 0.45; }
 .mj-tile.tile-last { box-shadow: 0 0 0 2px var(--gold), 0 0 10px rgba(224, 194, 122, 0.7); z-index: 1; }
 .mj-tile.tile-side { transform: rotate(90deg); }
-.t-hero  { width: 54px; height: 76px; border-radius: 4px; border-bottom-width: 4px; }
-.t-opp   { width: 32px; height: 44px; }
-.t-river { width: 31px; height: 43px; }
+.t-hero  { width: 48px; height: 68px; border-radius: 4px; border-bottom-width: 4px; }
+.t-opp   { width: 30px; height: 42px; }
+.t-river { width: 34px; height: 46px; }
 .t-meld  { width: 30px; height: 42px; }
-.t-hmeld { width: 42px; height: 58px; }
+.t-hmeld { width: 40px; height: 56px; }
 .t-dora  { width: 15px; height: 21px; border-bottom-width: 2px; border-radius: 3px; }
 .t-inline { width: 24px; height: 34px; border-bottom-width: 2px; border-radius: 3px; }
 .t-mini  { width: 20px; height: 28px; border-bottom-width: 2px; border-radius: 3px; }
-.t-river.tile-side { margin: 0 6px; }
-.t-meld.tile-side { margin: 0 5px; }
-.t-hmeld.tile-side { margin: 0 6px; }
+.t-river.tile-side { margin: 0; transform: rotate(90deg); }
+.t-meld.tile-side { margin: 0 6px; transform: translateY(6px) rotate(90deg); }
+.t-hmeld.tile-side { margin: 0 8px; transform: translateY(8px) rotate(90deg); }
 
 /* NAGA / KillerDucky 经典双列控制盘 */
 .ctrl-card { padding: 10px 12px 8px; }
