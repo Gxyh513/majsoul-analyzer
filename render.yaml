@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: majsoul-analyzer
+    env: docker
+    plan: free
+    region: singapore
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /api/status
