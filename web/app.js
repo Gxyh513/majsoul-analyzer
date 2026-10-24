@@ -15,8 +15,8 @@ const state = {
   serverStatus: null,
 };
 
-const STAGE_W = 920;
-const STAGE_H = 888;
+const STAGE_W = 820;
+const STAGE_H = 870;
 
 const WIND_CN = ["东", "南", "西", "北"];
 const TILE_CN_MAP = {
