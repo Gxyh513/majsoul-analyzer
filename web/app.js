@@ -3,7 +3,7 @@
  * 雀魂 AI 牌谱检讨系统前端控制器
  */
 
-const state = {
+const state = window.state = {
   reviewData: null,
   gameId: "demo",
   targetActor: 0,
@@ -438,17 +438,35 @@ function renderPlayerRiver(pos, seat, snap) {
   const river = snap.rivers[seat] || [];
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
 
-  container.innerHTML = river
-    .map((r, idx) => {
-      const isLast = isLastDiscardActor && idx === river.length - 1;
-      const cls = ["tileImg"];
-      if (r.tsumogiri) cls.push("tsumogiri");
-      if (r.riichi) cls.push("rotate");
-      if (isLast) cls.push("last-discard");
-      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}）`;
-      return `<div class="tileDiv" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
-    })
-    .join("");
+  let html = "";
+  let slotCount = 0;
+
+  river.forEach((r, idx) => {
+    // KillerDucky 6-tile row wrap: insert 4 invisible placeholder tiles after tile 6 and tile 12
+    if (slotCount === 6 || slotCount === 16) {
+      for (let j = 0; j < 4; j++) {
+        html += `<div class="tileDiv" style="opacity:0; pointer-events:none;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
+        slotCount++;
+      }
+    }
+
+    const isLast = isLastDiscardActor && idx === river.length - 1;
+    const cls = ["tileImg"];
+    if (r.tsumogiri) cls.push("tsumogiri");
+    if (r.riichi) cls.push("rotate");
+    if (r.called) cls.push("called");
+    if (isLast) cls.push("last-discard");
+
+    const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}）`;
+    const divCls = ["tileDiv"];
+    if (r.riichi) divCls.push("has-rotate");
+    if (isLast) divCls.push("has-last-discard");
+
+    html += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
+    slotCount++;
+  });
+
+  container.innerHTML = html;
 }
 
 function renderHeroHand(seat, snap, activeDecision) {
