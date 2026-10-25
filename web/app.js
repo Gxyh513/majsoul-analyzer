@@ -1212,7 +1212,6 @@ function setStep(stepIdx) {
   if ($("stepSlider")) $("stepSlider").value = clamped;
   if ($("stepCounterText")) $("stepCounterText").textContent = `${clamped} / ${kyoku.steps.length - 1}`;
 
-  const snap = kyoku.steps[clamped];
   const isExactDecisionStep = snap.decision_idx !== null && snap.decision_idx !== undefined;
   const decision = isExactDecisionStep ? kyoku.decisions[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, clamped);
 
