@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日麻切牌音效试听选型 · 雀魂 AI 复盘</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>">
+  <style>
+    :root {
+      --bg: #000000;
+      --card-bg: rgba(28, 28, 30, 0.85);
+      --border: 1px solid rgba(255, 255, 255, 0.12);
+      --text: #ffffff;
+      --text-sec: rgba(235, 235, 245, 0.6);
+      --green: #30d158;
+      --blue: #0a84ff;
+      --orange: #ff9f0a;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(ellipse at 50% 20%, #1c1c24 0%, #000000 80%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px;
+    }
+    .container {
+      max-width: 680px;
+      width: 100%;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .header h1 {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+    }
+    .header p {
+      font-size: 13px;
+      color: var(--text-sec);
+    }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--blue);
+      text-decoration: none;
+      margin-bottom: 18px;
+    }
+    .back-link:hover { text-decoration: underline; }
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .audio-card {
+      background: var(--card-bg);
+      border: var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      transition: all 0.2s ease;
+    }
+    .audio-card:hover {
+      border-color: rgba(255, 255, 255, 0.25);
+      transform: translateY(-1px);
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .card-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(10, 132, 255, 0.18);
+      color: var(--blue);
+      border: 1px solid rgba(10, 132, 255, 0.35);
+    }
+    .card-badge.current {
+      background: rgba(255, 159, 10, 0.18);
+      color: var(--orange);
+      border-color: rgba(255, 159, 10, 0.35);
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .card-desc {
+      font-size: 12.5px;
+      color: var(--text-sec);
+      line-height: 1.45;
+    }
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      padding: 8px 14px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .btn-play {
+      background: var(--green);
+      color: #000;
+    }
+    .btn-play:hover { background: #34c759; }
+    .btn-play:active { transform: scale(0.96); }
+    .btn-stream {
+      background: rgba(255, 255, 255, 0.1);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .btn-stream:hover { background: rgba(255, 255, 255, 0.18); }
+    .btn-stream:active { transform: scale(0.96); }
+    .note-box {
+      margin-top: 24px;
+      background: rgba(10, 132, 255, 0.08);
+      border: 1px solid rgba(10, 132, 255, 0.25);
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: rgba(235, 235, 245, 0.85);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← 返回牌谱复盘主站</a>
+
+    <div class="header">
+      <h1>日麻切牌音效试听选型</h1>
+      <p>多种声学物理模型候选试听 · 点击按钮即可实时发声对比</p>
+    </div>
+
+    <div class="card-list">
+      <!-- Candidate 1 -->
+      <div class="audio-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge">方案 1</span>
+            <span class="card-title">清脆弹击 (Crisp & Snappy · 雀魂风)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          高频触垫瞬态 (3200Hz) 配合 2.8ms 双击弹跳与极速消音 (65ms)。清脆利落、不拖泥带水，风格贴近《雀魂》原版手感。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_crisp.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_crisp.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+
+      <!-- Candidate 2 -->
+      <div class="audio-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge">方案 2</span>
+            <span class="card-title">沉稳厚重 (Solid & Melamine · 密胺重感)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          加重中低频腔体共鸣 (560Hz) 与实木桌面低沉敲击 (110Hz)，82ms 衰减。适合喜欢实体麻将重手感、沉稳质感的玩家。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_solid.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_solid.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+
+      <!-- Candidate 3 -->
+      <div class="audio-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge">方案 3</span>
+            <span class="card-title">响亮拍桌 (Sharp Slap · 强力手切)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          强化 3800Hz 亚克力清脆咬合度与 2.2ms 超快回弹拍击，声场更明亮有穿透力，还原实战中用力切牌的啪响感。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_slap.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_slap.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+
+      <!-- Candidate 4 -->
+      <div class="audio-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge">方案 4</span>
+            <span class="card-title">绒布柔和 (Soft Felt · 静音软垫消音)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          消除刺耳尖锐高频，以吸音呢绒桌布的柔和包覆音为主，55ms 极简衰减。长时间自动巡航或高速复盘最耐听、不吵耳。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_soft.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_soft.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+
+      <!-- Candidate 5 -->
+      <div class="audio-card">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge">方案 5</span>
+            <span class="card-title">全自动机 (Amos Classic · 经典双击落桌)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          严谨还原 Amos 全自动日麻机内框尼龙绒布的角点轻碰 + 平面落桌两段声，带有机械机身轻微木质共鸣。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_amos.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_amos.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+
+      <!-- Current Live -->
+      <div class="audio-card" style="opacity: 0.85;">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge current">当前生效中</span>
+            <span class="card-title">当前版本音效 (Current Live)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          主站目前正在使用的物理落桌音频文件 (/audio/discard.wav)。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" style="background:#ff9f0a; color:#000;" onclick="playWav('/audio/discard.wav')">▶ 试听当前版本</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/discard.wav')">连续 4 手切牌 (模拟对局)</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="note-box">
+      <strong>试听说明</strong>：<br>
+      • 试听满意后，请直接告诉我您喜欢的编号（如“选方案 1”或“方案 3”），我再将其无缝替换为主站生效音效。<br>
+      • 当前主站原音效保持不变，您可以随时在此页面对比各版本差异。
+    </div>
+  </div>
+
+  <script>
+    let audioCtx = null;
+    const cache = {};
+
+    function getAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    async function loadBuffer(url) {
+      if (cache[url]) return cache[url];
+      const ctx = getAudioContext();
+      const res = await fetch(url);
+      const arrayBuf = await res.arrayBuffer();
+      const audioBuf = await ctx.decodeAudioData(arrayBuf);
+      cache[url] = audioBuf;
+      return audioBuf;
+    }
+
+    async function playWav(url, pitch = 1.0) {
+      try {
+        const ctx = getAudioContext();
+        const buffer = await loadBuffer(url);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = pitch * (0.97 + Math.random() * 0.06);
+        const gain = ctx.createGain();
+        gain.gain.value = 0.85;
+        source.connect(gain);
+        gain.connect(ctx.destination);
+        source.start(0);
+      } catch (e) {
+        console.error("Playback error:", e);
+      }
+    }
+
+    function playContinuous(url) {
+      playWav(url, 0.98);
+      setTimeout(() => playWav(url, 1.02), 400);
+      setTimeout(() => playWav(url, 0.96), 800);
+      setTimeout(() => playWav(url, 1.04), 1200);
+    }
+  </script>
+</body>
+</html>
