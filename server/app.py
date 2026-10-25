@@ -5,7 +5,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -118,15 +120,21 @@ def _download_akagi_if_missing():
                     pass
 
 
-import threading
-import urllib.request
-
 threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
 
 ms_client = MajsoulClient(CACHE_DIR)
 
-# In-memory cache of converted mjai logs: game_id -> (mjai_events, meta)
+# In-memory LRU cache of converted mjai logs: game_id -> (mjai_events, meta)
+MAX_MEMORY_LOGS = 30
 _MEMORY_LOGS: dict[str, tuple[list[dict], dict]] = {}
+
+
+def set_memory_log(game_id: str, events: list[dict], meta: dict) -> None:
+    if len(_MEMORY_LOGS) >= MAX_MEMORY_LOGS:
+        oldest_key = next(iter(_MEMORY_LOGS))
+        _MEMORY_LOGS.pop(oldest_key, None)
+    _MEMORY_LOGS[game_id] = (events, meta)
+
 
 app = FastAPI(title="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)")
 app.add_middleware(
@@ -200,26 +208,6 @@ class EngineConfigReq(BaseModel):
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-def list_saved_records() -> list[dict[str, Any]]:
-    items = []
-    for p in sorted(RECORDS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:30]:
-        try:
-            raw = json.loads(p.read_text(encoding="utf8"))
-            if "head" in raw:
-                m = game_meta(raw)
-                items.append(
-                    {
-                        "uuid": m.get("uuid") or p.stem,
-                        "names": m.get("names", []),
-                        "start_time": m.get("start_time"),
-                        "end_time": m.get("end_time"),
-                    }
-                )
-        except Exception:  # noqa: BLE001
-            continue
-    return items
-
-
 async def ensure_ms_logged_in():
     if ms_client.logged_in and ms_client._ws is not None:
         return
@@ -320,43 +308,91 @@ async def api_recent_games():
         raise HTTPException(status_code=400, detail=f"获取最近牌谱失败: {e}") from e
 
 
-@app.post("/api/analyze/paipu")
-async def api_analyze_paipu(req: AnalyzePaipuReq):
-    raw_input = req.paipu.strip()
-    if raw_input == "demo" or raw_input.startswith("demo-"):
-        return await api_analyze_demo(
-            AnalyzeDemoReq(target_actor=req.target_actor or 0, engine=req.engine, temperature=req.temperature)
-        )
+async def resolve_game_data(
+    paipu: str | None = None,
+    content: Any | None = None,
+    target_actor: int | None = None,
+) -> tuple[str, list[dict], dict, int]:
+    """
+    Resolves input paipu/content into (game_id, mjai_events, meta, seat).
+    Handles demo, raw JSON/JSONL, and Majsoul paipu links/UUIDs.
+    """
+    raw_input = (paipu or "").strip()
+    is_demo = False
+    is_json = False
 
-    # Check if already in memory cache (e.g. switching seat on an imported JSON log)
+    if content is not None:
+        is_json = True
+    elif raw_input in ("demo", "") or raw_input.startswith("demo-"):
+        is_demo = True
+    elif raw_input.startswith("{") or raw_input.startswith("["):
+        is_json = True
+        content = raw_input
+
+    # 1. Demo Mode
+    if is_demo:
+        if not DEMO_PATH.is_file():
+            raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
+        events = json.loads(DEMO_PATH.read_text(encoding="utf8"))
+        meta = {
+            "uuid": "demo-241024-majsoul-4p",
+            "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
+            "room": "玉之间·四人南 (内置演示)",
+            "start_time": 1729760000,
+        }
+        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
+        set_memory_log("demo", events, meta)
+        return "demo", events, meta, seat
+
+    # 2. JSON / JSONL Mode
+    if is_json:
+        if isinstance(content, str):
+            text = content.strip()
+            try:
+                content = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    content = [json.loads(line) for line in text.splitlines() if line.strip()]
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"无法解析 JSON / JSONL 格式: {e}") from e
+
+        if isinstance(content, dict) and "head" in content and "actions" in content:
+            try:
+                mjai_events = to_mjai(content)
+                meta = game_meta(content)
+                game_id = meta.get("uuid") or ("ms-" + hashlib.md5(json.dumps(content).encode()).hexdigest()[:10])
+                (RECORDS_DIR / f"{game_id}.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf8")
+            except ConvertError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
+            mjai_events = content
+            names = ["东家", "南家", "西家", "北家"]
+            for ev in mjai_events:
+                if ev.get("type") == "start_game" and ev.get("names"):
+                    names = list(ev["names"])
+                    break
+            game_id = "mjai-" + hashlib.md5(json.dumps(mjai_events).encode()).hexdigest()[:10]
+            meta = {"uuid": game_id, "names": names, "start_time": int(time.time())}
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="不支持的 JSON 结构：请上传雀魂原始牌谱 JSON (含 head/actions) 或 mjai 事件数组/JSONL。",
+            )
+
+        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
+        set_memory_log(game_id, mjai_events, meta)
+        return game_id, mjai_events, meta, seat
+
+    # 3. Majsoul Paipu URL / UUID
     if raw_input in _MEMORY_LOGS:
         mjai_events, meta = _MEMORY_LOGS[raw_input]
-        seat = req.target_actor if req.target_actor is not None else 0
-        cache_key = make_cache_key(raw_input, seat, req.engine, req.temperature)
-        cached = get_cached_review(cache_key)
-        if cached:
-            return cached
-        async with review_semaphore:
-            cached = get_cached_review(cache_key)
-            if cached:
-                return cached
-            res = review_game(
-                mjai_events, seat, engine_mgr, meta=meta, temperature=req.temperature, force_engine=req.engine
-            )
-            res["game_id"] = raw_input
-            save_cached_review(cache_key, res)
-            return res
+        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
+        return raw_input, mjai_events, meta, seat
 
     try:
         game_uuid, url_acc_id = parse_paipu(raw_input)
     except MajsoulError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-
-    if req.target_actor is not None and 0 <= req.target_actor <= 3:
-        cache_key = make_cache_key(game_uuid, req.target_actor, req.engine, req.temperature)
-        cached = get_cached_review(cache_key)
-        if cached:
-            return cached
 
     record_file = RECORDS_DIR / f"{game_uuid}.json"
     if record_file.is_file():
@@ -368,7 +404,7 @@ async def api_analyze_paipu(req: AnalyzePaipuReq):
             record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
         except MajsoulError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.exception("fetch_record failed")
             raise HTTPException(status_code=500, detail=f"抓取牌谱失败: {e}") from e
 
@@ -378,10 +414,7 @@ async def api_analyze_paipu(req: AnalyzePaipuReq):
     except ConvertError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    _MEMORY_LOGS[game_uuid] = (mjai_events, meta)
-
-    # Determine target seat
-    seat = req.target_actor
+    seat = target_actor
     acc_ids = meta.get("account_ids", [])
     if seat is None and url_acc_id and url_acc_id in acc_ids:
         seat = acc_ids.index(url_acc_id)
@@ -394,7 +427,19 @@ async def api_analyze_paipu(req: AnalyzePaipuReq):
     if seat is None or not (0 <= seat <= 3):
         seat = 0
 
-    cache_key = make_cache_key(game_uuid, seat, req.engine, req.temperature)
+    set_memory_log(game_uuid, mjai_events, meta)
+    return game_uuid, mjai_events, meta, seat
+
+
+async def _run_review_with_cache(
+    game_id: str,
+    mjai_events: list[dict],
+    meta: dict,
+    seat: int,
+    engine: str,
+    temperature: float,
+) -> dict[str, Any]:
+    cache_key = make_cache_key(game_id, seat, engine, temperature)
     cached = get_cached_review(cache_key)
     if cached:
         return cached
@@ -404,228 +449,61 @@ async def api_analyze_paipu(req: AnalyzePaipuReq):
         if cached:
             return cached
         res = review_game(
-            mjai_events, seat, engine_mgr, meta=meta, temperature=req.temperature, force_engine=req.engine
-        )
-        res["game_id"] = game_uuid
-        save_cached_review(cache_key, res)
-        return res
-
-
-@app.post("/api/analyze/json")
-async def api_analyze_json(req: AnalyzeJsonReq):
-    content = req.content
-    if isinstance(content, str):
-        text = content.strip()
-        try:
-            content = json.loads(text)
-        except json.JSONDecodeError:
-            # Try JSONL (one mjai event per line)
-            try:
-                content = [json.loads(line) for line in text.splitlines() if line.strip()]
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail=f"无法解析 JSON / JSONL 格式: {e}") from e
-
-    if isinstance(content, dict) and "head" in content and "actions" in content:
-        try:
-            mjai_events = to_mjai(content)
-            meta = game_meta(content)
-            game_id = meta.get("uuid") or ("ms-" + hashlib.md5(json.dumps(content).encode()).hexdigest()[:10])
-            (RECORDS_DIR / f"{game_id}.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf8")
-        except ConvertError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
-    elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
-        mjai_events = content
-        names = ["东家", "南家", "西家", "北家"]
-        for ev in mjai_events:
-            if ev.get("type") == "start_game" and ev.get("names"):
-                names = list(ev["names"])
-                break
-        game_id = "mjai-" + hashlib.md5(json.dumps(mjai_events).encode()).hexdigest()[:10]
-        meta = {"uuid": game_id, "names": names, "start_time": int(time.time())}
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="不支持的 JSON 结构：请上传雀魂原始牌谱 JSON (含 head/actions) 或 mjai 事件数组/JSONL。",
-        )
-
-    _MEMORY_LOGS[game_id] = (mjai_events, meta)
-    seat = req.target_actor if 0 <= req.target_actor <= 3 else 0
-    cache_key = make_cache_key(game_id, seat, req.engine, req.temperature)
-    cached = get_cached_review(cache_key)
-    if cached:
-        return cached
-
-    async with review_semaphore:
-        cached = get_cached_review(cache_key)
-        if cached:
-            return cached
-        res = review_game(
-            mjai_events, seat, engine_mgr, meta=meta, temperature=req.temperature, force_engine=req.engine
+            mjai_events, seat, engine_mgr, meta=meta, temperature=temperature, force_engine=engine
         )
         res["game_id"] = game_id
         save_cached_review(cache_key, res)
         return res
 
 
+@app.post("/api/analyze/paipu")
+async def api_analyze_paipu(req: AnalyzePaipuReq):
+    game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
+    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+
+
+@app.post("/api/analyze/json")
+async def api_analyze_json(req: AnalyzeJsonReq):
+    game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
+    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+
+
 @app.post("/api/analyze/demo")
 async def api_analyze_demo(req: AnalyzeDemoReq):
-    if not DEMO_PATH.is_file():
-        raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
-    seat = req.target_actor if 0 <= req.target_actor <= 3 else 0
-    cache_key = make_cache_key("demo", seat, req.engine, req.temperature)
-    cached = get_cached_review(cache_key)
-    if cached:
-        return cached
-
-    events = json.loads(DEMO_PATH.read_text(encoding="utf8"))
-    meta = {
-        "uuid": "demo-241024-majsoul-4p",
-        "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
-        "room": "玉之间·四人南 (内置演示)",
-        "start_time": 1729760000,
-    }
-    _MEMORY_LOGS["demo"] = (events, meta)
-
-    async with review_semaphore:
-        cached = get_cached_review(cache_key)
-        if cached:
-            return cached
-        res = review_game(events, seat, engine_mgr, meta=meta, temperature=req.temperature, force_engine=req.engine)
-        res["game_id"] = "demo"
-        save_cached_review(cache_key, res)
-        return res
+    game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
+    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
 
 
 @app.post("/api/analyze/stream")
 async def api_analyze_stream(req: AnalyzeStreamReq):
     async def sse_generator():
         try:
-            # 1. Distinguish paipu vs demo vs json
-            is_demo = False
-            is_json = False
-            raw_input = (req.paipu or "").strip()
+            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
 
-            if req.content is not None:
-                is_json = True
-            elif raw_input in ("demo", "") or raw_input.startswith("demo-"):
-                is_demo = True
-            elif raw_input.startswith("{") or raw_input.startswith("["):
-                is_json = True
-                req.content = raw_input
+            try:
+                game_id, mjai_events, meta, seat = await resolve_game_data(
+                    paipu=req.paipu, content=req.content, target_actor=req.target_actor
+                )
+            except HTTPException as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
+                return
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+                return
 
-            # Early cache check if seat is known
-            game_uuid = None
-            url_acc_id = None
-            if is_demo:
-                game_uuid = "demo"
-                seat = req.target_actor if (req.target_actor is not None and 0 <= req.target_actor <= 3) else 0
-                cache_key = make_cache_key("demo", seat, req.engine, req.temperature)
-                cached = get_cached_review(cache_key)
-                if cached:
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
-                    return
-            elif is_json:
-                content_str = json.dumps(req.content, sort_keys=True) if isinstance(req.content, (dict, list)) else str(req.content)
-                json_hash = hashlib.md5(content_str.encode()).hexdigest()[:12]
-                game_uuid = f"json-{json_hash}"
-                seat = req.target_actor if (req.target_actor is not None and 0 <= req.target_actor <= 3) else 0
-                cache_key = make_cache_key(game_uuid, seat, req.engine, req.temperature)
-                cached = get_cached_review(cache_key)
-                if cached:
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
-                    return
-            else:
-                try:
-                    game_uuid, url_acc_id = parse_paipu(raw_input)
-                except MajsoulError as e:
-                    yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
-                    return
-                if req.target_actor is not None and 0 <= req.target_actor <= 3:
-                    cache_key = make_cache_key(game_uuid, req.target_actor, req.engine, req.temperature)
-                    cached = get_cached_review(cache_key)
-                    if cached:
-                        yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
-                        return
+            cache_key = make_cache_key(game_id, seat, req.engine, req.temperature)
+            cached = get_cached_review(cache_key)
+            if cached:
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
+                return
 
             # If semaphore is currently busy, notify user
             if review_semaphore.locked():
                 yield f"data: {json.dumps({'type': 'queued', 'message': '服务器正忙，当前正在排队中...'}, ensure_ascii=False)}\n\n"
 
             async with review_semaphore:
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 10, 'message': '正在获取并解析牌谱...'}, ensure_ascii=False)}\n\n"
-
-                # Parse data
-                if is_demo:
-                    if not DEMO_PATH.is_file():
-                        yield f"data: {json.dumps({'type': 'error', 'detail': '内置演示牌谱文件不存在'}, ensure_ascii=False)}\n\n"
-                        return
-                    events = json.loads(DEMO_PATH.read_text(encoding="utf8"))
-                    meta = {
-                        "uuid": "demo-241024-majsoul-4p",
-                        "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
-                        "room": "玉之间·四人南 (内置演示)",
-                        "start_time": 1729760000,
-                    }
-                    mjai_events = events
-                    seat = req.target_actor if (req.target_actor is not None and 0 <= req.target_actor <= 3) else 0
-                    game_id = "demo"
-                elif is_json:
-                    content = req.content
-                    if isinstance(content, str):
-                        try:
-                            content = json.loads(content)
-                        except json.JSONDecodeError:
-                            content = [json.loads(line) for line in content.splitlines() if line.strip()]
-
-                    if isinstance(content, dict) and "head" in content and "actions" in content:
-                        mjai_events = to_mjai(content)
-                        meta = game_meta(content)
-                        game_id = meta.get("uuid") or game_uuid
-                        (RECORDS_DIR / f"{game_id}.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf8")
-                    elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
-                        mjai_events = content
-                        names = ["东家", "南家", "西家", "北家"]
-                        for ev in mjai_events:
-                            if ev.get("type") == "start_game" and ev.get("names"):
-                                names = list(ev["names"])
-                                break
-                        meta = {"uuid": game_uuid, "names": names, "start_time": int(time.time())}
-                        game_id = game_uuid
-                    else:
-                        yield f"data: {json.dumps({'type': 'error', 'detail': '不支持的 JSON 结构'}, ensure_ascii=False)}\n\n"
-                        return
-                    seat = req.target_actor if (req.target_actor is not None and 0 <= req.target_actor <= 3) else 0
-                else:
-                    record_file = RECORDS_DIR / f"{game_uuid}.json"
-                    if record_file.is_file():
-                        record = json.loads(record_file.read_text(encoding="utf8"))
-                    else:
-                        await ensure_ms_logged_in()
-                        record = await ms_client.fetch_record(game_uuid)
-                        record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
-
-                    mjai_events = to_mjai(record)
-                    meta = game_meta(record)
-                    _MEMORY_LOGS[game_uuid] = (mjai_events, meta)
-
-                    seat = req.target_actor
-                    acc_ids = meta.get("account_ids", [])
-                    if seat is None and url_acc_id and url_acc_id in acc_ids:
-                        seat = acc_ids.index(url_acc_id)
-                    if seat is None and ms_client.account_id and ms_client.account_id in acc_ids:
-                        seat = acc_ids.index(ms_client.account_id)
-                    if seat is None:
-                        cfg_acc_id = load_config().get("account_id")
-                        if cfg_acc_id and cfg_acc_id in acc_ids:
-                            seat = acc_ids.index(cfg_acc_id)
-                    if seat is None or not (0 <= seat <= 3):
-                        seat = 0
-                    game_id = game_uuid
-
-                cache_key = make_cache_key(game_id, seat, req.engine, req.temperature)
+                # Double-check inside semaphore
                 cached = get_cached_review(cache_key)
                 if cached:
                     yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
