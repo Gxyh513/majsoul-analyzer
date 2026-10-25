@@ -867,13 +867,13 @@ button {
 .grid-discard-p2 {
   grid-area: ad-p2;
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
   justify-content: flex-start;
-  align-items: center;
+  align-items: flex-end;
 }
 .grid-discard-p2 .river-row {
   display: flex;
-  flex-direction: row;
+  flex-direction: row-reverse;
   justify-content: flex-start;
   align-items: flex-end;
   height: var(--tile-height);
@@ -1149,9 +1149,51 @@ button {
 }
 
 .kd-dec-verdict.agari {
+  font-size: 16px;
+  font-weight: 800;
+  padding: 6px 16px;
+  letter-spacing: 0.5px;
+  border-radius: 20px;
   background: rgba(255, 214, 10, 0.22);
   color: #ffd60a;
-  border: 1px solid rgba(255, 214, 10, 0.45);
+  border: 1px solid rgba(255, 214, 10, 0.5);
+  box-shadow: 0 4px 12px rgba(255, 214, 10, 0.25);
+}
+
+.kd-dec-verdict.round-end {
+  font-size: 16px;
+  font-weight: 800;
+  padding: 6px 16px;
+  letter-spacing: 0.5px;
+  border-radius: 20px;
+}
+
+.kd-dec-verdict.round-end.best {
+  background: rgba(48, 209, 88, 0.22);
+  color: #30d158;
+  border: 1px solid rgba(48, 209, 88, 0.5);
+  box-shadow: 0 4px 12px rgba(48, 209, 88, 0.25);
+}
+
+.kd-dec-verdict.round-end.blunder {
+  background: rgba(255, 69, 58, 0.22);
+  color: #ff453a;
+  border: 1px solid rgba(255, 69, 58, 0.5);
+  box-shadow: 0 4px 12px rgba(255, 69, 58, 0.25);
+}
+
+.kd-dec-verdict.round-end.agari {
+  background: rgba(255, 214, 10, 0.22);
+  color: #ffd60a;
+  border: 1px solid rgba(255, 214, 10, 0.5);
+  box-shadow: 0 4px 12px rgba(255, 214, 10, 0.25);
+}
+
+.kd-dec-verdict.round-end.cruise {
+  background: rgba(10, 132, 255, 0.22);
+  color: #0a84ff;
+  border: 1px solid rgba(10, 132, 255, 0.5);
+  box-shadow: 0 4px 12px rgba(10, 132, 255, 0.25);
 }
 
 /* Winning Agari Tile Highlight */
@@ -1200,6 +1242,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
   margin-bottom: 8px;
 }
 
@@ -1340,8 +1384,10 @@ button {
 }
 .kd-settlement-delta-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+  width: 100%;
+  box-sizing: border-box;
 }
 .kd-settlement-delta-cell {
   background: rgba(0, 0, 0, 0.3);
@@ -1349,6 +1395,8 @@ button {
   padding: 6px 4px;
   text-align: center;
   border: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 0;
+  overflow: hidden;
 }
 .kd-settlement-delta-cell.winner {
   border-color: rgba(48, 209, 88, 0.45);
