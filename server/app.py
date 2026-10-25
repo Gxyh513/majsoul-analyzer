@@ -245,6 +245,17 @@ async def add_private_network_access_header(request: Request, call_next):
     return response
 
 
+@app.on_event("startup")
+async def app_startup():
+    asyncio.create_task(_cache_cleanup_loop())
+
+
+@app.post("/api/admin/cleanup_cache")
+async def api_cleanup_cache():
+    res = await asyncio.to_thread(cleanup_old_caches)
+    return {"ok": True, **res}
+
+
 # ---------------------------------------------------------------------------
 # Request Schemas
 # ---------------------------------------------------------------------------
@@ -481,6 +492,10 @@ async def resolve_game_data(
 
     record_file = RECORDS_DIR / f"{game_uuid}.json"
     if record_file.is_file():
+        try:
+            record_file.touch()
+        except Exception:
+            pass
         record = json.loads(record_file.read_text(encoding="utf8"))
     else:
         await ensure_ms_logged_in()
