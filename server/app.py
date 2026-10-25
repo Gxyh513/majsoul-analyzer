@@ -257,18 +257,12 @@ async def ensure_ms_logged_in():
 # ---------------------------------------------------------------------------
 @app.get("/api/status")
 async def api_status():
-    cfg = load_config()
     return {
         "ok": True,
         "majsoul": {
             "logged_in": ms_client.logged_in,
-            "account_id": ms_client.account_id,
-            "nickname": ms_client.nickname or cfg.get("nickname"),
-            "saved_account": cfg.get("account"),
-            "has_saved_token": bool(cfg.get("access_token")),
         },
         "engine": engine_mgr.status(),
-        "history": list_saved_records(),
     }
 
 
