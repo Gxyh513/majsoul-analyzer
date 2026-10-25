@@ -25,9 +25,11 @@ const TILE_CN_MAP = {
   "5mr": "赤五万", "5pr": "赤五筒", "5sr": "赤五索",
 };
 
-// Web Audio API Synthesizer for tactile Mahjong tile discard
+// Web Audio API Player for tactile Mahjong tile discard
 const SoundFX = {
   ctx: null,
+  buffer: null,
+  loading: false,
   init() {
     if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -36,6 +38,22 @@ const SoundFX = {
     if (this.ctx && this.ctx.state === "suspended") {
       this.ctx.resume().catch(() => {});
     }
+    if (!this.buffer && !this.loading && this.ctx) {
+      this.loading = true;
+      fetch("/audio/discard.wav")
+        .then((res) => {
+          if (!res.ok) throw new Error("Audio fetch failed");
+          return res.arrayBuffer();
+        })
+        .then((buf) => this.ctx.decodeAudioData(buf))
+        .then((decoded) => {
+          this.buffer = decoded;
+          this.loading = false;
+        })
+        .catch(() => {
+          this.loading = false;
+        });
+    }
   },
   playDiscard() {
     try {
@@ -43,10 +61,21 @@ const SoundFX = {
       if (!this.ctx) return;
 
       const t = this.ctx.currentTime;
-      // Slight pitch variation for natural human mahjong table feel
-      const pitch = 0.95 + Math.random() * 0.1;
+      const pitch = 0.94 + Math.random() * 0.12;
 
-      // 1. High-frequency click / impact transient
+      if (this.buffer) {
+        const source = this.ctx.createBufferSource();
+        source.buffer = this.buffer;
+        source.playbackRate.value = pitch;
+        const gainNode = this.ctx.createGain();
+        gainNode.gain.setValueAtTime(0.75, t);
+        source.connect(gainNode);
+        gainNode.connect(this.ctx.destination);
+        source.start(t);
+        return;
+      }
+
+      // Fallback synthesizer if buffer is loading
       const oscClick = this.ctx.createOscillator();
       const gainClick = this.ctx.createGain();
       oscClick.type = "sine";
@@ -54,13 +83,11 @@ const SoundFX = {
       oscClick.frequency.exponentialRampToValueAtTime(1400 * pitch, t + 0.016);
       gainClick.gain.setValueAtTime(0.35, t);
       gainClick.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
-
       oscClick.connect(gainClick);
       gainClick.connect(this.ctx.destination);
       oscClick.start(t);
       oscClick.stop(t + 0.022);
 
-      // 2. Body resonance (dense tile resin tone)
       const oscBody = this.ctx.createOscillator();
       const gainBody = this.ctx.createGain();
       oscBody.type = "triangle";
@@ -68,25 +95,10 @@ const SoundFX = {
       oscBody.frequency.exponentialRampToValueAtTime(450 * pitch, t + 0.035);
       gainBody.gain.setValueAtTime(0.4, t);
       gainBody.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
-
       oscBody.connect(gainBody);
       gainBody.connect(this.ctx.destination);
       oscBody.start(t);
       oscBody.stop(t + 0.042);
-
-      // 3. Low mat thud (felt table surface)
-      const oscMat = this.ctx.createOscillator();
-      const gainMat = this.ctx.createGain();
-      oscMat.type = "sine";
-      oscMat.frequency.setValueAtTime(260 * pitch, t);
-      oscMat.frequency.exponentialRampToValueAtTime(110 * pitch, t + 0.045);
-      gainMat.gain.setValueAtTime(0.25, t);
-      gainMat.gain.exponentialRampToValueAtTime(0.001, t + 0.048);
-
-      oscMat.connect(gainMat);
-      gainMat.connect(this.ctx.destination);
-      oscMat.start(t);
-      oscMat.stop(t + 0.052);
     } catch (_) {
       // AudioContext unavailable or autoplay prevented
     }
@@ -361,7 +373,7 @@ function updateAnalysisProgress(percent, message) {
   if (textEl && message) textEl.textContent = message;
 }
 
-function setLoading(visible, title = "AI 牌谱智能检讨", sub = "赤木神经网络正在检讨每一手决策") {
+function setLoading(visible, title = "AI 牌谱智能检讨", sub = "Mortal 神经网络正在检讨每一手决策") {
   const overlay = $("loadingOverlay");
   if (!overlay) return;
   if (visible) {
@@ -370,7 +382,7 @@ function setLoading(visible, title = "AI 牌谱智能检讨", sub = "赤木神�
     if (normalState) normalState.classList.remove("hidden");
     if (errorBox) errorBox.classList.add("hidden");
     if ($("loadingTitle")) $("loadingTitle").textContent = title;
-    if ($("loadingSub")) $("loadingSub").textContent = sub || "赤木神经网络正在检讨每一手决策";
+    if ($("loadingSub")) $("loadingSub").textContent = sub || "Mortal 神经网络正在检讨每一手决策";
     updateAnalysisProgress(0, "正在连接检讨引擎...");
     overlay.classList.remove("hidden");
   } else {
@@ -552,18 +564,18 @@ async function refreshServerStatus() {
 function updateEngineStatusDisplay(modelId, device) {
   const targetModel = (modelId || state.selectedModel || "akagi").toLowerCase();
   const dev = device || state.serverStatus?.engine?.device || "CPU";
-  let friendlyName = "赤木 Akagi";
+  let friendlyName = "Mortal-V4-582500";
   if (targetModel.includes("mortal")) {
     friendlyName = "Mortal";
   } else if (targetModel.includes("akagi")) {
-    friendlyName = "赤木 Akagi";
+    friendlyName = "Mortal-V4-582500";
   } else {
     const available = state.serverStatus?.engine?.available_models || [];
     const found = available.find((m) => m.id && m.id.toLowerCase() === targetModel);
     if (found && found.name) {
       friendlyName = found.name.split("(")[0].trim() || found.name;
     } else {
-      friendlyName = modelId || state.selectedModel || "赤木 Akagi";
+      friendlyName = modelId || state.selectedModel || "Mortal-V4-582500";
     }
   }
 
@@ -747,7 +759,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     }
   }
 
-  setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
+  setLoading(true, "正在分析牌谱...", "正在使用深度神经网络检讨每一手决策");
 
   try {
     let res;
@@ -1536,11 +1548,11 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   if (actType.includes("riichi") || actType.includes("reach") || actType.includes("立直")) {
     const reachTile = pai || actionObj?.pai;
     if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
-      return `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="tileImg rotate" title="Riichi: ${tileCn(reachTile)}">`;
+      return `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="tileImg" title="立直: ${tileCn(reachTile)}">`;
     }
     return `
-      <div class="action-badge action-badge-riichi" title="Riichi">
-        <span class="action-badge-text">Riichi</span>
+      <div class="action-badge action-badge-riichi" title="立直">
+        <span class="action-badge-text">立直</span>
       </div>
     `;
   }
@@ -1613,6 +1625,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   // CASE 1: Round End (Hora / 自摸/荣和结算) - Clean Standalone Round Settlement Card
   if (isHora) {
+    card.classList.remove("is-idle");
     const winActor = snap.event.actor;
     const tgtActor = snap.event.target;
     const isRon = winActor !== tgtActor && tgtActor !== undefined && tgtActor !== null;
@@ -1685,41 +1698,44 @@ function renderDecisionCard(dec, isExactStep, snap) {
       settWrap.innerHTML = `
         <div class="kd-settlement-banner ${bannerClass}">
           <div class="kd-settlement-banner-top">
-            <div class="kd-settlement-banner-main">
-              ${agariTile ? `
-                <div class="kd-settlement-agari-tile-wrap" title="和了牌: ${tileCn(agariTile)}">
-                  <img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" alt="${tileCn(agariTile)}">
-                </div>
-              ` : `
-                <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
-                  <span class="action-badge-text" style="color:#30d158;">${isRon ? "Ron" : "自摸"}</span>
-                </div>
-              `}
-              <div class="kd-settlement-banner-info">
-                <div class="kd-settlement-winner-title">
-                  <span class="kd-settlement-seat-wind">${winWind}家</span>
-                  <span class="kd-settlement-player-highlight winner">${escapeHtml(winName)}</span>
-                  <span class="kd-settlement-win-badge ${isRon ? 'ron' : 'tsumo'}">${isRon ? "荣和" : "自摸"}</span>
-                </div>
-                <div class="kd-settlement-meta-row">
-                  ${isRon ? `
-                    <div class="kd-settlement-loser-line">
-                      <span class="kd-settlement-seat-wind">${tgtWind}家</span>
-                      <span class="kd-settlement-player-highlight loser">${escapeHtml(tgtName)}</span>
-                      <span class="kd-settlement-loser-action">放铳</span>
-                      <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>
-                    </div>
-                  ` : `<span class="kd-settlement-tsumo-action">自摸和了</span>`}
-                  ${uraHtml}
-                </div>
+            ${agariTile ? `
+              <div class="kd-settlement-agari-tile-wrap" title="和了牌: ${tileCn(agariTile)}">
+                <img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" alt="${tileCn(agariTile)}">
+              </div>
+            ` : `
+              <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
+                <span class="action-badge-text" style="color:#30d158;">${isRon ? "Ron" : "自摸"}</span>
+              </div>
+            `}
+            <div class="kd-settlement-banner-info">
+              <div class="kd-settlement-winner-title">
+                <span class="kd-settlement-seat-wind">${winWind}家</span>
+                <span class="kd-settlement-player-highlight winner">${escapeHtml(winName)}</span>
+                <span class="kd-settlement-win-badge ${isRon ? 'ron' : 'tsumo'}">${isRon ? "荣和" : "自摸"}</span>
+              </div>
+              <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
+                ${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点
               </div>
             </div>
-            <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
-              ${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点
-            </div>
           </div>
+
+          <div class="kd-settlement-details-box">
+            ${isRon ? `
+              <div class="kd-settlement-loser-line">
+                <span class="kd-settlement-loser-action">放铳:</span>
+                <span class="kd-settlement-seat-wind">${tgtWind}家</span>
+                <span class="kd-settlement-player-highlight loser">${escapeHtml(tgtName)}</span>
+                <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>
+              </div>
+            ` : `
+              <div class="kd-settlement-tsumo-action">自摸和了</div>
+            `}
+            ${uraHtml}
+          </div>
+
           ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
         </div>
+
         <div class="kd-settlement-delta-grid">
           ${[0, 1, 2, 3].map((seat) => {
             const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
@@ -1750,6 +1766,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   // CASE 2: Round End (Ryuukyoku / 流局结算)
   if (isRyuukyoku) {
+    card.classList.remove("is-idle");
     if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
       badgeEl.textContent = "荒牌流局";
@@ -1810,58 +1827,12 @@ function renderDecisionCard(dec, isExactStep, snap) {
     return;
   }
 
-  // CASE 2.5: Riichi Cruise: When hero has declared Riichi, subsequent steps are auto-tsumogiri with no decisions.
-  const isPlayerInRiichi = Boolean(snap?.riichi?.[targetActor]);
-  const isRiichiDeclaringStep = isExactStep && (
-    dec?.decision_type === "reach" ||
-    dec?.decision_type === "riichi_discard" ||
-    dec?.actual?.type === "reach" ||
-    dec?.actual?.type === "riichi" ||
-    snap?.event?.type === "reach"
-  );
-
-  if (isPlayerInRiichi && !isRiichiDeclaringStep) {
-    if (turnEl) turnEl.textContent = "";
-    if (badgeEl) {
-      badgeEl.textContent = "立直巡航";
-      badgeEl.className = "kd-dec-verdict cruise";
-    }
-    if (compWrap) compWrap.style.display = "none";
-    if (settWrap) settWrap.style.display = "none";
-    setTileWrapContent(actualTileWrap, "");
-    setTileWrapContent(aiTileWrap, "");
-    if (actualTileName) actualTileName.textContent = "";
-    if (aiTileName) aiTileName.textContent = "";
-    if (candTitle) candTitle.style.display = "none";
-    if (candTable) candTable.style.display = "";
-    if (candTableHead) candTableHead.style.display = "none";
-    if (tableBody) {
-      tableBody.innerHTML = '<tr><td colspan="5" style="padding:16px 8px; text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">已宣告立直（自动摸切巡航，无可选决策）</td></tr>';
-    }
-    return;
-  }
-
-  // CASE 2.8: Opponent Turn / Non-Hero Decision Step (No calls, waiting for hero's turn)
+  // CASE 2.5: Non-Hero Decision Step / Opponent Turn (Zero-jump reserved layout, completely hidden without layout shift)
   if (!isExactStep) {
-    if (turnEl) turnEl.textContent = "";
-    if (badgeEl) {
-      badgeEl.textContent = "他家巡目";
-      badgeEl.className = "kd-dec-verdict cruise";
-    }
-    if (compWrap) compWrap.style.display = "none";
-    if (settWrap) settWrap.style.display = "none";
-    setTileWrapContent(actualTileWrap, "");
-    setTileWrapContent(aiTileWrap, "");
-    if (actualTileName) actualTileName.textContent = "";
-    if (aiTileName) aiTileName.textContent = "";
-    if (candTitle) candTitle.style.display = "none";
-    if (candTable) candTable.style.display = "";
-    if (candTableHead) candTableHead.style.display = "none";
-    if (tableBody) {
-      tableBody.innerHTML = '<tr><td colspan="5" style="padding:18px 8px; text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">当前为他家巡目（本家无鸣牌操作，等待自巡）</td></tr>';
-    }
+    card.classList.add("is-idle");
     return;
   }
+  card.classList.remove("is-idle");
 
   // Restore decision comparison blocks & candidates section for normal steps
   if (compWrap) compWrap.style.display = "flex";
@@ -1934,7 +1905,14 @@ function renderDecisionCard(dec, isExactStep, snap) {
   // 1. Actual Choice (On Top)
   let actPai = dec.actual?.pai;
   if (!actPai && (dec.actual?.type === "reach" || dec.decision_type === "reach")) {
-    actPai = dec.context_tile || currentKyoku?.steps?.[dec.step_idx + 1]?.event?.pai;
+    const startIdx = dec.step_idx;
+    for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
+      const ev = currentKyoku?.steps?.[s]?.event;
+      if (ev?.actor === targetActor && ev?.type === "dahai") {
+        actPai = ev.pai;
+        break;
+      }
+    }
   }
   const isActTile = actPai && actPai !== "none" && actPai !== "pass";
   setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn));
@@ -1966,7 +1944,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
       } else if (actType.includes("ron") || (isCallDec && (actType.includes("hora") || actText.includes("和")))) {
         actText = "Ron";
       } else if (actType.includes("reach") || actType.includes("riichi") || actText.includes("立直")) {
-        actText = actPai ? `Riichi ${tileCn(actPai)}` : "Riichi";
+        actText = actPai ? `立直 ${tileCn(actPai)}` : "Riichi";
       } else {
         actText = actText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
       }
@@ -1996,7 +1974,17 @@ function renderDecisionCard(dec, isExactStep, snap) {
   // 2. AI Recommended Choice (On Bottom)
   let expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
   if (!expPai && (dec.expected?.type === "reach" || dec.candidates?.[0]?.action?.type === "reach")) {
-    expPai = dec.context_tile || dec.candidates?.[1]?.pai || currentKyoku?.steps?.[dec.step_idx + 1]?.event?.pai;
+    expPai = dec.candidates?.[0]?.pai || dec.candidates?.[1]?.pai;
+    if (!expPai) {
+      const startIdx = dec.step_idx;
+      for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
+        const ev = currentKyoku?.steps?.[s]?.event;
+        if (ev?.actor === targetActor && ev?.type === "dahai") {
+          expPai = ev.pai;
+          break;
+        }
+      }
+    }
   }
   const isExpTile = expPai && expPai !== "none" && expPai !== "pass";
   const bestCand = dec.candidates?.[0];
@@ -2029,7 +2017,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
       } else if (expType.includes("ron") || (isCallDec && (expType.includes("hora") || expText.includes("和")))) {
         expText = "Ron";
       } else if (expType.includes("reach") || expType.includes("riichi") || expText.includes("立直")) {
-        expText = expPai ? `Riichi ${tileCn(expPai)}` : "Riichi";
+        expText = expPai ? `立直 ${tileCn(expPai)}` : "Riichi";
       } else {
         expText = expText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
       }
@@ -2123,11 +2111,24 @@ function renderDecisionCard(dec, isExactStep, snap) {
         } else if (actionType === "pass") {
           tileDisplay = `<span class="kd-cand-pass-text">--</span>`;
         } else if (actionType === "riichi") {
-          const reachTile = mainPai || dec.context_tile;
+          let reachTile = mainPai || dec.actual?.pai;
+          if (!reachTile && dec.actual?.type === "reach") {
+            const startIdx = dec.step_idx;
+            for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
+              const ev = currentKyoku?.steps?.[s]?.event;
+              if (ev?.actor === targetActor && ev?.type === "dahai") {
+                reachTile = ev.pai;
+                break;
+              }
+            }
+          }
+          if (!reachTile && dec.candidates?.[0]?.pai) {
+            reachTile = dec.candidates[0].pai;
+          }
           if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
-            tileDisplay = `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="kd-cand-tile-img rotate" title="Riichi: ${tileCn(reachTile)}">`;
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="kd-cand-tile-img" title="立直: ${tileCn(reachTile)}">`;
           } else {
-            tileDisplay = `<span class="kd-cand-pass-text" style="color:#ff453a; font-weight:700;">Riichi</span>`;
+            tileDisplay = `<span class="kd-cand-pass-text" style="color:#ff453a; font-weight:700;">立直</span>`;
           }
         } else if (actionType === "ron" || actionType === "tsumo") {
           const agariTile = mainPai || dec.context_tile || dec.actual?.pai || dec.expected?.pai;
