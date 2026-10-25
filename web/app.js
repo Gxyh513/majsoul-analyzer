@@ -17,6 +17,7 @@ const state = window.state = {
   isPlaying: false,
   playTimer: null,
   hidePlayerId: localStorage.getItem("majsoul_hide_id") === "true",
+  playSpeed: parseFloat(localStorage.getItem("majsoul_play_speed")) || 1.0,
 };
 
 const WIND_CN = ["东", "南", "西", "北"];
@@ -561,6 +562,21 @@ async function refreshServerStatus() {
   }
 }
 
+function formatModelDisplayName(rawName) {
+  if (!rawName) return "Mortal-V4-582500 (进攻强化)";
+  let name = String(rawName);
+  name = name.replace(/赤木\s*Akagi/gi, "Mortal-V4-582500")
+             .replace(/赤木/g, "Mortal-V4-582500")
+             .replace(/Akagi/gi, "Mortal-V4-582500")
+             .replace(/v4\s*582k步\s*/gi, "")
+             .replace(/mortal-v4-b40c192-26082106/gi, "")
+             .trim();
+  if (name.includes("Mortal-V4-582500") && !name.includes("进攻强化")) {
+    name = "Mortal-V4-582500 (进攻强化)";
+  }
+  return name;
+}
+
 function updateEngineStatusDisplay(modelId, device) {
   const targetModel = (modelId || state.selectedModel || "akagi").toLowerCase();
   const dev = device || state.serverStatus?.engine?.device || "CPU";
@@ -573,7 +589,7 @@ function updateEngineStatusDisplay(modelId, device) {
     const available = state.serverStatus?.engine?.available_models || [];
     const found = available.find((m) => m.id && m.id.toLowerCase() === targetModel);
     if (found && found.name) {
-      friendlyName = found.name.split("(")[0].trim() || found.name;
+      friendlyName = formatModelDisplayName(found.name).split("(")[0].trim() || found.name;
     } else {
       friendlyName = modelId || state.selectedModel || "Mortal-V4-582500";
     }
@@ -590,9 +606,12 @@ function updateTopbarStatus(st) {
   updateEngineStatusDisplay(state.selectedModel || eng.selected_model, eng.device);
 
   const sel = $("engineSelect");
-  if (sel && eng.available_models) {
-    sel.innerHTML = eng.available_models
-      .map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`)
+  if (sel) {
+    const models = (eng.available_models && eng.available_models.length > 0)
+      ? eng.available_models
+      : [{ id: "akagi", name: "Mortal-V4-582500 (进攻强化)" }];
+    sel.innerHTML = models
+      .map((m) => `<option value="${m.id}">${escapeHtml(formatModelDisplayName(m.name))}</option>`)
       .join("");
     if (state.selectedModel) {
       sel.value = state.selectedModel;
@@ -604,8 +623,7 @@ function updateTopbarStatus(st) {
   const detail = $("engineModalDetail");
   if (detail) {
     detail.innerHTML = `
-      <div><b>当前模型：</b>${escapeHtml(eng.model_name || "-")} (${escapeHtml(eng.model_tag || "-")})</div>
-      <div><b>权重路径：</b>${escapeHtml(eng.model_path || "-")}</div>
+      <div><b>当前模型：</b>${escapeHtml(formatModelDisplayName(eng.model_name || "Mortal-V4-582500"))}</div>
       <div><b>计算硬件：</b>${escapeHtml(eng.device || "CPU")}</div>
     `;
   }
@@ -1099,6 +1117,39 @@ function stepDelta(delta) {
   }
 }
 
+function getPlayIntervalMs() {
+  const speed = state.playSpeed || 1.0;
+  return Math.max(150, Math.round(800 / speed));
+}
+
+function setPlaySpeed(speed) {
+  const num = parseFloat(speed);
+  if (isNaN(num) || num <= 0) return;
+  state.playSpeed = num;
+  localStorage.setItem("majsoul_play_speed", String(num));
+  const sel = $("playSpeedSelect");
+  if (sel && sel.value !== String(num)) {
+    sel.value = String(num);
+  }
+  if (state.isPlaying && state.playTimer) {
+    clearInterval(state.playTimer);
+    state.playTimer = setInterval(() => {
+      const kyoku = state.reviewData?.kyokus[state.kyokuIdx];
+      if (!kyoku) {
+        togglePlay(false);
+        return;
+      }
+      const isLastKyoku = state.kyokuIdx >= (state.reviewData.kyokus.length - 1);
+      const isLastStep = state.stepIdx >= (kyoku.steps.length - 1);
+      if (isLastKyoku && isLastStep) {
+        togglePlay(false);
+        return;
+      }
+      stepDelta(1);
+    }, getPlayIntervalMs());
+  }
+}
+
 function togglePlay(forcePlay) {
   const btn = $("btnPlayPause");
   const shouldPlay = typeof forcePlay === "boolean" ? forcePlay : !state.isPlaying;
@@ -1130,7 +1181,7 @@ function togglePlay(forcePlay) {
         return;
       }
       stepDelta(1);
-    }, 850);
+    }, getPlayIntervalMs());
   } else {
     state.isPlaying = false;
     if (state.playTimer) {
@@ -1748,7 +1799,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
             const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
             return `
               <div class="kd-settlement-delta-cell ${cellClass}">
-                <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                <div class="kd-settlement-player-name">${escapeHtml(pName)}</div>
                 <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
               </div>
             `;
@@ -1811,7 +1862,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
             const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
             return `
               <div class="kd-settlement-delta-cell">
-                <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                <div class="kd-settlement-player-name">${escapeHtml(pName)}</div>
                 <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
               </div>
             `;
@@ -1827,11 +1878,6 @@ function renderDecisionCard(dec, isExactStep, snap) {
     return;
   }
 
-  // CASE 2.5: Non-Hero Decision Step / Opponent Turn (Zero-jump reserved layout, completely hidden without layout shift)
-  if (!isExactStep) {
-    card.classList.add("is-idle");
-    return;
-  }
   card.classList.remove("is-idle");
 
   // Restore decision comparison blocks & candidates section for normal steps
@@ -2632,6 +2678,15 @@ function bindEvents() {
   // Play/Pause Auto Step
   $("btnPlayPause")?.addEventListener("click", () => togglePlay());
 
+  // Playback Speed Selector
+  const speedSel = $("playSpeedSelect");
+  if (speedSel) {
+    speedSel.value = String(state.playSpeed || "1");
+    speedSel.addEventListener("change", (e) => {
+      setPlaySpeed(e.target.value);
+    });
+  }
+
   // Toggle Hands Visibility
   $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
 
@@ -2811,6 +2866,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   } catch (_) {}
   applyHidePlayerId();
   updateSoundButton();
+  const initSpeedSel = $("playSpeedSelect");
+  if (initSpeedSel) initSpeedSel.value = String(state.playSpeed || "1");
   document.addEventListener("pointerdown", () => SoundFX.init(), { once: true });
   bindEvents();
   await refreshServerStatus();
