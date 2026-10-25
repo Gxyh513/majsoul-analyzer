@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -29,10 +28,7 @@ from .mortal_model import LoadedMortal  # noqa: E402
 from .shanten import shanten as py_shanten  # noqa: E402
 from .shanten import ukeire as py_ukeire  # noqa: E402
 from .tiles import (  # noqa: E402
-    ACTION_NAMES_CN,
-    HONOR_CN,
     action_idx_of_tile,
-    action_label,
     deaka,
     dora_from_marker,
     is_aka,
