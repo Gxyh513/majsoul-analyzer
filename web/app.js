@@ -974,10 +974,14 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
       </div>
     `;
   }
-  if (actType.includes("riichi") || actType.includes("立直")) {
+  if (actType.includes("riichi") || actType.includes("reach") || actType.includes("立直")) {
+    const reachTile = pai || actionObj?.pai;
+    if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
+      return `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="tileImg rotate" title="Riichi: ${tileCn(reachTile)}">`;
+    }
     return `
-      <div class="action-badge action-badge-riichi" title="立直宣言">
-        <span class="action-badge-text">立直</span>
+      <div class="action-badge action-badge-riichi" title="Riichi">
+        <span class="action-badge-text">Riichi</span>
       </div>
     `;
   }
@@ -1012,6 +1016,11 @@ function renderDecisionCard(dec, isExactStep, snap) {
 
   const turnEl = $("decTurnText");
   const badgeEl = $("decVerdictBadge");
+  const compWrap = $("decComparisonWrap");
+  const settWrap = $("decSettlementWrap");
+  const candTitle = $("decCandTitle");
+  const candTableHead = $("decCandTableHead");
+
   const aiTileWrap = $("decAiTileWrap");
   const aiTileName = $("decAiTileName");
   const aiProbBadge = $("decAiProbBadge");
@@ -1033,14 +1042,16 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const wind = currentKyoku ? handWind(targetActor, currentKyoku) : "";
   const names = state.reviewData?.names || [];
   const isHora = snap?.event?.type === "hora";
-  const isRyuukyoku = snap?.event?.type === "ryuukyoku";
+  const isRyuukyoku = snap?.event?.type === "ryuukyoku" || snap?.event?.type === "ryukyoku";
 
-  if (!isHora) {
-    if (actualLabel) actualLabel.textContent = "玩家";
-    if (aiLabel) aiLabel.textContent = "模型";
-  }
+  const setTileWrapContent = (wrap, html) => {
+    if (!wrap) return;
+    wrap.innerHTML = html;
+    wrap.classList.toggle("has-action-badge", html.includes("action-badge"));
+    wrap.classList.toggle("has-rotate", html.includes("rotate"));
+  };
 
-  // CASE 1: Round End (Hora / 自摸/荣和结算)
+  // CASE 1: Round End (Hora / 自摸/荣和结算) - Clean Standalone Round Settlement Card
   if (isHora) {
     const winActor = snap.event.actor;
     const tgtActor = snap.event.target;
@@ -1059,6 +1070,8 @@ function renderDecisionCard(dec, isExactStep, snap) {
       : (isRon ? `${winWind}家 ${escapeHtml(winName)} 荣和 ${tgtWind}家 ${escapeHtml(tgtName)} +${scoreDelta}` : `${winWind}家 ${escapeHtml(winName)} 自摸 +${scoreDelta}`);
 
     if (turnEl) turnEl.textContent = "";
+
+    // 1. Title badge: [自家自摸] / [自家荣和] / [自家放铳] / [X家自摸] / [X家荣和]
     if (badgeEl) {
       if (isHeroWin) {
         badgeEl.textContent = isRon ? "自家荣和" : "自家自摸";
@@ -1072,96 +1085,95 @@ function renderDecisionCard(dec, isExactStep, snap) {
       }
     }
 
-    // Dynamic Top Choice Block Header Badge (.kd-choice-actual .kd-choice-badge-label)
-    if (actualLabel) {
-      if (isHeroWin) {
-        actualLabel.textContent = `自家${isRon ? "荣和" : "自摸"}`;
-      } else if (isHeroLoser) {
-        actualLabel.textContent = "自家放铳";
-      } else {
-        actualLabel.textContent = `${winWind}家${isRon ? "荣和" : "自摸"}`;
+    // 2. Hide active decision comparison blocks completely (Duelling 'Player vs AI' eliminated on round settlement)
+    if (compWrap) compWrap.style.display = "none";
+
+    // 3. Identify Winning Agari Tile
+    let agariTile = null;
+    if (isRon && tgtActor !== null && tgtActor !== undefined) {
+      const river = snap.rivers?.[tgtActor] || [];
+      if (river.length > 0) agariTile = river[river.length - 1].pai;
+      if (!agariTile && currentKyoku?.steps?.[state.stepIdx - 1]?.event?.pai) {
+        agariTile = currentKyoku.steps[state.stepIdx - 1].event.pai;
+      }
+    } else if (winActor !== null && winActor !== undefined) {
+      agariTile = snap.drawn?.[winActor];
+      if (!agariTile && currentKyoku?.steps?.[state.stepIdx - 1]?.event?.pai) {
+        agariTile = currentKyoku.steps[state.stepIdx - 1].event.pai;
       }
     }
 
-    // Dynamic Bottom Choice Block Header Badge (.kd-choice-ai .kd-choice-badge-label)
-    if (aiLabel) {
-      aiLabel.textContent = isRon ? "放铳者" : "和了形式";
+    // Ura Dora Information
+    const uras = snap.event.ura_markers || [];
+    const uraHtml = uras.length
+      ? `<div class="kd-settlement-uradora-badge"><span>里宝牌:</span> ${uras.map((u) => `<span style="font-weight:700; color:#ffd60a;">${tileCn(u)}</span>`).join(" ")}</div>`
+      : `<div class="kd-settlement-uradora-badge"><span>里宝:</span> 无</div>`;
+
+    // 4. Render Single Prominent Settlement Banner in decSettlementWrap
+    if (settWrap) {
+      settWrap.style.display = "block";
+      const bannerClass = isHeroWin ? "is-hero-win" : isHeroLoser ? "is-hero-blunder" : "";
+      settWrap.innerHTML = `
+        <div class="kd-settlement-banner ${bannerClass}">
+          <div class="kd-settlement-banner-top">
+            <div class="kd-settlement-banner-main">
+              ${agariTile ? `
+                <div class="kd-settlement-agari-tile-wrap" title="和了牌: ${tileCn(agariTile)}">
+                  <img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" alt="${tileCn(agariTile)}">
+                </div>
+              ` : `
+                <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
+                  <span class="action-badge-text" style="color:#30d158;">${isRon ? "Ron" : "自摸"}</span>
+                </div>
+              `}
+              <div class="kd-settlement-banner-info">
+                <div class="kd-settlement-winner-title">
+                  <span>${winWind}家 ${escapeHtml(winName)}</span>
+                  <span style="font-weight:700; color:${isRon ? "#70d7ff" : "#30d158"};">${isRon ? "荣和" : "自摸"}</span>
+                </div>
+                <div class="kd-settlement-meta-row">
+                  ${isRon ? `<span style="color:#ff453a;">${tgtWind}家 ${escapeHtml(tgtName)} 放铳 (-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>` : `<span>自摸和了</span>`}
+                  ${uraHtml}
+                </div>
+              </div>
+            </div>
+            <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
+              +${scoreDelta} 点
+            </div>
+          </div>
+          ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
+        </div>
+      `;
     }
 
-    // Identify Winning Tile
-    let agariTile = null;
-    if (isRon && tgtActor !== null && tgtActor !== undefined) {
-      const river = snap.rivers[tgtActor] || [];
-      if (river.length > 0) agariTile = river[river.length - 1].pai;
-    } else if (winActor !== null) {
-      agariTile = snap.drawn[winActor];
+    // 5. Candidates Section Title & Table shows full round settlement scores for all 4 seats
+    if (candTitle) {
+      candTitle.style.display = "block";
+      candTitle.textContent = "全员局末得点收支结算";
     }
+    if (candTableHead) candTableHead.style.display = "none";
 
-    if (actualTileWrap) {
-      actualTileWrap.innerHTML = agariTile
-        ? `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile">`
-        : renderDecisionTileOrBadge(null, { type: isRon ? "ron" : "tsumo" }, isRon ? "荣和" : "自摸");
-    }
-    if (actualTileName) {
-      actualTileName.style.display = "block";
-      actualTileName.textContent = `${winWind}家 ${isRon ? "荣和" : "自摸"} ${agariTile ? tileCn(agariTile) : ""}`;
-    }
-    if (actualProbBadge) actualProbBadge.textContent = `+${scoreDelta} 点`;
-    if (actualVerdictText) {
-      actualVerdictText.textContent = isHeroWin ? (isRon ? "自家荣和" : "自家自摸") : isHeroLoser ? "放铳" : (isRon ? "荣和" : "自摸");
-      actualVerdictText.className = isHeroWin ? "kd-tag-verdict best" : isHeroLoser ? "kd-tag-verdict blunder" : "kd-tag-verdict question";
-    }
-    if (actualBlock) {
-      if (isHeroLoser) actualBlock.classList.add("is-blunder");
-      else actualBlock.classList.remove("is-blunder");
-    }
-
-    // AI choice block: Settlement Details
-    if (aiTileWrap) {
-      aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: isRon ? "ron" : "tsumo" }, isRon ? "荣和" : "自摸");
-    }
-    if (aiTileName) {
-      aiTileName.style.display = "block";
-      aiTileName.textContent = isRon
-        ? `${tgtWind}家 ${tgtName} 放铳 (-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)`
-        : `${winWind}家 ${winName} 自摸 (+${scoreDelta}点)`;
-    }
-    if (aiProbBadge) aiProbBadge.textContent = isRon ? "荣和终局" : "自摸终局";
-    if (aiShantenBadge) aiShantenBadge.textContent = isRon ? "荣和终局" : "自摸终局";
-    if (aiUkeireBadge) {
-      const uras = snap.event.ura_markers || [];
-      aiUkeireBadge.textContent = uras.length ? `里宝: ${uras.map(tileCn).join(" ")}` : "本局结束";
-    }
-
-    // Settlement Table in Candidates Area
     if (tableBody) {
       tableBody.innerHTML = `
         <tr>
-          <td colspan="5" style="padding:8px 2px;">
-            <div class="kd-settlement-card">
-              <div class="kd-settlement-title-row">
-                <span>${isRon ? "荣和 (放铳终局)" : "自摸终局"}</span>
-                <span style="font-size:14px; font-weight:800; color:#30d158;">+${scoreDelta} 点</span>
-              </div>
-              <div class="kd-settlement-summary-text">${summaryText}</div>
-              <div class="kd-settlement-delta-grid">
-                ${[0, 1, 2, 3].map((seat) => {
-                  const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
-                  const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
-                  const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
-                  const isWin = seat === winActor;
-                  const isLos = isRon && seat === tgtActor;
-                  const cellClass = isWin ? "winner" : isLos ? "loser" : "";
-                  const pName = names[seat] || `P${seat + 1}`;
-                  const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
-                  return `
-                    <div class="kd-settlement-delta-cell ${cellClass}">
-                      <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
-                      <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
-                    </div>
-                  `;
-                }).join("")}
-              </div>
+          <td colspan="5" style="padding:4px 0; border:none; background:transparent;">
+            <div class="kd-settlement-delta-grid">
+              ${[0, 1, 2, 3].map((seat) => {
+                const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
+                const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
+                const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
+                const isWin = seat === winActor;
+                const isLos = isRon && seat === tgtActor;
+                const cellClass = isWin ? "winner" : isLos ? "loser" : "";
+                const pName = names[seat] || `P${seat + 1}`;
+                const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
+                return `
+                  <div class="kd-settlement-delta-cell ${cellClass}">
+                    <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                    <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
+                  </div>
+                `;
+              }).join("")}
             </div>
           </td>
         </tr>
@@ -1177,48 +1189,59 @@ function renderDecisionCard(dec, isExactStep, snap) {
       badgeEl.textContent = "荒牌流局";
       badgeEl.className = "kd-dec-verdict cruise";
     }
-    if (actualTileWrap) actualTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "流局");
-    if (actualTileName) {
-      actualTileName.style.display = "block";
-      actualTileName.textContent = "荒牌流局";
-    }
-    if (actualProbBadge) actualProbBadge.textContent = "";
-    if (aiTileWrap) aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "流局");
-    if (aiTileName) {
-      aiTileName.style.display = "block";
-      aiTileName.textContent = "荒牌流局";
-    }
-    if (aiProbBadge) aiProbBadge.textContent = "荒牌流局";
-    if (aiShantenBadge) aiShantenBadge.textContent = "流局";
-    if (aiUkeireBadge) aiUkeireBadge.textContent = "荒牌";
+
+    if (compWrap) compWrap.style.display = "none";
 
     const summaryText = currentKyoku?.end_summaries?.length ? currentKyoku.end_summaries.join("<br>") : (currentKyoku?.result || "荒牌流局");
+
+    if (settWrap) {
+      settWrap.style.display = "block";
+      settWrap.innerHTML = `
+        <div class="kd-settlement-banner">
+          <div class="kd-settlement-banner-top">
+            <div class="kd-settlement-banner-main">
+              <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
+                <span class="action-badge-text" style="color:#ffd60a;">流局</span>
+              </div>
+              <div class="kd-settlement-banner-info">
+                <div class="kd-settlement-winner-title">
+                  <span>荒牌流局</span>
+                </div>
+                <div class="kd-settlement-meta-row">
+                  <span>局末听牌与罚符收支</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
+        </div>
+      `;
+    }
+
+    if (candTitle) {
+      candTitle.style.display = "block";
+      candTitle.textContent = "全员局末罚符收支结算";
+    }
+    if (candTableHead) candTableHead.style.display = "none";
 
     if (tableBody) {
       tableBody.innerHTML = `
         <tr>
-          <td colspan="5" style="padding:8px 2px;">
-            <div class="kd-settlement-card">
-              <div class="kd-settlement-title-row">
-                <span>荒牌流局结算</span>
-                <span style="font-size:12px; color:var(--color-text-secondary);">局末听牌与罚符</span>
-              </div>
-              <div class="kd-settlement-summary-text">${summaryText}</div>
-              <div class="kd-settlement-delta-grid">
-                ${[0, 1, 2, 3].map((seat) => {
-                  const delta = currentKyoku?.score_deltas?.[seat] ?? 0;
-                  const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
-                  const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
-                  const pName = names[seat] || `P${seat + 1}`;
-                  const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
-                  return `
-                    <div class="kd-settlement-delta-cell">
-                      <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
-                      <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
-                    </div>
-                  `;
-                }).join("")}
-              </div>
+          <td colspan="5" style="padding:4px 0; border:none; background:transparent;">
+            <div class="kd-settlement-delta-grid">
+              ${[0, 1, 2, 3].map((seat) => {
+                const delta = currentKyoku?.score_deltas?.[seat] ?? snap?.event?.deltas?.[seat] ?? 0;
+                const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
+                const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
+                const pName = names[seat] || `P${seat + 1}`;
+                const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
+                return `
+                  <div class="kd-settlement-delta-cell">
+                    <div class="kd-settlement-player-name">${pWind}·${escapeHtml(pName)}</div>
+                    <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
+                  </div>
+                `;
+              }).join("")}
             </div>
           </td>
         </tr>
@@ -1227,6 +1250,17 @@ function renderDecisionCard(dec, isExactStep, snap) {
     return;
   }
 
+  // Restore decision comparison blocks & candidates section for normal steps
+  if (compWrap) compWrap.style.display = "flex";
+  if (settWrap) settWrap.style.display = "none";
+  if (candTitle) {
+    candTitle.style.display = "block";
+    candTitle.textContent = "候选舍牌 AI 评分明细";
+  }
+  if (candTableHead) candTableHead.style.display = "";
+  if (actualLabel) actualLabel.textContent = "玩家";
+  if (aiLabel) aiLabel.textContent = "模型";
+
   // CASE 3: Normal or Cruise Steps
   if (!dec) {
     if (turnEl) turnEl.textContent = "";
@@ -1234,7 +1268,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
       badgeEl.textContent = "巡航中";
       badgeEl.className = "kd-dec-verdict cruise";
     }
-    if (aiTileWrap) aiTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "等待决策");
+    setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "等待决策"));
     if (aiTileName) {
       aiTileName.style.display = "block";
       aiTileName.textContent = "等待决策";
@@ -1243,7 +1277,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
     if (aiShantenBadge) aiShantenBadge.textContent = "--";
     if (aiUkeireBadge) aiUkeireBadge.textContent = "进张 --";
 
-    if (actualTileWrap) actualTileWrap.innerHTML = renderDecisionTileOrBadge(null, { type: "none" }, "等待切牌");
+    setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "等待切牌"));
     if (actualTileName) {
       actualTileName.style.display = "block";
       actualTileName.textContent = "等待切牌";
@@ -1290,11 +1324,13 @@ function renderDecisionCard(dec, isExactStep, snap) {
   }
 
   // 1. Actual Choice (On Top)
-  const actPai = dec.actual?.pai;
-  const isActTile = actPai && actPai !== "none" && actPai !== "pass";
-  if (actualTileWrap) {
-    actualTileWrap.innerHTML = renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn);
+  let actPai = dec.actual?.pai;
+  if (!actPai && (dec.actual?.type === "reach" || dec.decision_type === "reach")) {
+    actPai = dec.context_tile || currentKyoku?.steps?.[dec.step_idx + 1]?.event?.pai;
   }
+  const isActTile = actPai && actPai !== "none" && actPai !== "pass";
+  setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn));
+
   if (actualTileName) {
     if (isActTile && (!dec.actual || dec.actual.type === "dahai")) {
       actualTileName.textContent = "";
@@ -1321,6 +1357,8 @@ function renderDecisionCard(dec, isExactStep, snap) {
         actText = "Kan";
       } else if (actType.includes("ron") || (isCallDec && (actType.includes("hora") || actText.includes("和")))) {
         actText = "Ron";
+      } else if (actType.includes("reach") || actType.includes("riichi") || actText.includes("立直")) {
+        actText = actPai ? `Riichi ${tileCn(actPai)}` : "Riichi";
       } else {
         actText = actText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
       }
@@ -1351,12 +1389,14 @@ function renderDecisionCard(dec, isExactStep, snap) {
   }
 
   // 2. AI Recommended Choice (On Bottom)
-  const expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
+  let expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
+  if (!expPai && (dec.expected?.type === "reach" || dec.candidates?.[0]?.action?.type === "reach")) {
+    expPai = dec.context_tile || dec.candidates?.[1]?.pai || currentKyoku?.steps?.[dec.step_idx + 1]?.event?.pai;
+  }
   const isExpTile = expPai && expPai !== "none" && expPai !== "pass";
   const bestCand = dec.candidates?.[0];
-  if (aiTileWrap) {
-    aiTileWrap.innerHTML = renderDecisionTileOrBadge(expPai, dec.expected, dec.expected_cn);
-  }
+  setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(expPai, dec.expected, dec.expected_cn));
+
   if (aiTileName) {
     if (isExpTile && (!dec.expected || dec.expected.type === "dahai")) {
       aiTileName.textContent = "";
@@ -1383,6 +1423,8 @@ function renderDecisionCard(dec, isExactStep, snap) {
         expText = "Kan";
       } else if (expType.includes("ron") || (isCallDec && (expType.includes("hora") || expText.includes("和")))) {
         expText = "Ron";
+      } else if (expType.includes("reach") || expType.includes("riichi") || expText.includes("立直")) {
+        expText = expPai ? `Riichi ${tileCn(expPai)}` : "Riichi";
       } else {
         expText = expText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
       }
@@ -1437,7 +1479,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
           badgeClass = "action-hora";
         } else if (rawType.includes("reach") || rawType.includes("riichi") || cn.includes("立直")) {
           actionType = "riichi";
-          actionLabel = "立直";
+          actionLabel = "Riichi";
           badgeClass = "action-riichi";
         } else if (rawType.includes("none") || rawType.includes("pass") || cn.includes("pass") || cn.includes("跳过") || cn.includes("过") || cn.includes("不鸣")) {
           actionType = "pass";
@@ -1477,7 +1519,14 @@ function renderDecisionCard(dec, isExactStep, snap) {
           if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
             tileDisplay = `<img src="/tiles/${encodeURIComponent(mainPai)}.svg" class="kd-cand-tile-img" title="${tileCn(mainPai)}">`;
           } else {
-            tileDisplay = `<span class="kd-cand-pass-text">PASS</span>`;
+            tileDisplay = `<span class="kd-cand-pass-text">--</span>`;
+          }
+        } else if (actionType === "riichi") {
+          const reachTile = mainPai || dec.context_tile;
+          if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
+            tileDisplay = `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="kd-cand-tile-img rotate" title="Riichi: ${tileCn(reachTile)}">`;
+          } else {
+            tileDisplay = `<span class="kd-cand-pass-text" style="color:#ff453a; font-weight:700;">Riichi</span>`;
           }
         } else if (actionType === "ron" || actionType === "tsumo") {
           const agariTile = mainPai || dec.context_tile || dec.actual?.pai || dec.expected?.pai;

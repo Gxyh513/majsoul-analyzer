@@ -157,7 +157,7 @@
             </div>
 
             <!-- Vertical Large Decision Comparison Cards: Player Choice on Top, AI on Bottom -->
-            <div class="kd-hero-compare-vertical">
+            <div class="kd-hero-compare-vertical" id="decComparisonWrap">
               <!-- 1. Actual Player Choice (On Top) -->
               <div class="kd-choice-block kd-choice-actual">
                 <div class="kd-choice-badge-label">玩家</div>
@@ -175,9 +175,12 @@
               </div>
             </div>
 
+            <!-- Standalone Round Settlement Container for Hora & Ryuukyoku -->
+            <div class="kd-settlement-container" id="decSettlementWrap" style="display:none;"></div>
+
             <!-- Candidates Table with Legible Sized Tiles -->
-            <div class="kd-cand-section-title">候选舍牌 AI 评分明细</div>
-            <table class="kd-cand-table">
+            <div class="kd-cand-section-title" id="decCandTitle">候选舍牌 AI 评分明细</div>
+            <table class="kd-cand-table" id="decCandTable">
               <colgroup>
                 <col style="width: 48px;" />
                 <col style="width: 64px;" />
@@ -185,7 +188,7 @@
                 <col style="width: 66px;" />
                 <col style="width: 72px;" />
               </colgroup>
-              <thead>
+              <thead id="decCandTableHead">
                 <tr>
                   <th style="width:48px; text-align:center;">动作</th>
                   <th style="width:64px; text-align:center;">牌面</th>
