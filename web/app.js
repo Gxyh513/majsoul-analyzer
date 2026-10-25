@@ -320,12 +320,21 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
       }
 
       try {
-        const p = apiFetch("/api/analyze/paipu", {
-          method: "POST",
-          body: JSON.stringify({ paipu: gameId, target_actor: seat, engine: model }),
-        });
-        inFlightRequests[cacheKey] = p;
-        const res = await p;
+        let res;
+        if (gameId === "demo" || !isBackendOnline()) {
+          try {
+            const resp = await fetch(`/demo_review_${seat}.json`).catch(() => fetch("/demo_review.json"));
+            if (resp && resp.ok) res = await resp.json();
+          } catch (_) {}
+        }
+        if (!res) {
+          const p = apiFetch("/api/analyze/paipu", {
+            method: "POST",
+            body: JSON.stringify({ paipu: gameId, target_actor: seat, engine: model }),
+          });
+          inFlightRequests[cacheKey] = p;
+          res = await p;
+        }
         if (res) {
           if (!state.perspectiveCache) state.perspectiveCache = {};
           state.perspectiveCache[cacheKey] = res;
@@ -347,8 +356,7 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
 
 async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   if (!rawInput) {
-    showToast("请先输入雀魂牌谱链接或牌谱号", "error");
-    return;
+    rawInput = "demo";
   }
   const paipuId = parsePaipuUuid(rawInput);
   state.selectedModel = model;
@@ -379,14 +387,29 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
 
   try {
-    const postBody = { paipu: rawInput.trim(), engine: model };
-    if (seat !== null && seat !== undefined) {
-      postBody.target_actor = seat;
+    let res;
+    if (paipuId === "demo" || !isBackendOnline()) {
+      try {
+        const s = seat !== null && seat !== undefined ? seat : 0;
+        const resp = await fetch(`/demo_review_${s}.json`).catch(() => fetch("/demo_review.json"));
+        if (resp && resp.ok) {
+          res = await resp.json();
+        }
+      } catch (e) {
+        console.warn("Static demo fetch fallback:", e);
+      }
     }
-    const res = await apiFetch("/api/analyze/paipu", {
-      method: "POST",
-      body: JSON.stringify(postBody),
-    });
+
+    if (!res) {
+      const postBody = { paipu: rawInput.trim(), engine: model };
+      if (seat !== null && seat !== undefined) {
+        postBody.target_actor = seat;
+      }
+      res = await apiFetch("/api/analyze/paipu", {
+        method: "POST",
+        body: JSON.stringify(postBody),
+      });
+    }
 
     state.reviewData = res;
     state.gameId = res.game_id || paipuId;
@@ -408,6 +431,27 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
 
     preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
   } catch (err) {
+    if (paipuId === "demo" || !isBackendOnline()) {
+      try {
+        const s = seat !== null && seat !== undefined ? seat : 0;
+        const resp = await fetch(`/demo_review_${s}.json`).catch(() => fetch("/demo_review.json"));
+        if (resp && resp.ok) {
+          const res = await resp.json();
+          state.reviewData = res;
+          state.gameId = res.game_id || "demo";
+          state.targetActor = res.target_actor !== undefined ? res.target_actor : s;
+          state.kyokuIdx = 0;
+          if (!state.perspectiveCache) state.perspectiveCache = {};
+          state.perspectiveCache[`${state.gameId}_${state.selectedModel}_${state.targetActor}`] = res;
+          showTier(2);
+          renderSummaryDashboard();
+          selectKyoku(0, true);
+          showToast(`已载入示例牌谱（共检讨 ${res.kyokus?.length || 0} 局）`, "success");
+          preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+          return;
+        }
+      } catch (_) {}
+    }
     showToast(`分析失败：${err.message}`, "error");
   } finally {
     setLoading(false);
@@ -439,15 +483,23 @@ async function switchSeatPerspective(newSeat) {
   setLoading(true, `切换到「${seatName}」视角...`);
   try {
     let res;
-    if (inFlightRequests[cacheKey]) {
-      res = await inFlightRequests[cacheKey];
-    } else {
-      const p = apiFetch("/api/analyze/paipu", {
-        method: "POST",
-        body: JSON.stringify({ paipu: paipuId, target_actor: newSeat, engine: state.selectedModel }),
-      });
-      inFlightRequests[cacheKey] = p;
-      res = await p;
+    if (paipuId === "demo" || !isBackendOnline()) {
+      try {
+        const resp = await fetch(`/demo_review_${newSeat}.json`).catch(() => fetch("/demo_review.json"));
+        if (resp && resp.ok) res = await resp.json();
+      } catch (_) {}
+    }
+    if (!res) {
+      if (inFlightRequests[cacheKey]) {
+        res = await inFlightRequests[cacheKey];
+      } else {
+        const p = apiFetch("/api/analyze/paipu", {
+          method: "POST",
+          body: JSON.stringify({ paipu: paipuId, target_actor: newSeat, engine: state.selectedModel }),
+        });
+        inFlightRequests[cacheKey] = p;
+        res = await p;
+      }
     }
     if (!state.perspectiveCache) state.perspectiveCache = {};
     state.perspectiveCache[cacheKey] = res;
