@@ -639,10 +639,51 @@ button {
   font-weight: 600;
   padding: 6px 14px;
   border-radius: 20px;
-  background: rgba(48, 209, 88, 0.15);
-  color: #30d158;
-  border: 1px solid rgba(48, 209, 88, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.kd-match-badge:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.kd-match-badge:active {
+  transform: scale(0.97);
+}
+
+.kd-badge-match {
+  color: #30d158; /* 翡翠绿：模型一致率 */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.kd-badge-blunder {
+  color: #ff453a; /* 醒目红：恶手 */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.kd-badge-rating {
+  color: #ffd60a; /* 金黄：Rating */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.kd-badge-sep {
+  color: rgba(255, 255, 255, 0.25);
+  font-weight: 400;
+  margin: 0 2px;
 }
 
 /* ============================================================================

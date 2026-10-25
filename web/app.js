@@ -844,7 +844,13 @@ function renderSummaryDashboard() {
   const sum = res.summary || {};
   const pill = $("gameSummaryPill");
   if (pill) {
-    pill.textContent = `AI 一致率: ${fmtPct(sum.match_rate)} | 恶手: ${sum.blunders || 0} | Rating: ${(sum.rating ?? 0).toFixed(1)}`;
+    pill.innerHTML = `
+      <span class="kd-badge-match">模型一致率: <strong>${fmtPct(sum.match_rate)}</strong></span>
+      <span class="kd-badge-sep">|</span>
+      <span class="kd-badge-blunder">恶手: <strong>${sum.blunders || 0}</strong></span>
+      <span class="kd-badge-sep">|</span>
+      <span class="kd-badge-rating">Rating: <strong>${(sum.rating ?? 0).toFixed(1)}</strong></span>
+    `;
   }
 }
 
@@ -2315,7 +2321,7 @@ function renderKyokuTable() {
           return `<th class="${thClass}" style="text-align:right;">P${s} ${escapeHtml(name)} (起${WIND_CN[s]})${povBadge}</th>`;
         }).join("")}
         <th style="width:85px; text-align:right;">当前增减</th>
-        <th style="width:96px; text-align:center;" title="分子为与AI一致决策数，分母为有效决策总数">AI 一致率</th>
+        <th style="width:96px; text-align:center;" title="分子为与模型一致决策数，分母为有效决策总数">模型一致率</th>
         <th style="width:60px; text-align:center;">恶手</th>
       </tr>
     `;
