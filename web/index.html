@@ -261,9 +261,33 @@
 
   <!-- Loading Overlay -->
   <div id="loadingOverlay" class="kd-loading-overlay hidden">
-    <div class="kd-spinner"></div>
-    <div id="loadingTitle" style="font-size:15px; font-weight:bold;">正在分析牌谱...</div>
-    <div id="loadingSub" style="font-size:12px; color:var(--color-text);">赤木神经网络正在检讨每一手决策</div>
+    <div id="loadingModal" class="kd-loading-card">
+      <div id="analysisNormalState">
+        <div class="kd-spinner"></div>
+        <div id="loadingTitle" class="kd-loading-title">AI 牌谱智能检讨</div>
+        <div id="loadingSub" class="kd-loading-sub">赤木神经网络正在检讨每一手决策</div>
+        <div class="kd-progress-container">
+          <div class="kd-progress-info">
+            <div id="analysisProgressText" class="kd-progress-text">正在连接检讨引擎...</div>
+            <div id="analysisProgressPct" class="kd-progress-pct">0%</div>
+          </div>
+          <div class="kd-progress-track">
+            <div id="analysisProgressFill" class="kd-progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dedicated Analysis Error Box -->
+      <div id="analysisErrorBox" class="kd-error-box hidden">
+        <div style="font-size:28px; margin-bottom:8px;">⚠️</div>
+        <div id="analysisErrorTitle" style="font-size:15px; font-weight:700; color:#ff453a; margin-bottom:6px;">检讨遇到错误</div>
+        <div id="analysisErrorDetail" class="kd-error-detail"></div>
+        <div style="display:flex; gap:10px; justify-content:center; margin-top:14px;">
+          <button id="btnRetryAnalysis" class="kd-retry-btn">一键重试</button>
+          <button id="btnCloseAnalysisError" class="kd-close-btn">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Toast Notification Container -->
