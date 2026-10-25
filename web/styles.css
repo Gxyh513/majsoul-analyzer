@@ -1062,14 +1062,77 @@ button {
   color: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
-  font-weight: 700;
-  font-size: 15px;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 3px 5px !important;
+  gap: 2px !important;
   transition: all 0.18s ease;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+.info-round-title {
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #ffffff;
+}
+
+.info-round-title.only {
+  font-size: 15px;
+}
+
+.info-round-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+}
+
+.info-tag-honba {
+  background: rgba(255, 255, 255, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(235, 235, 245, 0.9);
+}
+
+.info-tag-kyotaku {
+  background: rgba(255, 69, 58, 0.16);
+  border: 1px solid rgba(255, 69, 58, 0.35);
+  color: #ff6961;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.riichi-stick-mini {
+  width: 10px;
+  height: 3px;
+  background: #ffffff;
+  border-radius: 1px;
+  display: inline-block;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.riichi-stick-mini::after {
+  content: "";
+  width: 3px;
+  height: 3px;
+  background: #ff453a;
+  border-radius: 50%;
+  position: absolute;
+  left: 3.5px;
+  top: 0;
 }
 
 .info-round:hover {
