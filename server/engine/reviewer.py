@@ -1049,10 +1049,13 @@ def review_game(
                 cur_kyoku["end_scores"] = list(scores)
             who = names[seat]
             pts = f"{deltas[seat]:+d}" if deltas else ""
+            han = ev.get("han")
+            fu = ev.get("fu")
+            score_desc = f"{fu}符{han}番 " if (fu and han) else ""
             if seat == target:
-                cur_kyoku["end_summaries"].append(f"{who} 自摸 {pts}")
+                cur_kyoku["end_summaries"].append(f"{who} 自摸 {score_desc}{pts}")
             else:
-                cur_kyoku["end_summaries"].append(f"{who} 荣和 {names[target]} {pts}")
+                cur_kyoku["end_summaries"].append(f"{who} 荣和 {names[target]} {score_desc}{pts}")
 
         elif etype == "ryukyoku":
             deltas = ev.get("deltas")
@@ -1277,18 +1280,12 @@ def review_game(
         }
         kyoku_obj["decisions"].append(decision_entry)
 
-        # Attach decision_idx to the replay step (and also to the immediately following dahai step if self_turn)
+        # Attach decision_idx to the decision step only (tsumo or call response).
+        # Do not attach to the following dahai step to avoid duplicate decision triggering after discard.
         step_idx = item["step_idx"]
         if 0 <= step_idx < len(kyoku_obj["steps"]):
             if kyoku_obj["steps"][step_idx]["decision_idx"] is None:
                 kyoku_obj["steps"][step_idx]["decision_idx"] = dec_idx_in_kyoku
-            if (
-                step_idx + 1 < len(kyoku_obj["steps"])
-                and kyoku_obj["steps"][step_idx + 1]["event"].get("type") == "dahai"
-                and kyoku_obj["steps"][step_idx + 1]["event"].get("actor") == target_actor
-                and kyoku_obj["steps"][step_idx + 1]["decision_idx"] is None
-            ):
-                kyoku_obj["steps"][step_idx + 1]["decision_idx"] = dec_idx_in_kyoku
 
     # Compute overall rating & per-kyoku stats
     rating = ((raw_rating_sum / total_reviewed) ** 2) * 100.0 if total_reviewed > 0 else 100.0
@@ -1371,5 +1368,8 @@ def review_game(
             "blunder_rate": round(blunder_rate, 1),
             "inaccuracies": inaccuracies,
         },
+        "match_rate": round(match_rate, 1),
+        "blunders": blunders,
+        "decisions": [d for k in kyokus for d in k.get("decisions", [])],
         "kyokus": kyokus,
     }

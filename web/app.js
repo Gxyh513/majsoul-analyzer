@@ -31,7 +31,16 @@ const SoundFX = {
   ctx: null,
   buffer: null,
   loading: false,
-  init() {
+  currentUrl: null,
+  getAudioUrl() {
+    const variant = localStorage.getItem("majsoul_sound_variant") || "warm";
+    if (variant === "soft") return "/audio/preview/discard_soft.wav";
+    if (variant === "solid") return "/audio/preview/discard_solid.wav";
+    if (variant === "crisp") return "/audio/preview/discard_crisp.wav";
+    if (variant === "amos") return "/audio/preview/discard_amos.wav";
+    return "/audio/discard.wav";
+  },
+  init(forceReload = false) {
     if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       this.ctx = new AudioCtx();
@@ -39,9 +48,11 @@ const SoundFX = {
     if (this.ctx && this.ctx.state === "suspended") {
       this.ctx.resume().catch(() => {});
     }
-    if (!this.buffer && !this.loading && this.ctx) {
+    const targetUrl = this.getAudioUrl();
+    if ((!this.buffer || forceReload || this.currentUrl !== targetUrl) && !this.loading && this.ctx) {
       this.loading = true;
-      fetch("/audio/discard.wav")
+      this.currentUrl = targetUrl;
+      fetch(targetUrl)
         .then((res) => {
           if (!res.ok) throw new Error("Audio fetch failed");
           return res.arrayBuffer();
@@ -62,27 +73,37 @@ const SoundFX = {
       if (!this.ctx) return;
 
       const t = this.ctx.currentTime;
-      const pitch = 0.94 + Math.random() * 0.12;
+      // Organic pitch micro-variation
+      const pitch = 0.96 + Math.random() * 0.08;
 
       if (this.buffer) {
         const source = this.ctx.createBufferSource();
         source.buffer = this.buffer;
         source.playbackRate.value = pitch;
+
+        // Gentle lowpass filter at 3200Hz to eliminate harsh high-frequency spikes across earphones/speakers
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(3200, t);
+        filter.Q.setValueAtTime(0.7, t);
+
         const gainNode = this.ctx.createGain();
-        gainNode.gain.setValueAtTime(0.75, t);
-        source.connect(gainNode);
+        gainNode.gain.setValueAtTime(0.8, t);
+
+        source.connect(filter);
+        filter.connect(gainNode);
         gainNode.connect(this.ctx.destination);
         source.start(t);
         return;
       }
 
-      // Fallback synthesizer if buffer is loading
+      // Warm fallback synthesizer if buffer is loading
       const oscClick = this.ctx.createOscillator();
       const gainClick = this.ctx.createGain();
       oscClick.type = "sine";
-      oscClick.frequency.setValueAtTime(2600 * pitch, t);
-      oscClick.frequency.exponentialRampToValueAtTime(1400 * pitch, t + 0.016);
-      gainClick.gain.setValueAtTime(0.35, t);
+      oscClick.frequency.setValueAtTime(1550 * pitch, t);
+      oscClick.frequency.exponentialRampToValueAtTime(820 * pitch, t + 0.016);
+      gainClick.gain.setValueAtTime(0.25, t);
       gainClick.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
       oscClick.connect(gainClick);
       gainClick.connect(this.ctx.destination);
@@ -92,9 +113,9 @@ const SoundFX = {
       const oscBody = this.ctx.createOscillator();
       const gainBody = this.ctx.createGain();
       oscBody.type = "triangle";
-      oscBody.frequency.setValueAtTime(760 * pitch, t);
-      oscBody.frequency.exponentialRampToValueAtTime(450 * pitch, t + 0.035);
-      gainBody.gain.setValueAtTime(0.4, t);
+      oscBody.frequency.setValueAtTime(680 * pitch, t);
+      oscBody.frequency.exponentialRampToValueAtTime(380 * pitch, t + 0.035);
+      gainBody.gain.setValueAtTime(0.32, t);
       gainBody.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
       oscBody.connect(gainBody);
       gainBody.connect(this.ctx.destination);
@@ -176,8 +197,10 @@ function applyHidePlayerId() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
   if (kyoku) {
     const snap = kyoku?.steps?.[state.stepIdx];
-    const isExact = snap?.decision_idx !== null && snap?.decision_idx !== undefined;
-    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, state.stepIdx);
+    const targetActor = state.targetActor ?? 0;
+    const isHeroDahai = snap?.event?.type === "dahai" && snap?.event?.actor === targetActor;
+    const isExact = snap?.decision_idx !== null && snap?.decision_idx !== undefined && !isHeroDahai;
+    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : null;
     renderBoard(kyoku, snap, isExact ? dec : null);
     renderDecisionCard(dec, isExact, snap);
   }
@@ -1249,6 +1272,7 @@ function getStepActionDesc(snap, kyoku) {
         return `${actorLabel} 自摸${deltaStr}`;
       }
     case "ryuukyoku":
+    case "ryukyoku":
       return `荒牌流局结算`;
     default:
       return `${actorLabel} 行动`;
@@ -1275,8 +1299,10 @@ function setStep(stepIdx) {
   if ($("stepSlider")) $("stepSlider").value = clamped;
   if ($("stepCounterText")) $("stepCounterText").textContent = `${clamped} / ${kyoku.steps.length - 1}`;
 
-  const isExactDecisionStep = snap.decision_idx !== null && snap.decision_idx !== undefined;
-  const decision = isExactDecisionStep ? kyoku.decisions[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, clamped);
+  const targetActor = state.targetActor ?? 0;
+  const isHeroDahai = snap?.event?.type === "dahai" && snap?.event?.actor === targetActor;
+  const isExactDecisionStep = snap.decision_idx !== null && snap.decision_idx !== undefined && !isHeroDahai;
+  const decision = isExactDecisionStep ? kyoku.decisions[snap.decision_idx] : null;
 
   renderBoard(kyoku, snap, isExactDecisionStep ? decision : null);
   renderDecisionCard(decision, isExactDecisionStep, snap);
@@ -1444,17 +1470,17 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   if (drawn) allTiles.push({ pai: drawn, isDrawn: true });
 
   const tileBars = activeDecision?.tile_bars || {};
-  let actualPai = activeDecision?.actual?.pai;
-  if (!actualPai && snap.event?.type === "dahai" && snap.event?.actor === seat) {
-    actualPai = snap.event.pai;
-  }
+  const actualPai = activeDecision?.actual?.pai || null;
 
+  // Only highlight the intended discard in hand during active decision step (before tile is played)
   let highlightedIdx = -1;
-  allTiles.forEach(({ pai }, idx) => {
-    if (actualPai === pai && highlightedIdx === -1) {
-      highlightedIdx = idx;
-    }
-  });
+  if (activeDecision && actualPai) {
+    allTiles.forEach(({ pai }, idx) => {
+      if (actualPai === pai && highlightedIdx === -1) {
+        highlightedIdx = idx;
+      }
+    });
+  }
 
   // 1. Render Closed Hand Tiles into DOM first
   let handHtml = "";
@@ -1649,10 +1675,76 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
 // ============================================================================
 // Active Decision Details Card (In Right Sidebar)
 // ============================================================================
+const MAJSOUL_YAKU_NAMES = {
+  1: "门前清自摸和",
+  2: "立直",
+  3: "两立直",
+  4: "枪杠",
+  5: "岭上开花",
+  6: "海底捞月",
+  7: "役牌 白",
+  8: "役牌 发",
+  9: "役牌 中",
+  10: "场风牌",
+  11: "自风牌",
+  12: "断幺九",
+  13: "一杯口",
+  14: "平和",
+  15: "河底捞鱼",
+  16: "一气通贯",
+  17: "三色同顺",
+  18: "三色同刻",
+  19: "混老头",
+  20: "对对和",
+  21: "三暗刻",
+  22: "三暗刻",
+  23: "三杠子",
+  24: "小三元",
+  25: "七对子",
+  26: "纯全带幺九",
+  27: "混一色",
+  28: "清一色",
+  29: "二杯口",
+  30: "一发",
+  31: "宝牌",
+  32: "红宝牌",
+  33: "里宝牌",
+  34: "拔北",
+  37: "混全带幺九",
+  38: "国士无双",
+  39: "九莲宝灯",
+  40: "四暗刻",
+  41: "大三元",
+  42: "字一色",
+  43: "清老头",
+  44: "绿一色",
+  45: "小四喜",
+  46: "大四喜",
+  47: "四杠子",
+  48: "天和",
+  49: "地和",
+  50: "国士无双十三面",
+  51: "四暗刻单骑",
+  52: "纯正九莲宝灯",
+};
+
+const MAJSOUL_TITLES = {
+  1: "满贯",
+  2: "跳满",
+  3: "倍满",
+  4: "三倍满",
+  5: "役满",
+  6: "两倍役满",
+  7: "三倍役满",
+  8: "四倍役满",
+  9: "五倍役满",
+};
+
 function renderDecisionCard(dec, isExactStep, snap) {
   const card = $("decisionCard");
   if (!card) return;
 
+  const headerEl = card.querySelector(".kd-dec-header");
   const turnEl = $("decTurnText");
   const badgeEl = $("decVerdictBadge");
   const compWrap = $("decComparisonWrap");
@@ -1694,6 +1786,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   // CASE 1: Round End (Hora / 自摸/荣和结算) - Clean Standalone Round Settlement Card
   if (isHora) {
     card.classList.remove("is-idle");
+    if (headerEl) headerEl.style.display = "flex";
     const winActor = snap.event.actor;
     const tgtActor = snap.event.target;
     const isRon = winActor !== tgtActor && tgtActor !== undefined && tgtActor !== null;
@@ -1761,6 +1854,74 @@ function renderDecisionCard(dec, isExactStep, snap) {
       : `<div class="kd-settlement-uradora-badge"><span class="kd-settlement-uradora-label">里宝牌: 无</span></div>`;
 
     // 4. Render Single Prominent Settlement Banner & 4-Seat Delta Grid directly inside decSettlementWrap
+    const roundHonba = snap.honba ?? currentKyoku?.honba ?? 0;
+    const honbaPts = roundHonba * 300;
+    const roundKyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
+    const kyotakuPts = roundKyotaku * 1000;
+    const dadian = snap.event?.dadian || (scoreDelta > 0 ? (scoreDelta - honbaPts - kyotakuPts) : null);
+
+    // Extract Han & Fu and Title
+    let han = snap.event?.han ?? snap.event?.count ?? null;
+    let fu = snap.event?.fu ?? null;
+    let titleId = snap.event?.title_id ?? 0;
+
+    if (han === null && rawSummaryText) {
+      const m = rawSummaryText.match(/(\d+)符\s*(\d+)番/);
+      if (m) {
+        fu = parseInt(m[1], 10);
+        han = parseInt(m[2], 10);
+      }
+    }
+
+    let titleName = MAJSOUL_TITLES[titleId] || null;
+    if (!titleName && han !== null) {
+      if (han >= 13) titleName = "役满";
+      else if (han >= 11) titleName = "三倍满";
+      else if (han >= 8) titleName = "倍满";
+      else if (han >= 6) titleName = "跳满";
+      else if (han === 5 || (han === 4 && fu >= 40) || (han === 3 && fu >= 70)) titleName = "满贯";
+    }
+
+    let titleCls = "";
+    if (titleName === "满贯") titleCls = "mangan";
+    else if (titleName === "跳满") titleCls = "haneman";
+    else if (titleName && (titleName.includes("倍满") || titleName.includes("役满"))) titleCls = "yakuman";
+
+    const hanFuPillHtml = (han !== null && han !== undefined)
+      ? `<div class="kd-settlement-hanfu-row">
+           <span class="kd-settlement-hanfu-pill">${fu ? `${fu} 符 ` : ""}${han} 番</span>
+           ${dadian && dadian > 0 ? `<span class="kd-settlement-dadian-pill">手牌 ${dadian} 点</span>` : ""}
+           ${titleName ? `<span class="kd-settlement-title-pill ${titleCls}">${titleName}</span>` : ""}
+         </div>`
+      : "";
+
+    // Subtitle under total score
+    let scoreSubParts = [];
+    if (kyotakuPts > 0) scoreSubParts.push(`场供 +${kyotakuPts}`);
+    if (honbaPts > 0) scoreSubParts.push(`本场 +${honbaPts}`);
+    const scoreSubText = scoreSubParts.length > 0 ? `(含${scoreSubParts.join(" / ")})` : "";
+
+    // Yaku Breakdown Chips
+    const rawFans = snap.event?.fans || [];
+    const validFans = rawFans
+      .filter((f) => (f.val || 0) > 0)
+      .map((f) => {
+        const name = f.name || MAJSOUL_YAKU_NAMES[f.id] || `役种 ${f.id}`;
+        const isDora = f.id === 31 || f.id === 32 || f.id === 33 || name.includes("宝牌");
+        return { name, val: f.val, isDora };
+      });
+
+    const yakuChipsHtml = validFans.length > 0
+      ? `<div class="kd-settlement-yaku-grid">
+           ${validFans.map((f) => `
+             <span class="kd-settlement-yaku-chip ${f.isDora ? 'dora' : ''}">
+               <span class="kd-yaku-name">${escapeHtml(f.name)}</span>
+               <span class="kd-yaku-val">${f.val}番</span>
+             </span>
+           `).join("")}
+         </div>`
+      : (summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : "");
+
     if (settWrap) {
       settWrap.style.display = "flex";
       const bannerClass = isHeroWin ? "is-hero-win" : isHeroLoser ? "is-hero-blunder" : "";
@@ -1782,9 +1943,11 @@ function renderDecisionCard(dec, isExactStep, snap) {
                 <span class="kd-settlement-player-highlight winner">${escapeHtml(winName)}</span>
                 <span class="kd-settlement-win-badge ${isRon ? 'ron' : 'tsumo'}">${isRon ? "荣和" : "自摸"}</span>
               </div>
-              <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
-                ${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点
-              </div>
+              ${hanFuPillHtml}
+            </div>
+            <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
+              <span class="kd-settlement-score-num">${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点</span>
+              ${scoreSubText ? `<span class="kd-settlement-score-sub">${scoreSubText}</span>` : ""}
             </div>
           </div>
 
@@ -1794,15 +1957,38 @@ function renderDecisionCard(dec, isExactStep, snap) {
                 <span class="kd-settlement-loser-action">放铳:</span>
                 <span class="kd-settlement-seat-wind">${tgtWind}家</span>
                 <span class="kd-settlement-player-highlight loser">${escapeHtml(tgtName)}</span>
-                <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>
+                <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点${honbaPts > 0 ? `，含本场+${honbaPts}` : ""})</span>
               </div>
             ` : `
-              <div class="kd-settlement-tsumo-action">自摸和了</div>
+              <div class="kd-settlement-tsumo-action">
+                自摸和了 ${roundHonba > 0 ? `<span class="kd-settlement-tsumo-honba-note">(含各家本场+${roundHonba * 100}点)</span>` : ""}
+              </div>
             `}
             ${uraHtml}
+            ${yakuChipsHtml}
           </div>
 
-          ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
+          ${roundHonba > 0 ? `
+            <div class="kd-settlement-bonus-strip honba">
+              <div class="kd-bonus-pill">
+                <span class="honba-stick-mini"></span>
+                <span class="kd-bonus-tag">本场加成</span>
+              </div>
+              <div class="kd-bonus-pts">+${honbaPts} 点</div>
+              <div class="kd-bonus-desc">${roundHonba} 本场 (${isRon ? `放铳全付` : `各家付 +${roundHonba * 100}`})</div>
+            </div>
+          ` : ""}
+
+          ${roundKyotaku > 0 ? `
+            <div class="kd-settlement-bonus-strip kyotaku">
+              <div class="kd-bonus-pill">
+                <span class="riichi-stick-mini"></span>
+                <span class="kd-bonus-tag">场供收入</span>
+              </div>
+              <div class="kd-bonus-pts">+${kyotakuPts} 点</div>
+              <div class="kd-bonus-desc">含 ${roundKyotaku} 根立直供托棒</div>
+            </div>
+          ` : ""}
         </div>
 
         <div class="kd-settlement-delta-grid">
@@ -1836,6 +2022,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   // CASE 2: Round End (Ryuukyoku / 流局结算)
   if (isRyuukyoku) {
     card.classList.remove("is-idle");
+    if (headerEl) headerEl.style.display = "flex";
     if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
       badgeEl.textContent = "荒牌流局";
@@ -1848,47 +2035,84 @@ function renderDecisionCard(dec, isExactStep, snap) {
     if (actualTileName) actualTileName.textContent = "";
     if (aiTileName) aiTileName.textContent = "";
 
-    const rawSummaryText = currentKyoku?.end_summaries?.length ? currentKyoku.end_summaries.join("<br>") : (currentKyoku?.result || "荒牌流局");
-    const summaryText = sanitizeSummaryText(rawSummaryText);
     const roundKyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
+
+    // Calculate pure round-end tenpai fee (+3000 / -1000 etc.)
+    // Note: Do NOT subtract the 1000 riichi stick deposit here. Per Majsoul rule and user request:
+    // Display pure tenpai fee directly (+3000, not +2000), without "(立直-1k)".
+    const pureDeltas = [0, 1, 2, 3].map((seat) => {
+      let d = snap?.event?.deltas?.[seat];
+      if (d === undefined || d === null) {
+        d = currentKyoku?.score_deltas?.[seat] ?? 0;
+        // If cumulative score_deltas had deducted the 1000 riichi stick, restore pure tenpai fee
+        if (snap?.riichi?.[seat]) {
+          d += 1000;
+        }
+      }
+      return d;
+    });
+
+    const tenpaiSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] > 0);
+    const notenSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] < 0);
+
+    let tenpaiSummary = "荒牌流局 · 罚符结算";
+    if (tenpaiSeats.length === 1) {
+      tenpaiSummary = "1人听牌 · 罚符收付 (+3000 / -1000)";
+    } else if (tenpaiSeats.length === 2) {
+      tenpaiSummary = "2人听牌 · 罚符收付 (+1500 / -1500)";
+    } else if (tenpaiSeats.length === 3) {
+      tenpaiSummary = "3人听牌 · 罚符收付 (+1000 / -3000)";
+    } else if (tenpaiSeats.length === 4) {
+      tenpaiSummary = "全员听牌 · 无罚符收支 (0点)";
+    } else if (tenpaiSeats.length === 0) {
+      tenpaiSummary = "全员不听 · 无罚符收支 (0点)";
+    }
 
     if (settWrap) {
       settWrap.style.display = "flex";
       settWrap.innerHTML = `
-        <div class="kd-settlement-banner">
+        <div class="kd-settlement-banner is-ryuukyoku">
           <div class="kd-settlement-banner-top">
-            <div class="kd-settlement-banner-main">
-              <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
-                <span class="action-badge-text" style="color:#ffd60a;">流局</span>
+            <div class="kd-settlement-ryuukyoku-icon">🀄</div>
+            <div class="kd-settlement-banner-info">
+              <div class="kd-settlement-winner-title">
+                <span>荒牌流局</span>
+                <span class="kd-settlement-ryuukyoku-subtag">${tenpaiSummary}</span>
               </div>
-              <div class="kd-settlement-banner-info">
-                <div class="kd-settlement-winner-title">
-                  <span>荒牌流局</span>
-                </div>
-                <div class="kd-settlement-meta-row">
-                  <span>局末听牌与罚符收支</span>
-                </div>
+              <div class="kd-settlement-meta-row" style="color:rgba(235,235,245,0.7); font-size:12px; margin-top:2px;">
+                ${tenpaiSeats.length > 0 ? `听牌玩家：<strong style="color:#ffffff;">${tenpaiSeats.map((s) => escapeHtml(names[s])).join("、")}</strong>` : "无玩家听牌 (全员不听)"}
               </div>
             </div>
           </div>
-          ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
           ${roundKyotaku > 0 ? `
-            <div style="font-size:11.5px; color:#ffd60a; padding-top:6px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px;">
-              <span style="background:rgba(255,214,10,0.18); border:1px solid rgba(255,214,10,0.35); padding:1px 6px; border-radius:4px; font-weight:700;">场供留存</span>
-              <span>本局未被和牌，${roundKyotaku * 1000}点立直棒 (${roundKyotaku}根) 场供留存流入下局</span>
+            <div class="kd-settlement-kyotaku-strip">
+              <div class="kd-kyotaku-pill">
+                <span class="riichi-stick-mini"></span>
+                <span class="kd-kyotaku-tag">场供留存</span>
+              </div>
+              <div class="kd-kyotaku-pts">${roundKyotaku * 1000} 点</div>
+              <div class="kd-kyotaku-desc">结转至下局</div>
             </div>
           ` : ""}
         </div>
         <div class="kd-settlement-delta-grid">
           ${[0, 1, 2, 3].map((seat) => {
-            const delta = currentKyoku?.score_deltas?.[seat] ?? snap?.event?.deltas?.[seat] ?? 0;
-            const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
+            const delta = pureDeltas[seat];
+            const isTenpai = delta > 0;
+            const isNoten = delta < 0;
+            const deltaClass = isTenpai ? "pos" : isNoten ? "neg" : "zero";
             const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
             const pName = names[seat] || `P${seat + 1}`;
-            const isRiichiSeat = !!snap?.riichi?.[seat];
+            const cellClass = isTenpai ? "winner" : isNoten ? "loser" : "";
+            const statusBadge = isTenpai
+              ? `<span class="kd-ryuukyoku-status-tag tenpai">听牌</span>`
+              : (isNoten ? `<span class="kd-ryuukyoku-status-tag noten">不听</span>` : `<span class="kd-ryuukyoku-status-tag neutral">${tenpaiSeats.length === 4 ? "听牌" : "不听"}</span>`);
             return `
-              <div class="kd-settlement-delta-cell">
-                <div class="kd-settlement-player-name">${escapeHtml(pName)}${isRiichiSeat ? ` <span style="font-size:10px; color:#ff9f0a; opacity:0.85;">(立直-1k)</span>` : ""}</div>
+              <div class="kd-settlement-delta-cell ${cellClass}">
+                <div class="kd-settlement-player-name">
+                  ${escapeHtml(pName)}
+                  ${statusBadge}
+                </div>
                 <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
               </div>
             `;
@@ -1915,86 +2139,39 @@ function renderDecisionCard(dec, isExactStep, snap) {
   if (actualLabel) actualLabel.textContent = "玩家";
   if (aiLabel) aiLabel.textContent = "模型";
 
-  // Hero in Riichi: Once locked in Riichi, all non-exact steps are automatic tsumogiri
-  const isHeroInRiichi = !!snap?.riichi?.[targetActor];
-  if (isHeroInRiichi && !isExactStep) {
+  // Non-decision steps: strictly keep right decision card empty per user requirement
+  if (!dec || !isExactStep) {
+    card.classList.add("is-idle");
+    if (headerEl) headerEl.style.display = "none";
     if (turnEl) turnEl.textContent = "";
     if (badgeEl) {
-      badgeEl.textContent = "立直中 · 自动摸切";
-      badgeEl.className = "kd-dec-verdict cruise";
+      badgeEl.textContent = "";
+      badgeEl.className = "kd-dec-verdict is-empty";
     }
-    setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "立直巡航"));
-    if (aiTileName) {
-      aiTileName.style.display = "block";
-      aiTileName.textContent = "立直巡航";
-    }
-    if (aiProbBadge) aiProbBadge.textContent = "";
-    if (aiShantenBadge) aiShantenBadge.textContent = "听牌";
-    if (aiUkeireBadge) aiUkeireBadge.textContent = "自动摸切";
-
-    setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "自动摸切"));
-    if (actualTileName) {
-      actualTileName.style.display = "block";
-      actualTileName.textContent = "自动摸切";
-    }
+    if (compWrap) compWrap.style.display = "none";
+    if (settWrap) settWrap.style.display = "none";
+    if (candTitle) candTitle.style.display = "none";
+    if (candTable) candTable.style.display = "none";
+    if (candTableHead) candTableHead.style.display = "none";
+    if (tableBody) tableBody.innerHTML = "";
+    setTileWrapContent(actualTileWrap, "");
+    setTileWrapContent(aiTileWrap, "");
+    if (actualTileName) actualTileName.textContent = "";
+    if (aiTileName) aiTileName.textContent = "";
     if (actualProbBadge) actualProbBadge.textContent = "";
+    if (aiProbBadge) aiProbBadge.textContent = "";
+    if (aiShantenBadge) aiShantenBadge.textContent = "";
+    if (aiUkeireBadge) aiUkeireBadge.textContent = "";
     if (actualVerdictText) {
-      actualVerdictText.textContent = "立直中";
-      actualVerdictText.className = "kd-tag-verdict cruise";
+      actualVerdictText.textContent = "";
+      actualVerdictText.className = "kd-tag-verdict";
     }
     if (actualBlock) actualBlock.classList.remove("is-blunder");
-
-    if (tableBody) {
-      tableBody.innerHTML = `
-        <tr>
-          <td colspan="5" style="padding:14px 8px;">
-            <div style="text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">自家已立直（自动摸切巡航中，无切牌决策）</div>
-          </td>
-        </tr>
-      `;
-    }
     return;
   }
 
-  // CASE 3: Normal or Cruise Steps
-  if (!dec) {
-    if (turnEl) turnEl.textContent = "";
-    if (badgeEl) {
-      badgeEl.textContent = "巡航中";
-      badgeEl.className = "kd-dec-verdict cruise";
-    }
-    setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "等待决策"));
-    if (aiTileName) {
-      aiTileName.style.display = "block";
-      aiTileName.textContent = "等待决策";
-    }
-    if (aiProbBadge) aiProbBadge.textContent = "";
-    if (aiShantenBadge) aiShantenBadge.textContent = "--";
-    if (aiUkeireBadge) aiUkeireBadge.textContent = "进张 --";
-
-    setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "等待切牌"));
-    if (actualTileName) {
-      actualTileName.style.display = "block";
-      actualTileName.textContent = "等待切牌";
-    }
-    if (actualProbBadge) actualProbBadge.textContent = "";
-    if (actualVerdictText) {
-      actualVerdictText.textContent = "巡航";
-      actualVerdictText.className = "kd-tag-verdict cruise";
-    }
-    if (actualBlock) actualBlock.classList.remove("is-blunder");
-
-    if (tableBody) {
-      tableBody.innerHTML = `
-        <tr>
-          <td colspan="5" style="padding:14px 8px;">
-            <div style="text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">暂无 AI 决策建议 (巡航中)</div>
-          </td>
-        </tr>
-      `;
-    }
-    return;
-  }
+  card.classList.remove("is-idle");
+  if (headerEl) headerEl.style.display = "flex";
 
   const isMatch = dec.is_equal;
   const isCallDec = dec.decision_type === "call_response";
@@ -2369,10 +2546,12 @@ function jumpPrevDecision() {
   }
   if (state.kyokuIdx > 0) {
     jumpPrevKyoku();
-    const prevKyoku = state.reviewData.kyokus[state.kyokuIdx];
+    const prevKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
     if (prevKyoku?.decisions?.length) {
       setStep(prevKyoku.decisions[prevKyoku.decisions.length - 1].step_idx);
     }
+  } else {
+    showToast("已是全场开局了", "info");
   }
 }
 
@@ -2385,15 +2564,17 @@ function jumpNextDecision() {
       return;
     }
   }
-  // If there are no more decisions for Hero, but we have not reached the final step of the kyoku:
+  // If there are no more decisions for Hero, advance to final round settlement step
   if (state.stepIdx < kyoku.steps.length - 1) {
     setStep(kyoku.steps.length - 1);
     return;
   }
-  if (state.kyokuIdx < state.reviewData.kyokus.length - 1) {
+  // Already at settlement or end of kyoku: Automatically jump to next kyoku!
+  const maxIdx = (state.reviewData?.kyokus?.length || 1) - 1;
+  if (state.kyokuIdx < maxIdx) {
     jumpNextKyoku();
   } else {
-    showToast("已经是最后一局的终局了", "info");
+    showToast("已经是全场终局了", "info");
   }
 }
 
@@ -2740,6 +2921,7 @@ function bindEvents() {
     if (!isNaN(kidx)) {
       selectKyoku(kidx, true);
     }
+    e.target.blur();
   });
 
   // Play/Pause Auto Step
@@ -2775,11 +2957,32 @@ function bindEvents() {
     }
   });
 
-  // Step timeline slider
-  $("stepSlider")?.addEventListener("input", (e) => {
-    if (state.isPlaying) togglePlay(false);
-    scheduleStep(parseInt(e.target.value, 10));
-  });
+  // Step timeline slider: Prevent focus trap & prevent browser native range decrement on ArrowDown
+  const sliderEl = $("stepSlider");
+  if (sliderEl) {
+    sliderEl.addEventListener("input", (e) => {
+      if (state.isPlaying) togglePlay(false);
+      scheduleStep(parseInt(e.target.value, 10));
+    });
+    sliderEl.addEventListener("change", (e) => {
+      e.target.blur();
+    });
+    sliderEl.addEventListener("mouseup", (e) => {
+      e.target.blur();
+    });
+    sliderEl.addEventListener("touchend", (e) => {
+      e.target.blur();
+    });
+    sliderEl.addEventListener("pointerup", (e) => {
+      e.target.blur();
+    });
+    sliderEl.addEventListener("keydown", (e) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Space"].includes(e.key)) {
+        e.preventDefault();
+        sliderEl.blur();
+      }
+    });
+  }
 
   // Dedicated Error Box actions
   $("btnRetryAnalysis")?.addEventListener("click", () => {
@@ -2856,7 +3059,10 @@ function bindEvents() {
       document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach((b) => b.classList.add("hidden"));
       return;
     }
-    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === "TEXTAREA" || (activeEl.tagName === "INPUT" && activeEl.type !== "range" && activeEl.type !== "button"))) {
+      return;
+    }
     if (document.querySelector(".modal:not(.hidden)")) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 

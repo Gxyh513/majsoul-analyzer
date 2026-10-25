@@ -3,77 +3,115 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>日麻切牌音效试听选型 · 雀魂 AI 复盘</title>
+  <title>日麻切牌音效试听与调优 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>">
   <style>
     :root {
       --bg: #000000;
-      --card-bg: rgba(28, 28, 30, 0.85);
+      --card-bg: rgba(28, 28, 30, 0.88);
       --border: 1px solid rgba(255, 255, 255, 0.12);
       --text: #ffffff;
-      --text-sec: rgba(235, 235, 245, 0.6);
+      --text-sec: rgba(235, 235, 245, 0.65);
       --green: #30d158;
       --blue: #0a84ff;
       --orange: #ff9f0a;
+      --purple: #bf5af2;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background: radial-gradient(ellipse at 50% 20%, #1c1c24 0%, #000000 80%);
+      background: radial-gradient(ellipse at 50% 15%, #181926 0%, #000000 75%);
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 40px 16px;
+      padding: 40px 16px 60px;
     }
     .container {
       max-width: 680px;
       width: 100%;
     }
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13.5px;
+      color: var(--blue);
+      text-decoration: none;
+      margin-bottom: 20px;
+      font-weight: 500;
+      transition: opacity 0.15s ease;
+    }
+    .back-link:hover { opacity: 0.8; text-decoration: underline; }
     .header {
       text-align: center;
-      margin-bottom: 28px;
+      margin-bottom: 24px;
     }
     .header h1 {
       font-size: 24px;
       font-weight: 800;
       letter-spacing: -0.5px;
       margin-bottom: 6px;
+      background: linear-gradient(180deg, #ffffff 30%, #a1a1aa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
     .header p {
       font-size: 13px;
       color: var(--text-sec);
+      line-height: 1.5;
     }
-    .back-link {
-      display: inline-flex;
+    .status-banner {
+      background: rgba(48, 209, 88, 0.1);
+      border: 1px solid rgba(48, 209, 88, 0.35);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
       align-items: center;
-      gap: 6px;
-      font-size: 13px;
-      color: var(--blue);
-      text-decoration: none;
-      margin-bottom: 18px;
+      justify-content: space-between;
+      gap: 12px;
     }
-    .back-link:hover { text-decoration: underline; }
+    .status-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      flex-shrink: 0;
+    }
     .card-list {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
     }
     .audio-card {
       background: var(--card-bg);
       border: var(--border);
       border-radius: 14px;
-      padding: 16px 18px;
+      padding: 18px 20px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
       transition: all 0.2s ease;
+      position: relative;
     }
     .audio-card:hover {
-      border-color: rgba(255, 255, 255, 0.25);
+      border-color: rgba(255, 255, 255, 0.24);
       transform: translateY(-1px);
+    }
+    .audio-card.active-sound {
+      border-color: rgba(48, 209, 88, 0.55);
+      background: rgba(48, 209, 88, 0.05);
+      box-shadow: 0 4px 25px rgba(48, 209, 88, 0.14);
     }
     .card-header {
       display: flex;
@@ -85,6 +123,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      flex-wrap: wrap;
     }
     .card-badge {
       font-size: 11px;
@@ -95,30 +134,49 @@
       color: var(--blue);
       border: 1px solid rgba(10, 132, 255, 0.35);
     }
-    .card-badge.current {
-      background: rgba(255, 159, 10, 0.18);
-      color: var(--orange);
-      border-color: rgba(255, 159, 10, 0.35);
+    .card-badge.recom {
+      background: rgba(48, 209, 88, 0.2);
+      color: #30d158;
+      border-color: rgba(48, 209, 88, 0.45);
+    }
+    .card-badge.active-indicator {
+      background: rgba(48, 209, 88, 0.9);
+      color: #000000;
+      font-weight: 800;
+      border: none;
+      display: none;
+    }
+    .audio-card.active-sound .card-badge.active-indicator {
+      display: inline-block;
     }
     .card-title {
-      font-size: 16px;
+      font-size: 15.5px;
       font-weight: 700;
+      color: #ffffff;
     }
     .card-desc {
       font-size: 12.5px;
       color: var(--text-sec);
-      line-height: 1.45;
+      line-height: 1.5;
+    }
+    .card-desc code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 2px 5px;
+      border-radius: 4px;
+      color: #e5e5ea;
     }
     .card-actions {
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-top: 4px;
+      gap: 8px;
+      margin-top: 2px;
       flex-wrap: wrap;
     }
     .btn {
-      padding: 8px 14px;
-      font-size: 12.5px;
+      padding: 7px 13px;
+      font-size: 12px;
       font-weight: 600;
       border-radius: 8px;
       border: none;
@@ -127,6 +185,7 @@
       align-items: center;
       gap: 6px;
       transition: all 0.15s ease;
+      user-select: none;
     }
     .btn-play {
       background: var(--green);
@@ -141,15 +200,57 @@
     }
     .btn-stream:hover { background: rgba(255, 255, 255, 0.18); }
     .btn-stream:active { transform: scale(0.96); }
+    .btn-apply {
+      background: rgba(10, 132, 255, 0.2);
+      color: #64d2ff;
+      border: 1px solid rgba(10, 132, 255, 0.4);
+      margin-left: auto;
+    }
+    .btn-apply:hover {
+      background: rgba(10, 132, 255, 0.35);
+      border-color: rgba(10, 132, 255, 0.6);
+    }
+    .audio-card.active-sound .btn-apply {
+      background: rgba(48, 209, 88, 0.2);
+      color: #30d158;
+      border-color: rgba(48, 209, 88, 0.5);
+      pointer-events: none;
+    }
     .note-box {
-      margin-top: 24px;
+      margin-top: 26px;
       background: rgba(10, 132, 255, 0.08);
       border: 1px solid rgba(10, 132, 255, 0.25);
       border-radius: 12px;
       padding: 14px 16px;
-      font-size: 13px;
+      font-size: 12.5px;
       line-height: 1.6;
       color: rgba(235, 235, 245, 0.85);
+    }
+    .note-box strong { color: #ffffff; }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(50px);
+      background: rgba(30, 30, 32, 0.95);
+      color: #ffffff;
+      padding: 10px 18px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid rgba(48, 209, 88, 0.4);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+      opacity: 0;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 999;
+    }
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
     }
   </style>
 </head>
@@ -158,138 +259,126 @@
     <a href="/" class="back-link">← 返回牌谱复盘主站</a>
 
     <div class="header">
-      <h1>日麻切牌音效试听选型</h1>
-      <p>多种声学物理模型候选试听 · 点击按钮即可实时发声对比</p>
+      <h1>日麻切牌音效试听与调优</h1>
+      <p>针对“尖锐刺耳”痛点深度声学重调 · 剔除 3kHz+ 刺耳瞬态 · 还原温润饱满的落桌手感</p>
+    </div>
+
+    <!-- Active Status Banner -->
+    <div class="status-banner" id="statusBanner">
+      <div class="status-info">
+        <span class="status-dot"></span>
+        <span>主站当前生效：<strong id="activeSoundName" style="color:#30d158;">温润原版哒哒哒 (默认生效)</strong></span>
+      </div>
+      <a href="/" class="btn btn-stream" style="text-decoration:none; font-size:11.5px; padding:5px 10px;">返回对局测试</a>
     </div>
 
     <div class="card-list">
-      <!-- Candidate 0: Majsoul Official -->
-      <div class="audio-card" style="border-color: rgba(48, 209, 88, 0.45); background: rgba(48, 209, 88, 0.05); box-shadow: 0 4px 25px rgba(48, 209, 88, 0.12);">
+      <!-- Candidate A: Warm & Rounded (Recommended & Default) -->
+      <div class="audio-card" id="card-warm">
         <div class="card-header">
           <div class="card-title-wrap">
-            <span class="card-badge" style="background: rgba(48, 209, 88, 0.2); color: #30d158; border-color: rgba(48, 209, 88, 0.4);">官方原版</span>
-            <span class="card-title" style="color: #30d158;">雀魂官方原版出牌音效 (Majsoul Official 原汁原味)</span>
+            <span class="card-badge recom">官方推荐</span>
+            <span class="card-badge active-indicator">● 当前生效中</span>
+            <span class="card-title">方案 A：温润哒哒哒 (Warm & Rounded · 调优推荐)</span>
           </div>
         </div>
         <div class="card-desc">
-          提取自《雀魂》(Majsoul) 官方原版游戏资源 <code>discard_tile.mp3</code>，并经过毫秒级瞬态去头修整（消除 MP3 编码产生的 49ms 前置静音），按键或牌谱步进时零延迟即触即响！
+          专为消除“尖锐刺耳感”调制。彻底剔除原版 <code>3.1kHz</code> 与 <code>4.2kHz</code> 刺耳高频尖峰，平滑 1.2ms 弹性接触缓冲。主力共振下移至 <code>1780Hz</code>（圆角切击）+ <code>1120Hz/780Hz</code>（密胺脂体饱满共振）+ <code>380Hz/180Hz</code>（桌垫呢绒吸声），并通过温和 tanh 饱和度柔化高频，还原舒适温润、沉实饱满的“哒哒哒”三连触垫感，久听不觉疲劳！
         </div>
         <div class="card-actions">
-          <button class="btn btn-play" onclick="playWav('/audio/discard.wav')">▶ 单手试听 (官方原版)</button>
+          <button class="btn btn-play" onclick="playWav('/audio/discard.wav')">▶ 单手试听</button>
           <button class="btn btn-stream" onclick="playContinuous('/audio/discard.wav')">连续 4 手切牌 (模拟对局)</button>
-          <a class="btn btn-stream" href="/audio/discard.wav" download="discard.wav" style="text-decoration:none;">⬇ 下载 discard.wav (9.5KB)</a>
-          <a class="btn btn-stream" href="/audio/majsoul/discard_tile.mp3" download="discard_tile.mp3" style="text-decoration:none;">⬇ 下载 原版 MP3 (3.3KB)</a>
+          <button class="btn btn-apply" onclick="applySoundVariant('warm', '温润原版哒哒哒 (调优推荐)')">★ 设为主站当前音效</button>
         </div>
       </div>
 
-      <!-- Candidate 1 -->
-      <div class="audio-card">
+      <!-- Candidate B: Extra Soft & Mellow -->
+      <div class="audio-card" id="card-soft">
         <div class="card-header">
           <div class="card-title-wrap">
-            <span class="card-badge">方案 1</span>
-            <span class="card-title">清脆弹击 (Crisp & Snappy · 雀魂风)</span>
+            <span class="card-badge" style="background:rgba(255,159,10,0.18); color:var(--orange); border-color:rgba(255,159,10,0.35);">深夜护耳</span>
+            <span class="card-badge active-indicator">● 当前生效中</span>
+            <span class="card-title">方案 B：极柔绒垫哒哒哒 (Extra Soft · 极度柔和 · 静音吸声)</span>
           </div>
         </div>
         <div class="card-desc">
-          高频触垫瞬态 (3200Hz) 配合 2.8ms 双击弹跳与极速消音 (65ms)。清脆利落、不拖泥带水，风格贴近《雀魂》原版手感。
-        </div>
-        <div class="card-actions">
-          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_crisp.wav')">▶ 单手试听</button>
-          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_crisp.wav')">连续 4 手切牌 (模拟对局)</button>
-        </div>
-      </div>
-
-      <!-- Candidate 2 -->
-      <div class="audio-card">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-badge">方案 2</span>
-            <span class="card-title">沉稳厚重 (Solid & Melamine · 密胺重感)</span>
-          </div>
-        </div>
-        <div class="card-desc">
-          加重中低频腔体共鸣 (560Hz) 与实木桌面低沉敲击 (110Hz)，82ms 衰减。适合喜欢实体麻将重手感、沉稳质感的玩家。
-        </div>
-        <div class="card-actions">
-          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_solid.wav')">▶ 单手试听</button>
-          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_solid.wav')">连续 4 手切牌 (模拟对局)</button>
-        </div>
-      </div>
-
-      <!-- Candidate 3 -->
-      <div class="audio-card">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-badge">方案 3</span>
-            <span class="card-title">响亮拍桌 (Sharp Slap · 强力手切)</span>
-          </div>
-        </div>
-        <div class="card-desc">
-          强化 3800Hz 亚克力清脆咬合度与 2.2ms 超快回弹拍击，声场更明亮有穿透力，还原实战中用力切牌的啪响感。
-        </div>
-        <div class="card-actions">
-          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_slap.wav')">▶ 单手试听</button>
-          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_slap.wav')">连续 4 手切牌 (模拟对局)</button>
-        </div>
-      </div>
-
-      <!-- Candidate 4 -->
-      <div class="audio-card">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-badge">方案 4</span>
-            <span class="card-title">绒布柔和 (Soft Felt · 静音软垫消音)</span>
-          </div>
-        </div>
-        <div class="card-desc">
-          消除刺耳尖锐高频，以吸音呢绒桌布的柔和包覆音为主，55ms 极简衰减。长时间自动巡航或高速复盘最耐听、不吵耳。
+          极致削减中高频，峰值频率控制在 <code>1420Hz</code> 以下，强化 <code>540Hz~920Hz</code> 呢绒桌布的吸音包裹感。非常适合深夜复盘、戴入耳式高灵敏度耳机或对高音特别敏感的玩家，声音极度温和。
         </div>
         <div class="card-actions">
           <button class="btn btn-play" onclick="playWav('/audio/preview/discard_soft.wav')">▶ 单手试听</button>
           <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_soft.wav')">连续 4 手切牌 (模拟对局)</button>
+          <button class="btn btn-apply" onclick="applySoundVariant('soft', '极柔绒垫哒哒哒 (深夜护耳)')">★ 设为主站当前音效</button>
         </div>
       </div>
 
-      <!-- Candidate 5 -->
-      <div class="audio-card">
+      <!-- Candidate C: Solid Melamine -->
+      <div class="audio-card" id="card-solid">
         <div class="card-header">
           <div class="card-title-wrap">
-            <span class="card-badge">方案 5</span>
-            <span class="card-title">全自动机 (Amos Classic · 经典双击落桌)</span>
+            <span class="card-badge" style="background:rgba(191,90,242,0.18); color:var(--purple); border-color:rgba(191,90,242,0.35);">实感厚重</span>
+            <span class="card-badge active-indicator">● 当前生效中</span>
+            <span class="card-title">方案 C：沉稳密胺哒哒哒 (Solid Melamine · 密胺重感 · 实木共振)</span>
           </div>
         </div>
         <div class="card-desc">
-          严谨还原 Amos 全自动日麻机内框尼龙绒布的角点轻碰 + 平面落桌两段声，带有机械机身轻微木质共鸣。
+          强化 <code>260Hz/130Hz</code> 木质桌体与 28mm 厚重实物麻将牌撞击共振，节奏清晰分明，保留三段式“哒哒哒”音律的同时赋予浓厚的实战麻将手感，中频饱满厚实。
         </div>
         <div class="card-actions">
-          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_amos.wav')">▶ 单手试听</button>
+          <button class="btn btn-play" onclick="playWav('/audio/preview/discard_solid.wav')">▶ 单手试听</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_solid.wav')">连续 4 手切牌 (模拟对局)</button>
+          <button class="btn btn-apply" onclick="applySoundVariant('solid', '沉稳密胺哒哒哒 (实感厚重)')">★ 设为主站当前音效</button>
+        </div>
+      </div>
+
+      <!-- Candidate D: Crisp High-Frequency Comparison Group -->
+      <div class="audio-card" id="card-crisp" style="opacity: 0.85;">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge" style="background:rgba(255,255,255,0.12); color:#a1a1aa; border-color:rgba(255,255,255,0.2);">调音前对照组</span>
+            <span class="card-badge active-indicator">● 当前生效中</span>
+            <span class="card-title">方案 D：清脆明亮哒哒哒 (Crisp Group · 原尖脆版对照)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          调优前的原始版本，包含 <code>3100Hz</code> 与 <code>4200Hz</code> 锐利高频与快速冲击，声场清脆尖锐。可点击播放此项与上方【方案 A】进行对比，清晰感受去除尖锐高频后的温润差异。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" style="background:rgba(255,255,255,0.2); color:#fff;" onclick="playWav('/audio/preview/discard_crisp.wav')">▶ 单手试听 (对照)</button>
+          <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_crisp.wav')">连续 4 手切牌 (模拟对局)</button>
+          <button class="btn btn-apply" onclick="applySoundVariant('crisp', '清脆明亮哒哒哒 (对照组)')">★ 设为主站当前音效</button>
+        </div>
+      </div>
+
+      <!-- Candidate E: Amos Classic -->
+      <div class="audio-card" id="card-amos" style="opacity: 0.85;">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-badge" style="background:rgba(255,255,255,0.12); color:#a1a1aa; border-color:rgba(255,255,255,0.2);">全自动机</span>
+            <span class="card-badge active-indicator">● 当前生效中</span>
+            <span class="card-title">方案 E：全自动机双击 (Amos Classic · 经典机械双击)</span>
+          </div>
+        </div>
+        <div class="card-desc">
+          还原 Amos 全自动日麻机内框尼龙桌布的角点轻碰 + 平面落桌两段声，带有机械机身轻微木质共鸣。
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-play" style="background:rgba(255,255,255,0.2); color:#fff;" onclick="playWav('/audio/preview/discard_amos.wav')">▶ 单手试听</button>
           <button class="btn btn-stream" onclick="playContinuous('/audio/preview/discard_amos.wav')">连续 4 手切牌 (模拟对局)</button>
-        </div>
-      </div>
-
-      <!-- Current Live -->
-      <div class="audio-card" style="opacity: 0.85;">
-        <div class="card-header">
-          <div class="card-title-wrap">
-            <span class="card-badge current">当前生效中</span>
-            <span class="card-title">当前版本音效 (Current Live)</span>
-          </div>
-        </div>
-        <div class="card-desc">
-          主站目前正在使用的物理落桌音频文件 (/audio/discard.wav)。
-        </div>
-        <div class="card-actions">
-          <button class="btn btn-play" style="background:#ff9f0a; color:#000;" onclick="playWav('/audio/discard.wav')">▶ 试听当前版本</button>
-          <button class="btn btn-stream" onclick="playContinuous('/audio/discard.wav')">连续 4 手切牌 (模拟对局)</button>
+          <button class="btn btn-apply" onclick="applySoundVariant('amos', '全自动机双击 (Amos Classic)')">★ 设为主站当前音效</button>
         </div>
       </div>
     </div>
 
     <div class="note-box">
-      <strong>试听说明</strong>：<br>
-      • 试听满意后，请直接告诉我您喜欢的编号（如“选方案 1”或“方案 3”），我再将其无缝替换为主站生效音效。<br>
-      • 当前主站原音效保持不变，您可以随时在此页面对比各版本差异。
+      <strong>调优说明</strong>：<br>
+      • <strong>主站默认已全面升级</strong>：主站当前出牌音效已默认应用【方案 A：温润哒哒哒】，彻底解决了高音尖锐刺耳的问题。<br>
+      • <strong>一键即刻切换</strong>：如果您偏好极柔或厚重质感，可直接在此点击【★ 设为主站当前音效】，设置将自动保存并立即在复盘主站生效！
     </div>
+  </div>
+
+  <div class="toast" id="toast">
+    <span style="color:#30d158; font-size:16px;">✓</span>
+    <span id="toastMsg">已成功设为主站音效</span>
   </div>
 
   <script>
@@ -323,9 +412,18 @@
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.playbackRate.value = pitch * (0.97 + Math.random() * 0.06);
+
+        // Smooth lowpass filter node
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(3200, ctx.currentTime);
+        filter.Q.setValueAtTime(0.7, ctx.currentTime);
+
         const gain = ctx.createGain();
         gain.gain.value = 0.85;
-        source.connect(gain);
+
+        source.connect(filter);
+        filter.connect(gain);
         gain.connect(ctx.destination);
         source.start(0);
       } catch (e) {
@@ -335,10 +433,63 @@
 
     function playContinuous(url) {
       playWav(url, 0.98);
-      setTimeout(() => playWav(url, 1.02), 400);
-      setTimeout(() => playWav(url, 0.96), 800);
-      setTimeout(() => playWav(url, 1.04), 1200);
+      setTimeout(() => playWav(url, 1.02), 360);
+      setTimeout(() => playWav(url, 0.96), 720);
+      setTimeout(() => playWav(url, 1.03), 1080);
     }
+
+    function showToast(msg) {
+      const toast = document.getElementById("toast");
+      const toastMsg = document.getElementById("toastMsg");
+      toastMsg.textContent = msg;
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 2200);
+    }
+
+    function syncActiveUI() {
+      const current = localStorage.getItem("majsoul_sound_variant") || "warm";
+      const cards = {
+        warm: { el: document.getElementById("card-warm"), name: "方案 A：温润哒哒哒 (调优推荐)" },
+        soft: { el: document.getElementById("card-soft"), name: "方案 B：极柔绒垫哒哒哒 (深夜护耳)" },
+        solid: { el: document.getElementById("card-solid"), name: "方案 C：沉稳密胺哒哒哒 (实感厚重)" },
+        crisp: { el: document.getElementById("card-crisp"), name: "方案 D：清脆明亮哒哒哒 (对照组)" },
+        amos: { el: document.getElementById("card-amos"), name: "方案 E：全自动机双击 (Amos Classic)" }
+      };
+
+      Object.entries(cards).forEach(([key, info]) => {
+        if (!info.el) return;
+        const btn = info.el.querySelector(".btn-apply");
+        if (key === current) {
+          info.el.classList.add("active-sound");
+          if (btn) btn.textContent = "✓ 当前生效中";
+        } else {
+          info.el.classList.remove("active-sound");
+          if (btn) btn.textContent = "★ 设为主站当前音效";
+        }
+      });
+
+      const activeText = cards[current] ? cards[current].name : "温润原版哒哒哒";
+      const bannerText = document.getElementById("activeSoundName");
+      if (bannerText) bannerText.textContent = activeText;
+    }
+
+    function applySoundVariant(variant, name) {
+      localStorage.setItem("majsoul_sound_variant", variant);
+      syncActiveUI();
+      // Play once to give acoustic feedback
+      const urls = {
+        warm: "/audio/discard.wav",
+        soft: "/audio/preview/discard_soft.wav",
+        solid: "/audio/preview/discard_solid.wav",
+        crisp: "/audio/preview/discard_crisp.wav",
+        amos: "/audio/preview/discard_amos.wav"
+      };
+      if (urls[variant]) playWav(urls[variant]);
+      showToast(`已成功将「${name}」设为主站音效！`);
+    }
+
+    // Initialize UI on load
+    syncActiveUI();
   </script>
 </body>
 </html>

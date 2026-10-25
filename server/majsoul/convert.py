@@ -217,7 +217,20 @@ def to_mjai(record: dict) -> list[dict]:
                     target = seat
                 else:
                     target = last_kakan_actor if last_kakan_actor is not None else last_discarder
-                ev = {"type": "hora", "actor": seat, "target": target}
+                ev = {
+                    "type": "hora",
+                    "actor": seat,
+                    "target": target,
+                    "han": int(h.get("count", 0)),
+                    "fu": int(h.get("fu", 0)),
+                    "title_id": int(h.get("title_id", 0)),
+                    "dadian": int(h.get("dadian", 0)),
+                    "yiman": bool(h.get("yiman", False)),
+                    "fans": [
+                        {"id": int(f.get("id", 0)), "val": int(f.get("val", 0)), "name": f.get("name", "")}
+                        for f in h.get("fans", [])
+                    ],
+                }
                 if i == 0 and len(deltas) == 4:
                     ev["deltas"] = deltas
                 ura = [ms_to_mjai(x) for x in h.get("li_doras", [])]

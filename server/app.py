@@ -193,51 +193,103 @@ if _cfg.get("selected_model"):
 
 
 _download_lock = threading.Lock()
-_is_downloading = False
+
+# Global model download state stream (Module 1 / 方案四)
+model_download_state: dict[str, Any] = {
+    "status": "idle",  # 'idle' | 'downloading' | 'ready' | 'error'
+    "progress_pct": 0.0,
+    "downloaded_bytes": 0,
+    "total_bytes": 0,
+    "error_msg": None,
+}
 
 
 def _download_akagi_if_missing():
-    global _is_downloading
+    global model_download_state
+    akagi_path = MODELS_DIR / "akagi.pth"
+    if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
+        sz = akagi_path.stat().st_size
+        model_download_state.update({
+            "status": "ready",
+            "progress_pct": 100.0,
+            "downloaded_bytes": sz,
+            "total_bytes": sz,
+            "error_msg": None,
+        })
+        log.info("[AI模型就绪] Mortal-V4-582500 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", sz / (1024 * 1024))
+        return
+
     with _download_lock:
-        if _is_downloading:
+        if model_download_state["status"] == "downloading":
             return
-        _is_downloading = True
+        model_download_state.update({
+            "status": "downloading",
+            "progress_pct": 0.0,
+            "downloaded_bytes": 0,
+            "total_bytes": 0,
+            "error_msg": None,
+        })
 
     try:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        akagi_path = MODELS_DIR / "akagi.pth"
-        if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
-            log.info("[AI模型就绪] Mortal-V4-582500 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", akagi_path.stat().st_size / (1024 * 1024))
-            return
         log.info("[AI模型下载] 本地缺失 Mortal-V4-582500 权重，开始在后台从官方镜像下载 (约 130MB)...")
         urls = [
             "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
             "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
         ]
         tmp_path = MODELS_DIR / "akagi.pth.tmp"
+        download_success = False
+        last_error = None
         for url in urls:
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=300) as resp, open(tmp_path, "wb") as f:
+                    cl = resp.headers.get("Content-Length")
+                    total_bytes = int(cl) if cl and cl.isdigit() else 136_314_880
+                    model_download_state["total_bytes"] = total_bytes
+                    downloaded = 0
                     while True:
-                        chunk = resp.read(1024 * 1024)
+                        chunk = resp.read(1024 * 512)
                         if not chunk:
                             break
                         f.write(chunk)
+                        downloaded += len(chunk)
+                        model_download_state["downloaded_bytes"] = downloaded
+                        pct = (downloaded / total_bytes) * 100.0 if total_bytes > 0 else 0.0
+                        model_download_state["progress_pct"] = min(99.0, round(pct, 1))
+
                 if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
                     tmp_path.replace(akagi_path)
-                    log.info("[AI模型就绪] Mortal-V4-582500 权重文件下载并就绪！大小: %.1f MB", akagi_path.stat().st_size / (1024 * 1024))
+                    sz = akagi_path.stat().st_size
+                    model_download_state.update({
+                        "status": "ready",
+                        "progress_pct": 100.0,
+                        "downloaded_bytes": sz,
+                        "total_bytes": sz,
+                        "error_msg": None,
+                    })
+                    log.info("[AI模型就绪] Mortal-V4-582500 权重文件下载并就绪！大小: %.1f MB", sz / (1024 * 1024))
+                    download_success = True
                     break
             except Exception as e:
+                last_error = str(e)
                 log.warning("[AI模型下载警告] 从镜像 %s 下载失败，尝试备用源... (原因: %s)", url, e)
                 if tmp_path.is_file():
                     try:
                         tmp_path.unlink()
                     except Exception:
                         pass
-    finally:
-        with _download_lock:
-            _is_downloading = False
+
+        if not download_success:
+            model_download_state.update({
+                "status": "error",
+                "error_msg": last_error or "所有官方权重镜像均无法连接",
+            })
+    except Exception as e:
+        model_download_state.update({
+            "status": "error",
+            "error_msg": str(e),
+        })
 
 
 threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
@@ -365,38 +417,149 @@ class EngineConfigReq(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helper functions
+# Multi-Account Pool & Helper functions
 # ---------------------------------------------------------------------------
+_CURRENT_ACCOUNT_INDEX = 0
+
+def get_all_configured_accounts() -> list[dict]:
+    """Extract all configured accounts (primary + backups) from config.json."""
+    cfg = load_config()
+    accs = []
+    # Primary account
+    if cfg.get("account") or cfg.get("access_token"):
+        accs.append({
+            "account": cfg.get("account"),
+            "password": cfg.get("password"),
+            "access_token": cfg.get("access_token"),
+            "nickname": cfg.get("nickname"),
+            "account_id": cfg.get("account_id"),
+            "is_primary": True,
+        })
+    # Backup accounts pool
+    for b in cfg.get("backup_accounts", []):
+        if b.get("account") or b.get("access_token"):
+            accs.append({
+                "account": b.get("account"),
+                "password": b.get("password"),
+                "access_token": b.get("access_token"),
+                "nickname": b.get("nickname"),
+                "account_id": b.get("account_id"),
+                "is_primary": False,
+            })
+    return accs
+
+async def login_with_account_spec(acc: dict):
+    """Log in using a specific account dict (token first, fallback to password)."""
+    await ms_client.close()
+    await ms_client.connect()
+    token = acc.get("access_token")
+    account = acc.get("account")
+    password = acc.get("password")
+
+    if token:
+        try:
+            await ms_client.login_token(token)
+            log.info("[雀魂登录] Token 登录成功 | 账号: %s | 昵称: %s | ID: %s", account or "Token", ms_client.nickname, ms_client.account_id)
+            return
+        except Exception as e:
+            log.warning("[雀魂登录] 账号 %s 的 access_token 登录失败 (%s)，尝试密码登录...", account, e)
+
+    if account and password:
+        await ms_client.login_password(account, password)
+        log.info("[雀魂登录] 密码登录成功 | 账号: %s | 昵称: %s | ID: %s", account, ms_client.nickname, ms_client.account_id)
+        if ms_client.access_token and ms_client.access_token != token:
+            cfg = load_config()
+            if acc.get("is_primary"):
+                cfg["access_token"] = ms_client.access_token
+            else:
+                for b in cfg.get("backup_accounts", []):
+                    if b.get("account") == account:
+                        b["access_token"] = ms_client.access_token
+            save_config(cfg)
+        return
+
+    raise MajsoulError(f"账号 {account or '未知'} 缺少有效密码或 Token")
+
 async def ensure_ms_logged_in():
+    """Ensure client is logged in, rotating through available accounts if needed."""
+    global _CURRENT_ACCOUNT_INDEX
     if ms_client.logged_in and ms_client._ws is not None and not getattr(ms_client._ws, "closed", False):
         return
-    cfg = load_config()
-    token = cfg.get("access_token")
-    account = cfg.get("account")
-    password = cfg.get("password")
-    if not token and not (account and password):
+
+    accs = get_all_configured_accounts()
+    if not accs:
         raise HTTPException(
             status_code=401,
             detail="尚未登录雀魂国服账号。请先在「雀魂账号设置」中输入账号密码或 Access Token 登录（或使用演示牌谱/本地 JSON）。",
         )
-    try:
-        await ms_client.close()
-        await ms_client.connect()
-        if token:
-            try:
-                await ms_client.login_token(token)
-                return
-            except Exception as e:  # noqa: BLE001
-                log.warning("Saved access_token login failed (%s), trying password if available", e)
-        if account and password:
-            await ms_client.login_password(account, password)
-            if ms_client.access_token:
-                cfg["access_token"] = ms_client.access_token
-                save_config(cfg)
+
+    last_err = None
+    start_idx = _CURRENT_ACCOUNT_INDEX % len(accs)
+    for i in range(len(accs)):
+        idx = (start_idx + i) % len(accs)
+        acc = accs[idx]
+        try:
+            await login_with_account_spec(acc)
+            _CURRENT_ACCOUNT_INDEX = idx
             return
-        raise MajsoulError("保存的登录凭证已过期，请重新登录")
-    except MajsoulError as e:
-        raise HTTPException(status_code=401, detail=str(e)) from e
+        except Exception as e:
+            last_err = e
+            log.warning("[账号连接异常] 尝试登录账号 [%d/%d] (%s) 失败: %s", idx + 1, len(accs), acc.get("account"), e)
+
+    raise HTTPException(status_code=401, detail=f"所有已配置的雀魂账号均登录失败: {last_err}")
+
+async def fetch_record_with_failover(game_uuid: str) -> dict:
+    """
+    Fetches game record with automatic multi-account failover on rate limit (error 540) or auth drop.
+    """
+    global _CURRENT_ACCOUNT_INDEX
+    accs = get_all_configured_accounts()
+    if not accs:
+        await ensure_ms_logged_in()
+        return await ms_client.fetch_record(game_uuid)
+
+    attempts = len(accs)
+    last_err = None
+
+    for attempt in range(attempts):
+        await ensure_ms_logged_in()
+        curr_acc_label = f"{ms_client.nickname or '雀士'} (ID: {ms_client.account_id})"
+        try:
+            record = await ms_client.fetch_record(game_uuid)
+            return record
+        except MajsoulError as e:
+            last_err = e
+            err_str = str(e)
+            is_rate_limit = "540" in err_str
+            is_auth_error = any(code in err_str for code in ("109", "1004", "1003", "104", "103", "连接已断开"))
+
+            if (is_rate_limit or is_auth_error) and len(accs) > 1:
+                log.warning(
+                    "[牌谱拉取拦截] 当前账号 %s 遇到错误 [%s]，触发备用账号自动容灾轮转 (尝试 %d/%d)...",
+                    curr_acc_label,
+                    e,
+                    attempt + 1,
+                    attempts,
+                )
+                await ms_client.close()
+                _CURRENT_ACCOUNT_INDEX = (_CURRENT_ACCOUNT_INDEX + 1) % len(accs)
+                continue
+            else:
+                raise
+        except Exception as e:
+            last_err = e
+            log.warning("[牌谱拉取异常] 网络或连接异常 (%s)，尝试重新连接备用账号...", e)
+            await ms_client.close()
+            _CURRENT_ACCOUNT_INDEX = (_CURRENT_ACCOUNT_INDEX + 1) % len(accs)
+            continue
+
+    log.error("[账号池耗尽] 已尝试全部 %d 个雀魂账号，牌谱拉取仍失败: %s", len(accs), last_err)
+    if "540" in str(last_err):
+        raise HTTPException(
+            status_code=429,
+            detail="雀魂官方频控限制：所有已配置账号的每日抓谱额度均已耗尽 (错误码 540)，请稍后再试或在配置文件中追加更多备用账号。",
+        )
+    raise HTTPException(status_code=400, detail=f"抓取牌谱失败: {last_err}")
 
 
 # ---------------------------------------------------------------------------
@@ -404,12 +567,15 @@ async def ensure_ms_logged_in():
 # ---------------------------------------------------------------------------
 @app.get("/api/status")
 async def api_status():
+    eng_status = engine_mgr.status()
+    eng_status["model_download"] = dict(model_download_state)
     return {
         "ok": True,
         "majsoul": {
             "logged_in": ms_client.logged_in,
         },
-        "engine": engine_mgr.status(),
+        "engine": eng_status,
+        "model_download": dict(model_download_state),
     }
 
 
@@ -567,18 +733,10 @@ async def resolve_game_data(
         record = json.loads(record_file.read_text(encoding="utf8"))
         log.info("[牌谱读取] 命中服务器磁盘已存牌谱: data/records/%s.json (无需重新请求雀魂服务器)", game_uuid)
     else:
-        log.info("[牌谱抓取] 本地无此牌谱，正在连接雀魂国服服务器请求数据 (UUID: %s)...", game_uuid)
-        await ensure_ms_logged_in()
-        try:
-            record = await ms_client.fetch_record(game_uuid)
-            record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
-            log.info("[牌谱抓取] 雀魂官方牌谱抓取成功并已持久化保存 (大小: %.1f KB)", len(record_file.read_bytes()) / 1024)
-        except MajsoulError as e:
-            log.warning("[牌谱抓取失败] 雀魂接口报错: %s", e)
-            raise HTTPException(status_code=400, detail=str(e)) from e
-        except Exception as e:
-            log.exception("[牌谱抓取异常] 连接或通信出错")
-            raise HTTPException(status_code=500, detail=f"抓取牌谱失败: {e}") from e
+        log.info("[牌谱抓取] 本地无此牌谱，正在连接雀魂服务器请求数据 (UUID: %s)...", game_uuid)
+        record = await fetch_record_with_failover(game_uuid)
+        record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
+        log.info("[牌谱抓取] 雀魂官方牌谱抓取成功并已持久化保存 (大小: %.1f KB)", len(record_file.read_bytes()) / 1024)
 
     try:
         mjai_events = to_mjai(record)
@@ -652,20 +810,34 @@ async def _run_review_with_cache(
         return res
 
 
+async def _wait_for_model_download(timeout_s: float = 300.0) -> None:
+    if model_download_state["status"] == "downloading":
+        t0 = time.time()
+        while model_download_state["status"] == "downloading":
+            if time.time() - t0 > timeout_s:
+                raise HTTPException(status_code=503, detail="AI 模型正在首次下载中，请求等待超时，请稍后重试")
+            await asyncio.sleep(0.5)
+        if model_download_state["status"] == "error":
+            raise HTTPException(status_code=503, detail=f"AI 模型下载失败: {model_download_state.get('error_msg')}")
+
+
 @app.post("/api/analyze/paipu")
 async def api_analyze_paipu(req: AnalyzePaipuReq):
+    await _wait_for_model_download()
     game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
     return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
 
 
 @app.post("/api/analyze/json")
 async def api_analyze_json(req: AnalyzeJsonReq):
+    await _wait_for_model_download()
     game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
     return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
 
 
 @app.post("/api/analyze/demo")
 async def api_analyze_demo(req: AnalyzeDemoReq):
+    await _wait_for_model_download()
     game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
     return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
 
@@ -674,7 +846,23 @@ async def api_analyze_demo(req: AnalyzeDemoReq):
 async def api_analyze_stream(req: AnalyzeStreamReq):
     async def sse_generator():
         try:
-            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
+            # Module 1 / 方案四: Model download progress stream sensing
+            if model_download_state["status"] == "downloading":
+                log.info("[AI首次同步感知] 模型正在下载中，平滑向 SSE 客户端推送实时下载进度...")
+                while model_download_state["status"] == "downloading":
+                    pct = model_download_state["progress_pct"]
+                    msg = f"AI 核心权重正在首次同步下载中 ({pct:.1f}%)... 下载完成后将自动开始复盘"
+                    yield f"data: {json.dumps({'type': 'progress', 'percent': round(pct, 1), 'message': msg}, ensure_ascii=False)}\n\n"
+                    await asyncio.sleep(0.5)
+
+                if model_download_state["status"] == "error":
+                    err_detail = f"AI 核心权重下载失败: {model_download_state.get('error_msg')}，请检查网络后重试"
+                    yield f"data: {json.dumps({'type': 'error', 'detail': err_detail}, ensure_ascii=False)}\n\n"
+                    return
+
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 10, 'message': 'AI 核心权重下载就绪，正在准备牌谱数据...'}, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
 
             try:
                 game_id, mjai_events, meta, seat = await resolve_game_data(
@@ -832,4 +1020,10 @@ async def index_page():
     return FileResponse(WEB_DIR / "index.html")
 
 
-app.mount("/", StaticFiles(directory=str(WEB_DIR)), name="web")
+@app.get("/audio")
+@app.get("/audio/")
+async def audio_page():
+    return FileResponse(WEB_DIR / "audio" / "index.html")
+
+
+app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
