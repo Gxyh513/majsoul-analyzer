@@ -11,6 +11,7 @@ const state = window.state = {
   kyokuIdx: 0,
   stepIdx: 0,
   openHands: true,
+  soundEnabled: localStorage.getItem("majsoul_sound") !== "0",
   selectedModel: "akagi",
   serverStatus: null,
   isPlaying: false,
@@ -23,6 +24,105 @@ const TILE_CN_MAP = {
   E: "东", S: "南", W: "西", N: "北", P: "白", F: "发", C: "中",
   "5mr": "赤五万", "5pr": "赤五筒", "5sr": "赤五索",
 };
+
+// Web Audio API Synthesizer for tactile Mahjong tile discard
+const SoundFX = {
+  ctx: null,
+  init() {
+    if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AudioCtx();
+    }
+    if (this.ctx && this.ctx.state === "suspended") {
+      this.ctx.resume().catch(() => {});
+    }
+  },
+  playDiscard() {
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const t = this.ctx.currentTime;
+      // Slight pitch variation for natural human mahjong table feel
+      const pitch = 0.95 + Math.random() * 0.1;
+
+      // 1. High-frequency click / impact transient
+      const oscClick = this.ctx.createOscillator();
+      const gainClick = this.ctx.createGain();
+      oscClick.type = "sine";
+      oscClick.frequency.setValueAtTime(2600 * pitch, t);
+      oscClick.frequency.exponentialRampToValueAtTime(1400 * pitch, t + 0.016);
+      gainClick.gain.setValueAtTime(0.35, t);
+      gainClick.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
+
+      oscClick.connect(gainClick);
+      gainClick.connect(this.ctx.destination);
+      oscClick.start(t);
+      oscClick.stop(t + 0.022);
+
+      // 2. Body resonance (dense tile resin tone)
+      const oscBody = this.ctx.createOscillator();
+      const gainBody = this.ctx.createGain();
+      oscBody.type = "triangle";
+      oscBody.frequency.setValueAtTime(760 * pitch, t);
+      oscBody.frequency.exponentialRampToValueAtTime(450 * pitch, t + 0.035);
+      gainBody.gain.setValueAtTime(0.4, t);
+      gainBody.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
+
+      oscBody.connect(gainBody);
+      gainBody.connect(this.ctx.destination);
+      oscBody.start(t);
+      oscBody.stop(t + 0.042);
+
+      // 3. Low mat thud (felt table surface)
+      const oscMat = this.ctx.createOscillator();
+      const gainMat = this.ctx.createGain();
+      oscMat.type = "sine";
+      oscMat.frequency.setValueAtTime(260 * pitch, t);
+      oscMat.frequency.exponentialRampToValueAtTime(110 * pitch, t + 0.045);
+      gainMat.gain.setValueAtTime(0.25, t);
+      gainMat.gain.exponentialRampToValueAtTime(0.001, t + 0.048);
+
+      oscMat.connect(gainMat);
+      gainMat.connect(this.ctx.destination);
+      oscMat.start(t);
+      oscMat.stop(t + 0.052);
+    } catch (_) {
+      // AudioContext unavailable or autoplay prevented
+    }
+  }
+};
+
+let lastSoundTime = 0;
+function playTileDiscardSound() {
+  if (!state.soundEnabled) return;
+  const now = performance.now();
+  if (now - lastSoundTime < 60) return;
+  lastSoundTime = now;
+  SoundFX.playDiscard();
+}
+
+function toggleSound() {
+  state.soundEnabled = !state.soundEnabled;
+  localStorage.setItem("majsoul_sound", state.soundEnabled ? "1" : "0");
+  updateSoundButton();
+  if (state.soundEnabled) {
+    SoundFX.playDiscard();
+  }
+}
+
+function updateSoundButton() {
+  const txt = $("toggleAudioText");
+  const btn = $("btnToggleAudio");
+  if (txt) txt.textContent = state.soundEnabled ? "音效: 开" : "音效: 关";
+  if (btn) {
+    if (state.soundEnabled) {
+      btn.classList.add("active");
+    } else {
+      btn.classList.remove("active");
+    }
+  }
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -1098,8 +1198,16 @@ function setStep(stepIdx) {
   const kyoku = res.kyokus[state.kyokuIdx];
   if (!kyoku || !kyoku.steps.length) return;
 
+  const prevStep = state.stepIdx;
   const clamped = Math.max(0, Math.min(kyoku.steps.length - 1, stepIdx));
   state.stepIdx = clamped;
+
+  const snap = kyoku.steps[clamped];
+
+  // Play tile discard sound when advancing or landing on a discard
+  if (clamped !== prevStep && snap?.event?.type === "dahai") {
+    playTileDiscardSound();
+  }
 
   if ($("stepSlider")) $("stepSlider").value = clamped;
   if ($("stepCounterText")) $("stepCounterText").textContent = `${clamped} / ${kyoku.steps.length - 1}`;
@@ -2530,6 +2638,9 @@ function bindEvents() {
   // Toggle Hide/Show Player ID
   $("btnToggleHideId")?.addEventListener("click", toggleHidePlayerId);
 
+  // Toggle Audio Sound
+  $("btnToggleAudio")?.addEventListener("click", toggleSound);
+
   // Global robust delegation for clicking anywhere on opponent hands / tiles / back tiles:
   document.addEventListener("click", (e) => {
     if (e.target.closest("button, a, select, input")) return;
@@ -2661,6 +2772,8 @@ function bindEvents() {
       },
       h: toggleHandsVisibility,
       H: toggleHandsVisibility,
+      m: toggleSound,
+      M: toggleSound,
       " ": togglePlay,
     };
 
@@ -2697,6 +2810,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     localStorage.removeItem("majsoul_back_pref");
   } catch (_) {}
   applyHidePlayerId();
+  updateSoundButton();
+  document.addEventListener("pointerdown", () => SoundFX.init(), { once: true });
   bindEvents();
   await refreshServerStatus();
 
