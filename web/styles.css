@@ -634,6 +634,12 @@ button {
   transform: scale(0.96);
 }
 
+.kd-chip-btn.active {
+  background: rgba(48, 209, 88, 0.16);
+  border-color: rgba(48, 209, 88, 0.35);
+  color: #30d158;
+}
+
 .kd-match-badge {
   font-size: 12px;
   font-weight: 600;
