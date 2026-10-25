@@ -207,9 +207,9 @@ def _download_akagi_if_missing():
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         akagi_path = MODELS_DIR / "akagi.pth"
         if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
-            log.info("[AI模型就绪] 赤木 Akagi (v4 582k) 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", akagi_path.stat().st_size / (1024 * 1024))
+            log.info("[AI模型就绪] Mortal-V4-582500 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", akagi_path.stat().st_size / (1024 * 1024))
             return
-        log.info("[AI模型下载] 本地缺失赤木 Akagi 权重，开始在后台从官方镜像下载 (约 130MB)...")
+        log.info("[AI模型下载] 本地缺失 Mortal-V4-582500 权重，开始在后台从官方镜像下载 (约 130MB)...")
         urls = [
             "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
             "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
@@ -226,7 +226,7 @@ def _download_akagi_if_missing():
                         f.write(chunk)
                 if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
                     tmp_path.replace(akagi_path)
-                    log.info("[AI模型就绪] 赤木 Akagi (v4 582k) 权重文件下载并就绪！大小: %.1f MB", akagi_path.stat().st_size / (1024 * 1024))
+                    log.info("[AI模型就绪] Mortal-V4-582500 权重文件下载并就绪！大小: %.1f MB", akagi_path.stat().st_size / (1024 * 1024))
                     break
             except Exception as e:
                 log.warning("[AI模型下载警告] 从镜像 %s 下载失败，尝试备用源... (原因: %s)", url, e)
@@ -821,7 +821,7 @@ async def api_engine_config(req: EngineConfigReq):
 @app.post("/api/engine/download_akagi")
 async def api_download_akagi():
     threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
-    return {"status": "started", "message": "已在后台启动赤木 Akagi (v4 582k) 权重下载"}
+    return {"status": "started", "message": "已在后台启动 Mortal-V4-582500 权重下载"}
 
 
 app.mount("/tiles", StaticFiles(directory=str(WEB_DIR / "tiles")), name="tiles")
