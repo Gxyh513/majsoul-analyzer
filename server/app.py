@@ -22,7 +22,11 @@ from .engine.reviewer import EngineManager, review_game
 from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("majsoul-analyzer")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -84,6 +88,7 @@ def cleanup_old_caches(
     cleaned_bytes = 0
 
     target_dirs = [REVIEWS_DIR, RECORDS_DIR, CACHE_DIR]
+    log.info("[缓存自动巡检] 开始巡检本地磁盘缓存 (规则: 清理超过 %.0f 天未访问文件, 容量上限: %.0f MB)", max_days, max_total_mb)
 
     # Pass 1: Remove files older than cutoff_time
     for d in target_dirs:
@@ -98,7 +103,7 @@ def cleanup_old_caches(
                     cleaned_count += 1
                     cleaned_bytes += f_size
             except Exception as e:
-                log.warning("Error checking/cleaning file %s: %s", f, e)
+                log.warning("[缓存清理警告] 检查/删除文件失败 %s: %s", f.name, e)
 
     # Pass 2: Quota check against max_total_mb
     remaining_files: list[tuple[Path, os.stat_result]] = []
@@ -127,14 +132,22 @@ def cleanup_old_caches(
                 cleaned_count += 1
                 cleaned_bytes += st.st_size
             except Exception as e:
-                log.warning("Error during quota cleanup of %s: %s", f, e)
+                log.warning("[缓存配额警告] 腾退超限缓存文件失败 %s: %s", f.name, e)
 
     if cleaned_count > 0:
         log.info(
-            "Cache auto-cleanup: purged %d files (%.2f MB freed)",
+            "[缓存自动巡检] 巡检完成: 清理了 %d 个长期未访问的冷缓存文件，释放空间 %.2f MB",
             cleaned_count,
             cleaned_bytes / (1024 * 1024),
         )
+    else:
+        log.info("[缓存自动巡检] 巡检完成: 暂无超过 %.0f 天的过期冷数据，无需清理", max_days)
+
+    log.info(
+        "[缓存存储状态] 当前本地有效缓存总占用: %.2f MB / 上限 %.0f MB",
+        total_size / (1024 * 1024),
+        max_total_mb,
+    )
 
     return {"cleaned_count": cleaned_count, "cleaned_bytes": cleaned_bytes}
 
@@ -187,8 +200,9 @@ def _download_akagi_if_missing():
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         akagi_path = MODELS_DIR / "akagi.pth"
         if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
+            log.info("[AI模型就绪] 赤木 Akagi (v4 582k) 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", akagi_path.stat().st_size / (1024 * 1024))
             return
-        log.info("Starting background download of Akagi (v4 582k) weights...")
+        log.info("[AI模型下载] 本地缺失赤木 Akagi 权重，开始在后台从官方镜像下载 (约 130MB)...")
         urls = [
             "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
             "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
@@ -205,10 +219,10 @@ def _download_akagi_if_missing():
                         f.write(chunk)
                 if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
                     tmp_path.replace(akagi_path)
-                    log.info("Akagi (v4 582k) weights downloaded successfully! Size: %d bytes", akagi_path.stat().st_size)
+                    log.info("[AI模型就绪] 赤木 Akagi (v4 582k) 权重文件下载并就绪！大小: %.1f MB", akagi_path.stat().st_size / (1024 * 1024))
                     break
             except Exception as e:
-                log.warning("Failed downloading Akagi from %s: %s", url, e)
+                log.warning("[AI模型下载警告] 从镜像 %s 下载失败，尝试备用源... (原因: %s)", url, e)
                 if tmp_path.is_file():
                     try:
                         tmp_path.unlink()
@@ -253,14 +267,33 @@ async def add_private_network_access_header(request: Request, call_next):
         response.headers["Access-Control-Allow-Headers"] = "*"
         response.headers["Access-Control-Allow-Private-Network"] = "true"
         return response
+
+    path = request.url.path
+    is_biz = path.startswith("/api/") and path != "/api/status"
+    t0 = time.time()
+    if is_biz:
+        client_ip = request.client.host if request.client else "未知IP"
+        log.info("[HTTP请求进入] %s %s (来源: %s)", request.method, path, client_ip)
+
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Private-Network"] = "true"
+
+    if is_biz:
+        cost_ms = (time.time() - t0) * 1000
+        log.info("[HTTP响应完成] %s %s -> 状态码: %d (用时: %.1fms)", request.method, path, response.status_code, cost_ms)
+
     return response
 
 
 @app.on_event("startup")
 async def app_startup():
+    log.info("==================================================================")
+    log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
+    st = engine_mgr.status()
+    log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), engine_mgr.selected_model)
+    log.info("数据缓存目录: %s (已挂载 7 天过期自动清理与 3GB 磁盘配额)", DATA_DIR)
+    log.info("==================================================================")
     asyncio.create_task(_cache_cleanup_loop())
 
 
@@ -452,6 +485,7 @@ async def resolve_game_data(
         }
         seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
         set_memory_log("demo", events, meta)
+        log.info("[牌谱解析] 加载官方内置演示牌谱成功 | 目标视角: P%d (%s) | 步数: %d", seat, meta["names"][seat], len(events))
         return "demo", events, meta, seat
 
     # 2. JSON / JSONL Mode
@@ -491,17 +525,21 @@ async def resolve_game_data(
 
         seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
         set_memory_log(game_id, mjai_events, meta)
+        log.info("[牌谱解析] 本地上传牌谱解析完成 | ID: %s | 目标视角: P%d (%s)", game_id, seat, meta.get("names", ["?"]*4)[seat])
         return game_id, mjai_events, meta, seat
 
     # 3. Majsoul Paipu URL / UUID
     if raw_input in _MEMORY_LOGS:
         mjai_events, meta = _MEMORY_LOGS[raw_input]
         seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
+        log.info("[牌谱处理] 命中当前内存热数据: %s | 视角: P%d", raw_input, seat)
         return raw_input, mjai_events, meta, seat
 
     try:
         game_uuid, url_acc_id = parse_paipu(raw_input)
+        log.info("[牌谱识别] 成功提取雀魂牌谱 UUID: %s", game_uuid)
     except MajsoulError as e:
+        log.warning("[牌谱识别失败] 输入内容无效: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     record_file = RECORDS_DIR / f"{game_uuid}.json"
@@ -511,37 +549,48 @@ async def resolve_game_data(
         except Exception:
             pass
         record = json.loads(record_file.read_text(encoding="utf8"))
+        log.info("[牌谱读取] 命中服务器磁盘已存牌谱: data/records/%s.json (无需重新请求雀魂服务器)", game_uuid)
     else:
+        log.info("[牌谱抓取] 本地无此牌谱，正在连接雀魂国服服务器请求数据 (UUID: %s)...", game_uuid)
         await ensure_ms_logged_in()
         try:
             record = await ms_client.fetch_record(game_uuid)
             record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
+            log.info("[牌谱抓取] 雀魂官方牌谱抓取成功并已持久化保存 (大小: %.1f KB)", len(record_file.read_bytes()) / 1024)
         except MajsoulError as e:
+            log.warning("[牌谱抓取失败] 雀魂接口报错: %s", e)
             raise HTTPException(status_code=400, detail=str(e)) from e
         except Exception as e:
-            log.exception("fetch_record failed")
+            log.exception("[牌谱抓取异常] 连接或通信出错")
             raise HTTPException(status_code=500, detail=f"抓取牌谱失败: {e}") from e
 
     try:
         mjai_events = to_mjai(record)
         meta = game_meta(record)
+        log.info("[牌谱转换] 牌谱成功转为 mjai 规范事件流 (共 %d 个动作) | 玩家: %s", len(mjai_events), meta.get("names", []))
     except ConvertError as e:
+        log.warning("[牌谱转换失败] 数据转换异常: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     seat = target_actor
     acc_ids = meta.get("account_ids", [])
     if seat is None and url_acc_id and url_acc_id in acc_ids:
         seat = acc_ids.index(url_acc_id)
+        log.info("[视角选定] 匹配牌谱链接中附带的特定玩家视角: P%d", seat)
     if seat is None and ms_client.account_id and ms_client.account_id in acc_ids:
         seat = acc_ids.index(ms_client.account_id)
+        log.info("[视角选定] 匹配当前已登录雀魂账号视角: P%d", seat)
     if seat is None:
         cfg_acc_id = load_config().get("account_id")
         if cfg_acc_id and cfg_acc_id in acc_ids:
             seat = acc_ids.index(cfg_acc_id)
+            log.info("[视角选定] 匹配配置文件默认账号视角: P%d", seat)
     if seat is None or not (0 <= seat <= 3):
         seat = 0
+        log.info("[视角选定] 未指定特定玩家，默认检讨起手东家视角: P0")
 
     set_memory_log(game_uuid, mjai_events, meta)
+    log.info("[牌谱准备就绪] 牌谱: %s | 目标视角: P%d (%s) | 准备启动 AI 推理", game_uuid, seat, meta.get("names", ["?"]*4)[seat] if seat < len(meta.get("names", [])) else f"P{seat}")
     return game_uuid, mjai_events, meta, seat
 
 
@@ -556,17 +605,34 @@ async def _run_review_with_cache(
     cache_key = make_cache_key(game_id, seat, engine, temperature)
     cached = get_cached_review(cache_key)
     if cached:
+        log.info("[复盘缓存命中] 命中历史检讨缓存 (Key: %s) -> 秒级返回结果！无需重复消耗算力", cache_key)
         return cached
 
+    log.info("[AI推理排队] 准备执行牌谱检讨推理: %s (视角: P%d, 模型: %s)", game_id, seat, engine)
     async with review_semaphore:
         cached = get_cached_review(cache_key)
         if cached:
+            log.info("[复盘缓存命中] 命中历史检讨缓存 (Key: %s) -> 秒级返回结果！", cache_key)
             return cached
+        t_start = time.time()
+        log.info("[AI推理启动] 成功获取推理并发锁，开始执行检讨计算 (牌谱: %s, 视角: P%d, 模型: %s)...", game_id, seat, engine)
         res = review_game(
             mjai_events, seat, engine_mgr, meta=meta, temperature=temperature, force_engine=engine
         )
         res["game_id"] = game_id
         save_cached_review(cache_key, res)
+        elapsed = time.time() - t_start
+        sum_stats = res.get("summary", {})
+        m_rate = sum_stats.get("match_rate")
+        rate_str = f"{m_rate * 100:.1f}%" if m_rate is not None else "--"
+        log.info(
+            "[AI检讨完成] 牌谱 %s 检讨完毕！总用时: %.2f秒 | 模型一致率: %s | 恶手: %d | 综合评分: %.1f | 已存入缓存",
+            game_id,
+            elapsed,
+            rate_str,
+            sum_stats.get("blunders", 0),
+            sum_stats.get("rating", 0.0),
+        )
         return res
 
 
@@ -608,22 +674,27 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
             cache_key = make_cache_key(game_id, seat, req.engine, req.temperature)
             cached = get_cached_review(cache_key)
             if cached:
+                log.info("[复盘缓存命中] 牌谱 %s (视角: P%d, 模型: %s) 命中缓存 -> 秒级直接返回，无需重复运算", game_id, seat, req.engine)
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
                 return
 
             # If semaphore is currently busy, notify user
             if review_semaphore.locked():
+                log.info("[AI排队等待] 服务器当前正有对局在跑推理，新请求已进入排队队列 (牌谱: %s, 视角: P%d)", game_id, seat)
                 yield f"data: {json.dumps({'type': 'queued', 'message': '服务器正忙，当前正在排队中...'}, ensure_ascii=False)}\n\n"
 
             async with review_semaphore:
                 # Double-check inside semaphore
                 cached = get_cached_review(cache_key)
                 if cached:
+                    log.info("[复盘缓存命中] 排队后检测到缓存已就绪，秒级返回 (Key: %s)", cache_key)
                     yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
                     return
 
+                t_infer_start = time.time()
+                log.info("[AI推理启动] 获取并发锁成功，启动 AI 检讨引擎 (模型: %s, 视角: P%d, 牌谱: %s)...", req.engine, seat, game_id)
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 15, 'message': '牌谱准备就绪，启动 AI 检讨引擎...'}, ensure_ascii=False)}\n\n"
 
                 # Thread-safe queue connecting progress callback to SSE generator
@@ -631,6 +702,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 q: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
                 def on_progress(pct: float, msg: str):
+                    if pct == 15 or pct >= 99 or "第" in msg or "局" in msg:
+                        log.info("[AI推理进度 %5.1f%%] %s", pct, msg)
                     loop.call_soon_threadsafe(q.put_nowait, ("progress", {"percent": round(pct, 1), "message": msg}))
 
                 def worker():
@@ -664,17 +737,32 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                     res["game_id"] = game_id
                     save_cached_review(cache_key, res)
 
+                    elapsed = time.time() - t_infer_start
+                    sum_stats = res.get("summary", {})
+                    m_rate = sum_stats.get("match_rate")
+                    rate_str = f"{m_rate * 100:.1f}%" if m_rate is not None else "--"
+                    log.info(
+                        "[AI检讨完成] 牌谱 %s 检讨完毕！总用时: %.2f秒 | 模型一致率: %s | 恶手: %d | 综合评分: %.1f | 已持久化至缓存: data/reviews/%s.json",
+                        game_id,
+                        elapsed,
+                        rate_str,
+                        sum_stats.get("blunders", 0),
+                        sum_stats.get("rating", 0.0),
+                        cache_key,
+                    )
+
                     yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps({'type': 'complete', 'result': res}, ensure_ascii=False)}\n\n"
                 except (asyncio.CancelledError, GeneratorExit):
-                    log.info("Client disconnected from SSE stream; task will persist to cache upon completion.")
+                    log.info("[客户端断开] 客户端提前关闭了连接，AI 检讨任务将在后台继续完成并写入缓存...")
                     async def _save_detached():
                         try:
                             bg_res = await task
                             bg_res["game_id"] = game_id
                             save_cached_review(cache_key, bg_res)
+                            log.info("[后台缓存就绪] 离线检讨完成并已存入缓存: %s", cache_key)
                         except Exception as err:
-                            log.warning("Failed background review caching: %s", err)
+                            log.warning("[后台缓存异常] 离线保存失败: %s", err)
                     asyncio.create_task(_save_detached())
                     raise
 
