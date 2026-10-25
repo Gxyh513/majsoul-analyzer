@@ -1320,16 +1320,61 @@ button {
   white-space: nowrap;
 }
 
-.kd-settlement-score-tag {
-  font-size: 15px;
+.kd-settlement-player-highlight {
   font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.2px;
+}
+
+.kd-settlement-player-highlight.winner {
+  color: #ffffff;
+  text-shadow: 0 0 12px rgba(255, 255, 255, 0.4);
+}
+
+.kd-settlement-player-highlight.loser {
+  color: #ff9f0a;
+  text-shadow: 0 0 8px rgba(255, 159, 10, 0.3);
+}
+
+.kd-settlement-seat-wind {
+  color: rgba(235, 235, 245, 0.65);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.kd-settlement-win-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.kd-settlement-win-badge.ron {
+  background: rgba(112, 215, 255, 0.15);
+  color: #70d7ff;
+  border: 1px solid rgba(112, 215, 255, 0.3);
+}
+
+.kd-settlement-win-badge.tsumo {
+  background: rgba(48, 209, 88, 0.15);
   color: #30d158;
-  font-family: ui-monospace, monospace;
+  border: 1px solid rgba(48, 209, 88, 0.3);
+}
+
+.kd-settlement-score-tag {
+  font-size: 18px;
+  font-weight: 900;
+  font-family: ui-monospace, SFMono-Regular, "SF Pro Text", monospace;
+  color: #30d158;
+  text-shadow: 0 0 14px rgba(48, 209, 88, 0.5);
   white-space: nowrap;
+  letter-spacing: -0.5px;
 }
 
 .kd-settlement-score-tag.neg {
   color: #ff453a;
+  text-shadow: 0 0 14px rgba(255, 69, 58, 0.5);
 }
 
 .kd-settlement-meta-row {
@@ -1341,14 +1386,58 @@ button {
   align-items: center;
 }
 
+.kd-settlement-loser-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kd-settlement-loser-action {
+  color: #ff453a;
+  font-weight: 700;
+}
+
+.kd-settlement-loser-points {
+  color: #ff453a;
+  font-weight: 800;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+}
+
+.kd-settlement-tsumo-action {
+  color: #30d158;
+  font-weight: 700;
+}
+
 .kd-settlement-uradora-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.kd-settlement-uradora-label {
   font-size: 11px;
+  font-weight: 700;
+  color: rgba(235, 235, 245, 0.7);
+}
+
+.kd-settlement-uradora-tiles {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.kd-settlement-uradora-tile {
+  width: 22px;
+  height: 29px;
+  border-radius: 3px;
+  display: block;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  background: #f2f2f7;
 }
 
 .kd-settlement-yaku-text {
@@ -1574,13 +1663,9 @@ button {
   border: 1px solid rgba(255, 159, 10, 0.4);
 }
 
-.kd-cand-section-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 10px 0 6px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+.kd-cand-section-title,
+#decCandTitle {
+  display: none !important;
 }
 
 .kd-cand-table {
