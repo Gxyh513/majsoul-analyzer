@@ -6,7 +6,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-EE4C2C?logo=pytorch)](https://pytorch.org)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Gxyh513/majsoul-analyzer/blob/main/colab_run.ipynb)
 
-基于**赤木 Akagi**（强化学习 CQL 离线决策模型）与 **Mortal** 深度神经网络的高段位日麻牌谱检讨分析系统。系统针对雀魂王座之间与玉之间对局设计，提供精确的向听进张推演、大牌面决策对比与现代化全设备自适应复盘界面。
+基于 **Mortal** 深度神经网络的高段位日麻牌谱检讨分析系统。系统针对雀魂王座之间与玉之间对局设计，提供精确的向听进张推演、大牌面决策对比与现代化全设备自适应复盘界面。
 
 🌐 **在线检讨体验**：[https://majsoul.ccwu.cc](https://majsoul.ccwu.cc)
 
@@ -146,7 +146,6 @@ cp data/config.example.json data/config.json
 ## 📄 架构与开源致谢
 
 本项目基于日麻开源社区的卓越贡献开发构建：
-- **[Akagi](https://github.com/shinkuan/Akagi)**：基于离线强化学习 CQL (Conservative Q-Learning) 架构的高水准日麻决策模型。
 - **[Mortal](https://github.com/Equim-chan/Mortal)**：经典的日麻深度学习与 `libriichi` 状态机推演引擎。
 - **[KillerDucky](https://github.com/KillerDucky)**：优秀的日麻复盘排版灵感来源。
 - **[riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles)**：高质量矢量日麻牌图资源。
