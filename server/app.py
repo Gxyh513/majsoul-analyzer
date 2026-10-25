@@ -172,37 +172,51 @@ if _cfg.get("selected_model"):
     engine_mgr.selected_model = _cfg["selected_model"]
 
 
+_download_lock = threading.Lock()
+_is_downloading = False
+
+
 def _download_akagi_if_missing():
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    akagi_path = MODELS_DIR / "akagi.pth"
-    if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
-        return
-    log.info("Starting background download of Akagi (v4 582k) weights...")
-    urls = [
-        "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
-        "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
-    ]
-    tmp_path = MODELS_DIR / "akagi.pth.tmp"
-    for url in urls:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=300) as resp, open(tmp_path, "wb") as f:
-                while True:
-                    chunk = resp.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-            if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
-                tmp_path.replace(akagi_path)
-                log.info("Akagi (v4 582k) weights downloaded successfully! Size: %d bytes", akagi_path.stat().st_size)
-                break
-        except Exception as e:
-            log.warning("Failed downloading Akagi from %s: %s", url, e)
-            if tmp_path.is_file():
-                try:
-                    tmp_path.unlink()
-                except Exception:
-                    pass
+    global _is_downloading
+    with _download_lock:
+        if _is_downloading:
+            return
+        _is_downloading = True
+
+    try:
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        akagi_path = MODELS_DIR / "akagi.pth"
+        if akagi_path.is_file() and akagi_path.stat().st_size > 100_000_000:
+            return
+        log.info("Starting background download of Akagi (v4 582k) weights...")
+        urls = [
+            "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
+            "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
+        ]
+        tmp_path = MODELS_DIR / "akagi.pth.tmp"
+        for url in urls:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=300) as resp, open(tmp_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                if tmp_path.is_file() and tmp_path.stat().st_size > 100_000_000:
+                    tmp_path.replace(akagi_path)
+                    log.info("Akagi (v4 582k) weights downloaded successfully! Size: %d bytes", akagi_path.stat().st_size)
+                    break
+            except Exception as e:
+                log.warning("Failed downloading Akagi from %s: %s", url, e)
+                if tmp_path.is_file():
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
+    finally:
+        with _download_lock:
+            _is_downloading = False
 
 
 threading.Thread(target=_download_akagi_if_missing, daemon=True).start()
@@ -305,7 +319,7 @@ class EngineConfigReq(BaseModel):
 # Helper functions
 # ---------------------------------------------------------------------------
 async def ensure_ms_logged_in():
-    if ms_client.logged_in and ms_client._ws is not None:
+    if ms_client.logged_in and ms_client._ws is not None and not getattr(ms_client._ws, "closed", False):
         return
     cfg = load_config()
     token = cfg.get("access_token")
@@ -645,12 +659,24 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                     if ev_type == "progress":
                         yield f"data: {json.dumps({'type': 'progress', **ev_data}, ensure_ascii=False)}\n\n"
 
-                res = await task
-                res["game_id"] = game_id
-                save_cached_review(cache_key, res)
+                try:
+                    res = await task
+                    res["game_id"] = game_id
+                    save_cached_review(cache_key, res)
 
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'complete', 'result': res}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'complete', 'result': res}, ensure_ascii=False)}\n\n"
+                except (asyncio.CancelledError, GeneratorExit):
+                    log.info("Client disconnected from SSE stream; task will persist to cache upon completion.")
+                    async def _save_detached():
+                        try:
+                            bg_res = await task
+                            bg_res["game_id"] = game_id
+                            save_cached_review(cache_key, bg_res)
+                        except Exception as err:
+                            log.warning("Failed background review caching: %s", err)
+                    asyncio.create_task(_save_detached())
+                    raise
 
         except Exception as e:
             log.exception("SSE analyze error: %s", e)
