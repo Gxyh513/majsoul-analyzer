@@ -4,7 +4,6 @@ backups/
 
 data/models/*.pth
 data/records/
-data/config.json
 data/config.local.json
 
 .wrangler/
