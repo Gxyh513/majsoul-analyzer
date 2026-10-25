@@ -63,7 +63,7 @@ class EngineManager:
         models = []
         akagi = self.models_dir / "akagi.pth"
         if akagi.is_file():
-            models.append({"id": "akagi", "name": "赤木 Akagi (v4 582k步 进攻强化)", "path": str(akagi)})
+            models.append({"id": "akagi", "name": "Mortal-V4-582500 (进攻强化)", "path": str(akagi)})
         mortal = self.models_dir / "mortal.pth"
         if mortal.is_file():
             models.append({"id": "mortal", "name": "Mortal 官方核心 (v3 天凤十段)", "path": str(mortal)})
@@ -117,7 +117,7 @@ class EngineManager:
     def status(self) -> dict[str, Any]:
         pth = self.find_pth()
         mortal = self.get_mortal()
-        model_name = "赤木 Akagi" if (pth and "akagi" in pth.name.lower()) else ("Mortal" if mortal is not None else "内置引擎")
+        model_name = "Mortal-V4-582500" if (pth and "akagi" in pth.name.lower()) else ("Mortal" if mortal is not None else "内置引擎")
         return {
             "has_mortal_weights": mortal is not None,
             "active_engine": "mortal" if mortal is not None else "builtin",
@@ -197,6 +197,13 @@ def next_player_action(
         return {"type": "none"} if can_agari else None
     if t == "ryukyoku":
         return ev if can_ryukyoku else None
+    if t == "reach":
+        res = dict(ev)
+        for sub_ev in events[1:]:
+            if sub_ev.get("actor") == player_id and sub_ev.get("type") == "dahai":
+                res["pai"] = sub_ev.get("pai")
+                break
+        return res
     actor = ev.get("actor")
     if actor is not None and actor != player_id:
         if can_agari or can_pon_or_daiminkan:
