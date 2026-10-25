@@ -163,12 +163,19 @@ async def _cache_cleanup_loop():
 
 
 def load_config() -> dict[str, Any]:
+    cfg: dict[str, Any] = {}
     if CONFIG_PATH.is_file():
         try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf8"))
+            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf8"))
         except Exception:  # noqa: BLE001
             pass
-    return {}
+    if os.environ.get("MAJSOUL_ACCOUNT"):
+        cfg["account"] = os.environ["MAJSOUL_ACCOUNT"]
+    if os.environ.get("MAJSOUL_PASSWORD"):
+        cfg["password"] = os.environ["MAJSOUL_PASSWORD"]
+    if os.environ.get("MAJSOUL_ACCESS_TOKEN"):
+        cfg["access_token"] = os.environ["MAJSOUL_ACCESS_TOKEN"]
+    return cfg
 
 
 def save_config(cfg: dict[str, Any]):
@@ -295,6 +302,15 @@ async def app_startup():
     log.info("数据缓存目录: %s (已挂载 7 天过期自动清理与 3GB 磁盘配额)", DATA_DIR)
     log.info("==================================================================")
     asyncio.create_task(_cache_cleanup_loop())
+
+    async def _try_auto_login():
+        try:
+            await ensure_ms_logged_in()
+            log.info("【雀魂账号状态】已自动验证/登录雀魂服务 (昵称: %s)", ms_client.nickname or ms_client.account_id or "已登录")
+        except Exception as e:
+            log.warning("【雀魂账号状态】启动自动登录提示: %s (将在首次分析时尝试连接)", e)
+
+    asyncio.create_task(_try_auto_login())
 
 
 @app.post("/api/admin/cleanup_cache")
