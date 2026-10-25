@@ -15,7 +15,7 @@ import logging
 import math
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -774,6 +774,7 @@ def review_game(
     meta: dict | None = None,
     temperature: float = 0.1,
     force_engine: str = "auto",
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
     assert 0 <= target_actor <= 3
     mortal = engine_mgr.get_mortal()
@@ -879,6 +880,9 @@ def review_game(
             label = f"{BAKAZE_CN.get(bakaze, bakaze)}{kyoku_num}局"
             if honba > 0:
                 label += f" {honba}本场"
+            if progress_callback:
+                pct = 15.0 + (i / max(1, len(mjai_events))) * 65.0
+                progress_callback(pct, f"正在检讨 {label} (Mortal)...")
             cur_kyoku = {
                 "kyoku_idx": len(kyokus),
                 "bakaze": bakaze,
@@ -1133,6 +1137,8 @@ def review_game(
         kyokus.append(cur_kyoku)
 
     # Run Mortal neural network batch inference if loaded
+    if progress_callback:
+        progress_callback(82.0, f"正在运行神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
     mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch) if mortal is not None else None
 
     # Finalize all decisions & compute summary statistics
@@ -1143,6 +1149,9 @@ def review_game(
     raw_rating_sum = 0.0
 
     for d_idx, item in enumerate(pending_decisions):
+        if progress_callback and (d_idx % 20 == 0 or d_idx == len(pending_decisions) - 1) and pending_decisions:
+            pct = 85.0 + ((d_idx + 1) / len(pending_decisions)) * 14.0
+            progress_callback(pct, f"正在生成决策建议 ({d_idx + 1}/{len(pending_decisions)})...")
         mask = item["mask"]
         legal_labels = np.nonzero(mask)[0].tolist()
         q_full = mortal_q_batch[d_idx] if mortal_q_batch is not None else item["q_heuristic"]
@@ -1335,6 +1344,9 @@ def review_game(
             "call_total": c_tot,
             "call_matches": c_match,
         }
+
+    if progress_callback:
+        progress_callback(100.0, "牌谱分析全部完成")
 
     return {
         "target_actor": target_actor,
