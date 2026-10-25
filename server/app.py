@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
@@ -50,6 +51,10 @@ def get_cached_review(cache_key: str) -> dict[str, Any] | None:
     cache_file = REVIEWS_DIR / f"{cache_key}.json"
     if cache_file.is_file():
         try:
+            try:
+                cache_file.touch()
+            except Exception:
+                pass
             return json.loads(cache_file.read_text(encoding="utf8"))
         except Exception as e:
             log.warning("Failed to read review cache %s: %s", cache_file, e)
@@ -62,6 +67,86 @@ def save_cached_review(cache_key: str, data: dict[str, Any]) -> None:
         cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf8")
     except Exception as e:
         log.warning("Failed to save review cache %s: %s", cache_file, e)
+
+
+def cleanup_old_caches(
+    max_days: float = 7.0,
+    max_total_mb: float = 3000.0,
+) -> dict[str, int]:
+    """
+    Cleans up cached records and review results:
+    1. Removes files not accessed/modified in > max_days (default 7 days).
+    2. If total size still exceeds max_total_mb (default 3000MB), purges oldest files.
+    """
+    now = time.time()
+    cutoff_time = now - (max_days * 86400)
+    cleaned_count = 0
+    cleaned_bytes = 0
+
+    target_dirs = [REVIEWS_DIR, RECORDS_DIR, CACHE_DIR]
+
+    # Pass 1: Remove files older than cutoff_time
+    for d in target_dirs:
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.json"):
+            try:
+                stat = f.stat()
+                if stat.st_mtime < cutoff_time:
+                    f_size = stat.st_size
+                    f.unlink()
+                    cleaned_count += 1
+                    cleaned_bytes += f_size
+            except Exception as e:
+                log.warning("Error checking/cleaning file %s: %s", f, e)
+
+    # Pass 2: Quota check against max_total_mb
+    remaining_files: list[tuple[Path, os.stat_result]] = []
+    total_size = 0
+    for d in target_dirs:
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.json"):
+            try:
+                st = f.stat()
+                remaining_files.append((f, st))
+                total_size += st.st_size
+            except Exception:
+                pass
+
+    max_bytes = int(max_total_mb * 1024 * 1024)
+    if total_size > max_bytes:
+        # Sort by mtime ascending (oldest first)
+        remaining_files.sort(key=lambda x: x[1].st_mtime)
+        for f, st in remaining_files:
+            if total_size <= max_bytes:
+                break
+            try:
+                f.unlink()
+                total_size -= st.st_size
+                cleaned_count += 1
+                cleaned_bytes += st.st_size
+            except Exception as e:
+                log.warning("Error during quota cleanup of %s: %s", f, e)
+
+    if cleaned_count > 0:
+        log.info(
+            "Cache auto-cleanup: purged %d files (%.2f MB freed)",
+            cleaned_count,
+            cleaned_bytes / (1024 * 1024),
+        )
+
+    return {"cleaned_count": cleaned_count, "cleaned_bytes": cleaned_bytes}
+
+
+async def _cache_cleanup_loop():
+    """Background task running cache cleanup every 6 hours."""
+    while True:
+        try:
+            await asyncio.to_thread(cleanup_old_caches)
+        except Exception as e:
+            log.warning("Background cache cleanup error: %s", e)
+        await asyncio.sleep(6 * 3600)
 
 
 def load_config() -> dict[str, Any]:
