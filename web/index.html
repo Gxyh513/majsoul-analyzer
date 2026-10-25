@@ -86,6 +86,15 @@
 
         <div class="kd-step-mid">
           <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
+          <select id="playSpeedSelect" class="kd-speed-select" title="调节播放速度">
+            <option value="0.5">0.5x</option>
+            <option value="0.75">0.75x</option>
+            <option value="1" selected>1.0x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="2">2.0x</option>
+            <option value="3">3.0x</option>
+          </select>
           <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
           <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
         </div>
@@ -216,15 +225,48 @@
         <div class="sidebar-secondary">
           <!-- Standalone Prominent Keyboard Shortcuts Card on the Right -->
           <div class="kd-shortcuts-card" id="shortcutsCard">
-            <div class="kd-shortcuts-title">快捷操作速查</div>
+            <div class="kd-shortcuts-title">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.85;"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M6 12h.001M10 12h.001M14 12h.001M18 12h.001M7 16h10"/></svg>
+              <span>快捷操作速查</span>
+            </div>
             <table class="kd-shortcuts-table">
               <tbody>
-                <tr><td><code>空格</code></td><td>自动播放 / 暂停</td></tr>
-                <tr><td><code>←</code> <code>→</code></td><td>后退 / 前进一步</td></tr>
-                <tr><td><code>↑</code> <code>↓</code></td><td>上 / 下一切牌决策</td></tr>
-                <tr><td><code>,</code> <code>.</code></td><td>上 / 下一错误手</td></tr>
-                <tr><td><code>[</code> <code>]</code></td><td>上一局 / 下一局</td></tr>
-                <tr><td><code>h</code></td><td>开关别家明牌/暗牌</td></tr>
+                <tr>
+                  <td class="kd-shortcuts-keys"><kbd class="kd-kbd kd-kbd-wide">空格</kbd></td>
+                  <td class="kd-shortcuts-desc">自动播放 / 暂停</td>
+                </tr>
+                <tr>
+                  <td class="kd-shortcuts-keys">
+                    <kbd class="kd-kbd" title="后退一步"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></kbd>
+                    <kbd class="kd-kbd" title="前进一步"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M5 12h14M12 5l7 7-7 7"/></svg></kbd>
+                  </td>
+                  <td class="kd-shortcuts-desc">后退 / 前进一步</td>
+                </tr>
+                <tr>
+                  <td class="kd-shortcuts-keys">
+                    <kbd class="kd-kbd" title="上一决策"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M12 19V5M5 12l7-7 7 7"/></svg></kbd>
+                    <kbd class="kd-kbd" title="下一决策"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></kbd>
+                  </td>
+                  <td class="kd-shortcuts-desc">上 / 下一切牌决策</td>
+                </tr>
+                <tr>
+                  <td class="kd-shortcuts-keys">
+                    <kbd class="kd-kbd">,</kbd>
+                    <kbd class="kd-kbd">.</kbd>
+                  </td>
+                  <td class="kd-shortcuts-desc">上 / 下一错误手</td>
+                </tr>
+                <tr>
+                  <td class="kd-shortcuts-keys">
+                    <kbd class="kd-kbd">[</kbd>
+                    <kbd class="kd-kbd">]</kbd>
+                  </td>
+                  <td class="kd-shortcuts-desc">上一局 / 下一局</td>
+                </tr>
+                <tr>
+                  <td class="kd-shortcuts-keys"><kbd class="kd-kbd">H</kbd></td>
+                  <td class="kd-shortcuts-desc">开关别家明牌/暗牌</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -262,7 +304,7 @@
     <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
       <label>
         <div>选择分析模型：</div>
-        <select id="engineSelect" style="width:100%; margin-top:4px; padding:6px;"></select>
+        <select id="engineSelect" style="width:100%; margin-top:4px; padding:6px;"><option value="akagi">Mortal-V4-582500 (进攻强化)</option></select>
       </label>
       <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
         <button id="btnSaveEngineConfig" class="kd-back-btn" style="background:var(--color-bar-mortal);">保存并重新检讨</button>
