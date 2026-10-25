@@ -2358,6 +2358,143 @@ code {
   to { transform: rotate(360deg); }
 }
 
+/* Apple HIG Glass Loading Card & Progress Track */
+.kd-loading-card {
+  background: rgba(28, 28, 30, 0.85);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  padding: 32px 28px;
+  width: min(450px, 92vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+#analysisNormalState {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.kd-loading-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #ffffff;
+  margin-top: 14px;
+  letter-spacing: -0.2px;
+}
+
+.kd-loading-sub {
+  font-size: 12px;
+  color: rgba(235, 235, 245, 0.6);
+  margin-top: 4px;
+}
+
+.kd-progress-container {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.kd-progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.kd-progress-text {
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.75);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.kd-progress-pct {
+  font-size: 15px;
+  font-weight: 700;
+  color: #ffffff;
+  font-feature-settings: "tnum";
+  font-variant-numeric: tabular-nums;
+}
+
+.kd-progress-track {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+}
+
+.kd-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #30d158, #34c759);
+  box-shadow: 0 0 12px rgba(48, 209, 88, 0.5);
+  border-radius: 6px;
+  transition: width 0.25s ease;
+}
+
+/* Error Boundary UI */
+.kd-error-box {
+  background: rgba(255, 69, 58, 0.08);
+  border: 1px solid rgba(255, 69, 58, 0.3);
+  border-radius: 14px;
+  padding: 18px 20px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: center;
+}
+
+.kd-error-detail {
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.85);
+  line-height: 1.5;
+  margin-bottom: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  word-break: break-all;
+}
+
+.kd-retry-btn {
+  background: #0a84ff;
+  color: #ffffff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.kd-retry-btn:hover {
+  background: #0071e3;
+  transform: translateY(-1px);
+}
+
+.kd-close-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.kd-close-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 @media (max-width: 1240px) {
   .outer {
     flex-wrap: wrap;

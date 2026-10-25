@@ -124,16 +124,243 @@ function showToast(msg, type = "info") {
   }, 3500);
 }
 
-function setLoading(visible, title = "正在分析牌谱...", sub = "") {
+// Lightweight Pure Native IndexedDB Cache for Offline Review Instant Load
+const idbReviewCache = {
+  _db: null,
+  async getDb() {
+    if (this._db) return this._db;
+    return new Promise((resolve) => {
+      if (!window.indexedDB) {
+        resolve(null);
+        return;
+      }
+      try {
+        const req = indexedDB.open("MajsoulAnalyzerDB", 1);
+        req.onupgradeneeded = (e) => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains("reviews")) {
+            const store = db.createObjectStore("reviews", { keyPath: "key" });
+            store.createIndex("timestamp", "timestamp", { unique: false });
+          }
+        };
+        req.onsuccess = () => {
+          this._db = req.result;
+          resolve(this._db);
+        };
+        req.onerror = (e) => {
+          console.warn("IndexedDB open error:", e);
+          resolve(null);
+        };
+      } catch (err) {
+        console.warn("IndexedDB init failed:", err);
+        resolve(null);
+      }
+    });
+  },
+  async get(key) {
+    try {
+      const db = await this.getDb();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction("reviews", "readonly");
+        const store = tx.objectStore("reviews");
+        const req = store.get(key);
+        req.onsuccess = () => resolve(req.result ? req.result.data : null);
+        req.onerror = () => resolve(null);
+      });
+    } catch (e) {
+      console.warn("IndexedDB get error:", e);
+      return null;
+    }
+  },
+  async set(key, data) {
+    try {
+      const db = await this.getDb();
+      if (!db) return;
+      return new Promise((resolve) => {
+        const tx = db.transaction("reviews", "readwrite");
+        const store = tx.objectStore("reviews");
+        store.put({ key, data, timestamp: Date.now() });
+        tx.oncomplete = () => {
+          this.prune();
+          resolve();
+        };
+        tx.onerror = () => resolve();
+      });
+    } catch (e) {
+      console.warn("IndexedDB set error:", e);
+    }
+  },
+  async findByGame(gameId, engine, seat = null) {
+    if (seat !== null && seat !== undefined) {
+      const exact = await this.get(`${gameId}_${seat}_${engine}`);
+      if (exact) return exact;
+      return await this.get(`${gameId}_${engine}_${seat}`);
+    }
+    const defaultSeat = await this.get(`${gameId}_0_${engine}`);
+    if (defaultSeat) return defaultSeat;
+
+    try {
+      const db = await this.getDb();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction("reviews", "readonly");
+        const store = tx.objectStore("reviews");
+        const req = store.openCursor();
+        req.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const k = String(cursor.key);
+            if (k.startsWith(`${gameId}_`) && (k.endsWith(`_${engine}`) || k.includes(`_${engine}_`))) {
+              resolve(cursor.value.data);
+              return;
+            }
+            cursor.continue();
+          } else {
+            resolve(null);
+          }
+        };
+        req.onerror = () => resolve(null);
+      });
+    } catch (_) {
+      return null;
+    }
+  },
+  async prune(maxRecords = 20) {
+    try {
+      const db = await this.getDb();
+      if (!db) return;
+      const tx = db.transaction("reviews", "readwrite");
+      const store = tx.objectStore("reviews");
+      const idx = store.index("timestamp");
+      const req = idx.getAllKeys();
+      req.onsuccess = () => {
+        const keys = req.result;
+        if (keys && keys.length > maxRecords) {
+          const countToDelete = keys.length - maxRecords;
+          for (let i = 0; i < countToDelete; i++) {
+            store.delete(keys[i]);
+          }
+        }
+      };
+    } catch (e) {
+      console.warn("IndexedDB prune error:", e);
+    }
+  }
+};
+
+let currentAnalysisRetryCb = null;
+
+function updateAnalysisProgress(percent, message) {
+  const fill = $("analysisProgressFill");
+  const pctEl = $("analysisProgressPct");
+  const textEl = $("analysisProgressText");
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  if (fill) fill.style.width = `${p}%`;
+  if (pctEl) pctEl.textContent = `${p}%`;
+  if (textEl && message) textEl.textContent = message;
+}
+
+function setLoading(visible, title = "AI 牌谱智能检讨", sub = "赤木神经网络正在检讨每一手决策") {
   const overlay = $("loadingOverlay");
   if (!overlay) return;
   if (visible) {
-    $("loadingTitle").textContent = title;
-    $("loadingSub").textContent = sub || "赤木神经网络正在检讨每一手决策";
+    const normalState = $("analysisNormalState");
+    const errorBox = $("analysisErrorBox");
+    if (normalState) normalState.classList.remove("hidden");
+    if (errorBox) errorBox.classList.add("hidden");
+    if ($("loadingTitle")) $("loadingTitle").textContent = title;
+    if ($("loadingSub")) $("loadingSub").textContent = sub || "赤木神经网络正在检讨每一手决策";
+    updateAnalysisProgress(0, "正在连接检讨引擎...");
     overlay.classList.remove("hidden");
   } else {
     overlay.classList.add("hidden");
   }
+}
+
+function showAnalysisError(errMsg, retryCallback = null) {
+  currentAnalysisRetryCb = retryCallback;
+  const overlay = $("loadingOverlay");
+  const normalState = $("analysisNormalState");
+  const errorBox = $("analysisErrorBox");
+  const errorDetail = $("analysisErrorDetail");
+  if (!overlay || !errorBox) return;
+
+  if (normalState) normalState.classList.add("hidden");
+  if (errorDetail) errorDetail.textContent = errMsg || "检讨服务暂时不可用，请检查网络或重试。";
+  errorBox.classList.remove("hidden");
+  overlay.classList.remove("hidden");
+}
+
+async function fetchReviewStream(postBody, onProgress) {
+  const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(postBody),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status}: ${errText || resp.statusText}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let finalResult = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop(); // keep last incomplete line in buffer
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const jsonStr = trimmed.slice(5).trim();
+      if (!jsonStr) continue;
+      try {
+        const ev = JSON.parse(jsonStr);
+        if (ev.type === "progress") {
+          onProgress(ev.percent || 0, ev.message || "");
+        } else if (ev.type === "queued") {
+          onProgress(5, ev.message || "服务器正忙，当前正在排队中...");
+        } else if (ev.type === "complete") {
+          finalResult = ev.result;
+        } else if (ev.type === "error") {
+          throw new Error(ev.detail || "分析发生错误");
+        }
+      } catch (err) {
+        if (err.message && !err.message.includes("Unexpected token") && !err.message.includes("JSON")) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  if (buffer.trim().startsWith("data:")) {
+    try {
+      const ev = JSON.parse(buffer.trim().slice(5).trim());
+      if (ev.type === "complete") finalResult = ev.result;
+      else if (ev.type === "error") throw new Error(ev.detail || "分析发生错误");
+    } catch (e) {
+      if (e.message && !e.message.includes("Unexpected token") && !e.message.includes("JSON")) {
+        throw e;
+      }
+    }
+  }
+
+  if (!finalResult) {
+    throw new Error("服务端未正常返回分析结果");
+  }
+
+  return finalResult;
 }
 
 const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show?studio_token=REDACTED_STUDIO_TOKEN";
@@ -338,6 +565,7 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
         if (res) {
           if (!state.perspectiveCache) state.perspectiveCache = {};
           state.perspectiveCache[cacheKey] = res;
+          await idbReviewCache.set(`${gameId}_${seat}_${model}`, res);
         }
       } catch (e) {
         console.warn(`[Preload] 静默预加载视角 ${seat} 失败:`, e);
@@ -358,13 +586,15 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   if (!rawInput) {
     rawInput = "demo";
   }
-  const paipuId = parsePaipuUuid(rawInput);
+  const trimmedInput = rawInput.trim();
+  const isJsonInput = trimmedInput.startsWith("{") || trimmedInput.startsWith("[");
+  const paipuId = isJsonInput ? "custom-json" : parsePaipuUuid(trimmedInput);
   state.selectedModel = model;
   updateEngineStatusDisplay(model);
 
-  // 检查是否已有缓存
+  // 1. 检查内存缓存
   const cacheKey = seat !== null && seat !== undefined ? `${paipuId}_${model}_${seat}` : null;
-  if (cacheKey && state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+  if (!isJsonInput && cacheKey && state.perspectiveCache && state.perspectiveCache[cacheKey]) {
     const cachedRes = state.perspectiveCache[cacheKey];
     state.reviewData = cachedRes;
     state.gameId = cachedRes.game_id || paipuId;
@@ -384,11 +614,44 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     return;
   }
 
+  // 2. 检查 IndexedDB 离线持久缓存（0ms 秒开）
+  if (!isJsonInput) {
+    try {
+      const idbCached = await idbReviewCache.findByGame(paipuId, model, seat);
+      if (idbCached) {
+        state.reviewData = idbCached;
+        state.gameId = idbCached.game_id || paipuId;
+        state.targetActor = idbCached.target_actor !== undefined ? idbCached.target_actor : (seat ?? 0);
+        state.kyokuIdx = 0;
+
+        if (!state.perspectiveCache) state.perspectiveCache = {};
+        const k1 = `${state.gameId}_${state.targetActor}_${model}`;
+        const k2 = `${state.gameId}_${model}_${state.targetActor}`;
+        state.perspectiveCache[k1] = idbCached;
+        state.perspectiveCache[k2] = idbCached;
+
+        showTier(2);
+
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set("paipu", paipuId);
+        window.history.pushState(null, "", newUrl.toString());
+
+        renderSummaryDashboard();
+        selectKyoku(0, true);
+        showToast("已从本地离线缓存秒级载入", "success");
+        preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+        return;
+      }
+    } catch (e) {
+      console.warn("IndexedDB cache check error:", e);
+    }
+  }
+
   setLoading(true, `正在分析牌谱 ${paipuId}...`, "正在使用深度神经网络检讨每一手决策");
 
   try {
     let res;
-    if (paipuId === "demo" || !isBackendOnline()) {
+    if (paipuId === "demo" && !isBackendOnline()) {
       try {
         const s = seat !== null && seat !== undefined ? seat : 0;
         const resp = await fetch(`/demo_review_${s}.json`).catch(() => fetch("/demo_review.json"));
@@ -401,14 +664,29 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     }
 
     if (!res) {
-      const postBody = { paipu: rawInput.trim(), engine: model };
+      const postBody = isJsonInput
+        ? { content: trimmedInput, engine: model }
+        : { paipu: trimmedInput, engine: model };
       if (seat !== null && seat !== undefined) {
         postBody.target_actor = seat;
       }
-      res = await apiFetch("/api/analyze/paipu", {
-        method: "POST",
-        body: JSON.stringify(postBody),
-      });
+
+      try {
+        res = await fetchReviewStream(postBody, (pct, msg) => {
+          updateAnalysisProgress(pct, msg);
+        });
+      } catch (streamErr) {
+        console.warn("SSE stream failed, falling back to /api/analyze/paipu:", streamErr);
+        try {
+          const fallbackEndpoint = isJsonInput ? "/api/analyze/json" : "/api/analyze/paipu";
+          res = await apiFetch(fallbackEndpoint, {
+            method: "POST",
+            body: JSON.stringify(postBody),
+          });
+        } catch (apiErr) {
+          throw new Error(apiErr.message || streamErr.message);
+        }
+      }
     }
 
     state.reviewData = res;
@@ -417,7 +695,13 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     state.kyokuIdx = 0;
 
     if (!state.perspectiveCache) state.perspectiveCache = {};
-    state.perspectiveCache[`${state.gameId}_${state.selectedModel}_${state.targetActor}`] = res;
+    const k1 = `${state.gameId}_${state.targetActor}_${state.selectedModel}`;
+    const k2 = `${state.gameId}_${state.selectedModel}_${state.targetActor}`;
+    state.perspectiveCache[k1] = res;
+    state.perspectiveCache[k2] = res;
+
+    // 保存到 IndexedDB
+    await idbReviewCache.set(k1, res);
 
     showTier(2);
 
@@ -430,6 +714,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     showToast(`分析完成：共检讨 ${res.kyokus?.length || 0} 局`, "success");
 
     preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+    setLoading(false);
   } catch (err) {
     if (paipuId === "demo" || !isBackendOnline()) {
       try {
@@ -448,13 +733,14 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
           selectKyoku(0, true);
           showToast(`已载入示例牌谱（共检讨 ${res.kyokus?.length || 0} 局）`, "success");
           preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+          setLoading(false);
           return;
         }
       } catch (_) {}
     }
-    showToast(`分析失败：${err.message}`, "error");
-  } finally {
-    setLoading(false);
+    showAnalysisError(`分析失败：${err.message}`, () => {
+      startAnalysisFromInput(rawInput, model, seat);
+    });
   }
 }
 
@@ -477,6 +763,23 @@ async function switchSeatPerspective(newSeat) {
     }
     return;
   }
+
+  // 1.5 检查 IndexedDB 本地缓存
+  try {
+    const idbCached = await idbReviewCache.findByGame(paipuId, state.selectedModel, newSeat);
+    if (idbCached) {
+      if (!state.perspectiveCache) state.perspectiveCache = {};
+      state.perspectiveCache[cacheKey] = idbCached;
+      state.reviewData = idbCached;
+      state.targetActor = newSeat;
+      renderSummaryDashboard();
+      selectKyoku(state.kyokuIdx);
+      if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
+        renderKyokuTable();
+      }
+      return;
+    }
+  } catch (_) {}
 
   // 2. 若未命中缓存：仅在首次请求该视角时向后端请求
   const seatName = state.reviewData?.names?.[newSeat] ?? `${newSeat}`;
@@ -503,6 +806,7 @@ async function switchSeatPerspective(newSeat) {
     }
     if (!state.perspectiveCache) state.perspectiveCache = {};
     state.perspectiveCache[cacheKey] = res;
+    await idbReviewCache.set(`${paipuId}_${newSeat}_${state.selectedModel}`, res);
     state.reviewData = res;
     state.targetActor = res.target_actor !== undefined ? res.target_actor : newSeat;
     renderSummaryDashboard();
@@ -583,6 +887,77 @@ function selectKyoku(kIdx, jumpToFirstDecision = false) {
   } else {
     setStep(0);
   }
+}
+
+// RAF-based Step Debouncing & Scheduler to eliminate layout thrashing on key-hold
+let pendingTargetStep = null;
+let stepRafId = null;
+
+function scheduleStep(targetStep) {
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (!kyoku || !kyoku.steps.length) return;
+  pendingTargetStep = Math.max(0, Math.min(kyoku.steps.length - 1, targetStep));
+
+  if (stepRafId !== null) return;
+
+  stepRafId = requestAnimationFrame(() => {
+    stepRafId = null;
+    if (pendingTargetStep !== null) {
+      const step = pendingTargetStep;
+      pendingTargetStep = null;
+      setStep(step);
+    }
+  });
+}
+
+function cancelScheduledStep() {
+  if (stepRafId !== null) {
+    cancelAnimationFrame(stepRafId);
+    stepRafId = null;
+  }
+  pendingTargetStep = null;
+}
+
+function stepDeltaFast(delta) {
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (!kyoku) return;
+  const current = pendingTargetStep !== null ? pendingTargetStep : state.stepIdx;
+  const target = current + delta;
+  if (target >= 0 && target < kyoku.steps.length) {
+    scheduleStep(target);
+  } else {
+    cancelScheduledStep();
+    stepDelta(delta);
+  }
+}
+
+function jumpPrevBlunderFast() {
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (!kyoku?.decisions?.length) return;
+  const current = pendingTargetStep !== null ? pendingTargetStep : state.stepIdx;
+  const decs = kyoku.decisions;
+  for (let i = decs.length - 1; i >= 0; i--) {
+    if (decs[i].step_idx < current && !decs[i].is_equal) {
+      scheduleStep(decs[i].step_idx);
+      return;
+    }
+  }
+  cancelScheduledStep();
+  jumpPrevBlunder();
+}
+
+function jumpNextBlunderFast() {
+  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  if (!kyoku?.decisions?.length) return;
+  const current = pendingTargetStep !== null ? pendingTargetStep : state.stepIdx;
+  for (const d of kyoku.decisions) {
+    if (d.step_idx > current && !d.is_equal) {
+      scheduleStep(d.step_idx);
+      return;
+    }
+  }
+  cancelScheduledStep();
+  jumpNextBlunder();
 }
 
 function stepDelta(delta) {
@@ -820,6 +1195,15 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
   const isRonTarget = isRon && seat === targetActor;
 
+  // Avoid rebuilding river DOM if length, last tile, and flags have not changed
+  const lastR = river.length > 0 ? river[river.length - 1] : null;
+  const lastSig = lastR ? `${lastR.pai}_${lastR.tsumogiri ? 1 : 0}_${lastR.riichi ? 1 : 0}_${lastR.called ? 1 : 0}` : "none";
+  const sig = `${river.length}#${lastSig}#${isLastDiscardActor ? 1 : 0}#${isRonTarget ? 1 : 0}`;
+  if (container.dataset.riverSig === sig) {
+    return;
+  }
+  container.dataset.riverSig = sig;
+
   // Exactly 6 tiles per row horizontal, exactly 3 rows vertical
   const rows = [[], [], []];
   river.forEach((r, idx) => {
@@ -896,31 +1280,40 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   closedWrap.innerHTML = handHtml;
 
   // 2. Render Green Discard Recommendation Bars (SVG) — Absolutely Centered on Actual DOM Tiles
-  let svgHtml = "";
   if (svgEl) {
-    const svgRect = svgEl.getBoundingClientRect();
-    if (svgRect.width > 0) {
-      svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} 50`);
-    }
-    const seenPai = new Set();
-    const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
-    renderedTiles.forEach((tileEl, idx) => {
-      if (idx < allTiles.length) {
-        const pai = allTiles[idx].pai;
-        if (seenPai.has(pai)) return;
-        seenPai.add(pai);
-        const barInfo = tileBars[pai];
-        const prob = barInfo ? barInfo.prob : 0;
-        if (prob > 0) {
-          const tileRect = tileEl.getBoundingClientRect();
-          const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
-          const height = Math.max(3, Math.round((prob / 100) * 45));
-          const y = 50 - height;
-          svgHtml += `<rect x="${Math.round(centerX - 5)}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
-        }
+    const barKeys = Object.keys(tileBars);
+    const hasAnyBars = barKeys.some((k) => (tileBars[k]?.prob || 0) > 0);
+    if (!hasAnyBars) {
+      if (svgEl.innerHTML !== "") svgEl.innerHTML = "";
+    } else {
+      let svgHtml = "";
+      const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
+      // Batch DOM measurements together to eliminate layout thrashing
+      const svgRect = svgEl.getBoundingClientRect();
+      const tileRects = Array.from(renderedTiles).map((t) => t.getBoundingClientRect());
+
+      if (svgRect.width > 0) {
+        svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} 50`);
       }
-    });
-    svgEl.innerHTML = svgHtml;
+      const seenPai = new Set();
+      renderedTiles.forEach((tileEl, idx) => {
+        if (idx < allTiles.length) {
+          const pai = allTiles[idx].pai;
+          if (seenPai.has(pai)) return;
+          seenPai.add(pai);
+          const barInfo = tileBars[pai];
+          const prob = barInfo ? barInfo.prob : 0;
+          if (prob > 0 && idx < tileRects.length) {
+            const tileRect = tileRects[idx];
+            const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
+            const height = Math.max(3, Math.round((prob / 100) * 45));
+            const y = 50 - height;
+            svgHtml += `<rect x="${Math.round(centerX - 5)}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
+          }
+        }
+      });
+      svgEl.innerHTML = svgHtml;
+    }
   }
 
   // 3. Render Calls
@@ -2146,7 +2539,23 @@ function bindEvents() {
   // Step timeline slider
   $("stepSlider")?.addEventListener("input", (e) => {
     if (state.isPlaying) togglePlay(false);
-    setStep(parseInt(e.target.value, 10));
+    scheduleStep(parseInt(e.target.value, 10));
+  });
+
+  // Dedicated Error Box actions
+  $("btnRetryAnalysis")?.addEventListener("click", () => {
+    if (currentAnalysisRetryCb) {
+      const cb = currentAnalysisRetryCb;
+      currentAnalysisRetryCb = null;
+      cb();
+    } else {
+      setLoading(false);
+    }
+  });
+
+  $("btnCloseAnalysisError")?.addEventListener("click", () => {
+    setLoading(false);
+    currentAnalysisRetryCb = null;
   });
 
   // Navigation controls (Bound to both top header stepper & sidebar buttons)
@@ -2219,21 +2628,31 @@ function bindEvents() {
     }
 
     const actions = {
-      ArrowLeft: () => stepDelta(-1),
-      ArrowRight: () => stepDelta(1),
+      ArrowLeft: () => stepDeltaFast(-1),
+      ArrowRight: () => stepDeltaFast(1),
       ArrowUp: jumpPrevDecision,
       ArrowDown: jumpNextDecision,
-      PageUp: jumpPrevBlunder,
-      PageDown: jumpNextBlunder,
-      ",": jumpPrevBlunder,
-      ".": jumpNextBlunder,
-      Home: () => setStep(0),
+      PageUp: () => jumpPrevBlunderFast(),
+      PageDown: () => jumpNextBlunderFast(),
+      ",": () => jumpPrevBlunderFast(),
+      ".": () => jumpNextBlunderFast(),
+      Home: () => {
+        cancelScheduledStep();
+        setStep(0);
+      },
       End: () => {
+        cancelScheduledStep();
         const k = state.reviewData?.kyokus?.[state.kyokuIdx];
         if (k) setStep(k.steps.length - 1);
       },
-      "[": jumpPrevKyoku,
-      "]": jumpNextKyoku,
+      "[": () => {
+        cancelScheduledStep();
+        jumpPrevKyoku();
+      },
+      "]": () => {
+        cancelScheduledStep();
+        jumpNextKyoku();
+      },
       h: toggleHandsVisibility,
       H: toggleHandsVisibility,
       " ": togglePlay,
