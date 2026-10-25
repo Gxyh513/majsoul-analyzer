@@ -63,8 +63,9 @@ function applyHidePlayerId() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
   if (kyoku) {
     const snap = kyoku?.steps?.[state.stepIdx];
-    const dec = kyoku?.decisions?.find((d) => d.step_idx === state.stepIdx);
-    renderDecisionCard(dec, true, snap);
+    const isExact = snap?.decision_idx !== null && snap?.decision_idx !== undefined;
+    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : kyoku?.decisions?.find((d) => d.step_idx === state.stepIdx);
+    renderDecisionCard(dec, isExact, snap);
   }
 }
 
@@ -1111,8 +1112,13 @@ function renderDecisionCard(dec, isExactStep, snap) {
     // Ura Dora Information
     const uras = snap.event.ura_markers || [];
     const uraHtml = uras.length
-      ? `<div class="kd-settlement-uradora-badge"><span>里宝牌:</span> ${uras.map((u) => `<span style="font-weight:700; color:#ffd60a;">${tileCn(u)}</span>`).join(" ")}</div>`
-      : `<div class="kd-settlement-uradora-badge"><span>里宝:</span> 无</div>`;
+      ? `<div class="kd-settlement-uradora-badge">
+           <span class="kd-settlement-uradora-label">里宝牌</span>
+           <div class="kd-settlement-uradora-tiles">
+             ${uras.map((u) => `<img src="/tiles/${encodeURIComponent(u)}.svg" class="kd-settlement-uradora-tile" title="里宝牌: ${tileCn(u)}" alt="${tileCn(u)}">`).join("")}
+           </div>
+         </div>`
+      : `<div class="kd-settlement-uradora-badge"><span class="kd-settlement-uradora-label">里宝牌: 无</span></div>`;
 
     // 4. Render Single Prominent Settlement Banner & 4-Seat Delta Grid directly inside decSettlementWrap
     if (settWrap) {
@@ -1133,17 +1139,25 @@ function renderDecisionCard(dec, isExactStep, snap) {
               `}
               <div class="kd-settlement-banner-info">
                 <div class="kd-settlement-winner-title">
-                  <span>${winWind}家 ${escapeHtml(winName)}</span>
-                  <span style="font-weight:700; color:${isRon ? "#70d7ff" : "#30d158"};">${isRon ? "荣和" : "自摸"}</span>
+                  <span class="kd-settlement-seat-wind">${winWind}家</span>
+                  <span class="kd-settlement-player-highlight winner">${escapeHtml(winName)}</span>
+                  <span class="kd-settlement-win-badge ${isRon ? 'ron' : 'tsumo'}">${isRon ? "荣和" : "自摸"}</span>
                 </div>
                 <div class="kd-settlement-meta-row">
-                  ${isRon ? `<span style="color:#ff453a;">${tgtWind}家 ${escapeHtml(tgtName)} 放铳 (-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>` : `<span>自摸和了</span>`}
+                  ${isRon ? `
+                    <div class="kd-settlement-loser-line">
+                      <span class="kd-settlement-seat-wind">${tgtWind}家</span>
+                      <span class="kd-settlement-player-highlight loser">${escapeHtml(tgtName)}</span>
+                      <span class="kd-settlement-loser-action">放铳</span>
+                      <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点)</span>
+                    </div>
+                  ` : `<span class="kd-settlement-tsumo-action">自摸和了</span>`}
                   ${uraHtml}
                 </div>
               </div>
             </div>
             <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
-              +${scoreDelta} 点
+              ${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点
             </div>
           </div>
           ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
@@ -1260,10 +1274,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
     setTileWrapContent(aiTileWrap, "");
     if (actualTileName) actualTileName.textContent = "";
     if (aiTileName) aiTileName.textContent = "";
-    if (candTitle) {
-      candTitle.style.display = "block";
-      candTitle.textContent = "立直巡航中";
-    }
+    if (candTitle) candTitle.style.display = "none";
     if (candTable) candTable.style.display = "";
     if (candTableHead) candTableHead.style.display = "none";
     if (tableBody) {
@@ -1272,13 +1283,32 @@ function renderDecisionCard(dec, isExactStep, snap) {
     return;
   }
 
+  // CASE 2.8: Opponent Turn / Non-Hero Decision Step (No calls, waiting for hero's turn)
+  if (!isExactStep) {
+    if (turnEl) turnEl.textContent = "";
+    if (badgeEl) {
+      badgeEl.textContent = "他家巡目";
+      badgeEl.className = "kd-dec-verdict cruise";
+    }
+    if (compWrap) compWrap.style.display = "none";
+    if (settWrap) settWrap.style.display = "none";
+    setTileWrapContent(actualTileWrap, "");
+    setTileWrapContent(aiTileWrap, "");
+    if (actualTileName) actualTileName.textContent = "";
+    if (aiTileName) aiTileName.textContent = "";
+    if (candTitle) candTitle.style.display = "none";
+    if (candTable) candTable.style.display = "";
+    if (candTableHead) candTableHead.style.display = "none";
+    if (tableBody) {
+      tableBody.innerHTML = '<tr><td colspan="5" style="padding:18px 8px; text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">当前为他家巡目（本家无鸣牌操作，等待自巡）</td></tr>';
+    }
+    return;
+  }
+
   // Restore decision comparison blocks & candidates section for normal steps
   if (compWrap) compWrap.style.display = "flex";
   if (settWrap) settWrap.style.display = "none";
-  if (candTitle) {
-    candTitle.style.display = "block";
-    candTitle.textContent = "候选舍牌 AI 评分明细";
-  }
+  if (candTitle) candTitle.style.display = "none";
   if (candTable) candTable.style.display = "";
   if (candTableHead) candTableHead.style.display = "";
   if (actualLabel) actualLabel.textContent = "玩家";
@@ -1331,10 +1361,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   if (turnEl) turnEl.textContent = "";
 
   if (badgeEl) {
-    if (!isExactStep) {
-      badgeEl.textContent = "巡航中";
-      badgeEl.className = "kd-dec-verdict cruise";
-    } else if (isMatch) {
+    if (isMatch) {
       badgeEl.textContent = "模型一致";
       badgeEl.className = "kd-dec-verdict best";
     } else if (dec.verdict === "blunder") {
@@ -1392,10 +1419,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
     actualProbBadge.textContent = "";
   }
   if (actualVerdictText) {
-    if (!isExactStep) {
-      actualVerdictText.textContent = "上一决策";
-      actualVerdictText.className = "kd-tag-verdict cruise";
-    } else if (isMatch) {
+    if (isMatch) {
       actualVerdictText.textContent = "模型一致";
       actualVerdictText.className = "kd-tag-verdict best";
     } else if (dec.verdict === "blunder") {
