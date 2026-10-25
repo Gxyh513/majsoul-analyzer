@@ -177,7 +177,8 @@ function applyHidePlayerId() {
   if (kyoku) {
     const snap = kyoku?.steps?.[state.stepIdx];
     const isExact = snap?.decision_idx !== null && snap?.decision_idx !== undefined;
-    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : kyoku?.decisions?.find((d) => d.step_idx === state.stepIdx);
+    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : findLatestDecisionBeforeStep(kyoku, state.stepIdx);
+    renderBoard(kyoku, snap, isExact ? dec : null);
     renderDecisionCard(dec, isExact, snap);
   }
 }
@@ -1211,12 +1212,11 @@ function getStepActionDesc(snap, kyoku) {
   if (!snap || !snap.event) return "";
   const ev = snap.event;
   const currentKyoku = kyoku || state.reviewData?.kyokus?.[state.kyokuIdx];
-  const names = state.reviewData?.names || [];
   const getPlayerLabel = (seat) => {
     if (seat === undefined || seat === null) return "";
     const w = currentKyoku ? handWind(seat, currentKyoku) : "";
     const isHero = seat === state.targetActor;
-    const pName = names[seat] ? ` ${names[seat]}` : "";
+    const pName = ` ${getPlayerDisplayName(seat)}`;
     return `${w}家${isHero ? "(自家)" : pName}`;
   };
 
@@ -1300,13 +1300,29 @@ function renderBoard(kyoku, snap, activeDecision) {
   // Center Info Box
   const roundName = (kyoku.label || "").split(" ")[0] || "东1";
   const btnRound = $("btnRoundScore");
-  if (btnRound) btnRound.textContent = roundName;
+  const honbaCount = snap.honba ?? 0;
+  const kyotakuCount = snap.kyotaku ?? 0;
+  if (btnRound) {
+    if (honbaCount > 0 || kyotakuCount > 0) {
+      btnRound.innerHTML = `
+        <span class="info-round-title">${escapeHtml(roundName)}</span>
+        <span class="info-round-sub">
+          ${honbaCount > 0 ? `<span class="info-tag-honba">${honbaCount}本场</span>` : ""}
+          ${kyotakuCount > 0 ? `<span class="info-tag-kyotaku"><span class="riichi-stick-mini"></span>${kyotakuCount * 1000}</span>` : ""}
+        </span>
+      `;
+      btnRound.title = `${escapeHtml(roundName)}${honbaCount > 0 ? ` ${honbaCount}本场` : ""}${kyotakuCount > 0 ? ` · 场供供托 ${kyotakuCount * 1000}点` : ""} · 点击查看局数得点表`;
+    } else {
+      btnRound.innerHTML = `<span class="info-round-title only">${escapeHtml(roundName)}</span>`;
+      btnRound.title = `${escapeHtml(roundName)} · 点击查看局数得点表`;
+    }
+  }
 
   const tilesLeftEl = $("centerTilesLeft");
   if (tilesLeftEl) tilesLeftEl.textContent = `x${snap.tiles_left ?? 70}`;
 
   const honbaEl = $("centerHonba");
-  if (honbaEl) honbaEl.textContent = snap.honba > 0 ? `${snap.honba}本场` : "";
+  if (honbaEl) honbaEl.style.display = "none";
 
   // 5 Dora slots
   const dorasEl = $("centerDoras");
@@ -1367,7 +1383,8 @@ function renderBoard(kyoku, snap, activeDecision) {
 function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const container = $(`river${pos}`);
   if (!container) return;
-  const river = snap.rivers[seat] || [];
+  const fullRiver = snap.rivers[seat] || [];
+  const river = fullRiver.filter((r) => !r.called);
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
   const isRonTarget = isRon && seat === targetActor;
 
@@ -1663,7 +1680,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const targetActor = state.targetActor ?? 0;
   const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
   const wind = currentKyoku ? handWind(targetActor, currentKyoku) : "";
-  const names = state.reviewData?.names || [];
+  const names = [0, 1, 2, 3].map((s) => getPlayerDisplayName(s));
   const isHora = snap?.event?.type === "hora";
   const isRyuukyoku = snap?.event?.type === "ryuukyoku" || snap?.event?.type === "ryukyoku";
 
@@ -1689,9 +1706,10 @@ function renderDecisionCard(dec, isExactStep, snap) {
     const tgtWind = isRon && currentKyoku ? handWind(tgtActor, currentKyoku) : "";
 
     const scoreDelta = snap.event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
-    const summaryText = currentKyoku?.end_summaries?.length
+    const rawSummaryText = currentKyoku?.end_summaries?.length
       ? currentKyoku.end_summaries.join("<br>")
       : (isRon ? `${winWind}家 ${escapeHtml(winName)} 荣和 ${tgtWind}家 ${escapeHtml(tgtName)} +${scoreDelta}` : `${winWind}家 ${escapeHtml(winName)} 自摸 +${scoreDelta}`);
+    const summaryText = sanitizeSummaryText(rawSummaryText);
 
     if (turnEl) turnEl.textContent = "";
 
@@ -1830,7 +1848,9 @@ function renderDecisionCard(dec, isExactStep, snap) {
     if (actualTileName) actualTileName.textContent = "";
     if (aiTileName) aiTileName.textContent = "";
 
-    const summaryText = currentKyoku?.end_summaries?.length ? currentKyoku.end_summaries.join("<br>") : (currentKyoku?.result || "荒牌流局");
+    const rawSummaryText = currentKyoku?.end_summaries?.length ? currentKyoku.end_summaries.join("<br>") : (currentKyoku?.result || "荒牌流局");
+    const summaryText = sanitizeSummaryText(rawSummaryText);
+    const roundKyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
 
     if (settWrap) {
       settWrap.style.display = "flex";
@@ -1852,6 +1872,12 @@ function renderDecisionCard(dec, isExactStep, snap) {
             </div>
           </div>
           ${summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : ""}
+          ${roundKyotaku > 0 ? `
+            <div style="font-size:11.5px; color:#ffd60a; padding-top:6px; border-top:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; gap:6px;">
+              <span style="background:rgba(255,214,10,0.18); border:1px solid rgba(255,214,10,0.35); padding:1px 6px; border-radius:4px; font-weight:700;">场供留存</span>
+              <span>本局未被和牌，${roundKyotaku * 1000}点立直棒 (${roundKyotaku}根) 场供留存流入下局</span>
+            </div>
+          ` : ""}
         </div>
         <div class="kd-settlement-delta-grid">
           ${[0, 1, 2, 3].map((seat) => {
@@ -1859,10 +1885,10 @@ function renderDecisionCard(dec, isExactStep, snap) {
             const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
             const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
             const pName = names[seat] || `P${seat + 1}`;
-            const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
+            const isRiichiSeat = !!snap?.riichi?.[seat];
             return `
               <div class="kd-settlement-delta-cell">
-                <div class="kd-settlement-player-name">${escapeHtml(pName)}</div>
+                <div class="kd-settlement-player-name">${escapeHtml(pName)}${isRiichiSeat ? ` <span style="font-size:10px; color:#ff9f0a; opacity:0.85;">(立直-1k)</span>` : ""}</div>
                 <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
               </div>
             `;
@@ -1888,6 +1914,47 @@ function renderDecisionCard(dec, isExactStep, snap) {
   if (candTableHead) candTableHead.style.display = "";
   if (actualLabel) actualLabel.textContent = "玩家";
   if (aiLabel) aiLabel.textContent = "模型";
+
+  // Hero in Riichi: Once locked in Riichi, all non-exact steps are automatic tsumogiri
+  const isHeroInRiichi = !!snap?.riichi?.[targetActor];
+  if (isHeroInRiichi && !isExactStep) {
+    if (turnEl) turnEl.textContent = "";
+    if (badgeEl) {
+      badgeEl.textContent = "立直中 · 自动摸切";
+      badgeEl.className = "kd-dec-verdict cruise";
+    }
+    setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "立直巡航"));
+    if (aiTileName) {
+      aiTileName.style.display = "block";
+      aiTileName.textContent = "立直巡航";
+    }
+    if (aiProbBadge) aiProbBadge.textContent = "";
+    if (aiShantenBadge) aiShantenBadge.textContent = "听牌";
+    if (aiUkeireBadge) aiUkeireBadge.textContent = "自动摸切";
+
+    setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(null, { type: "none" }, "自动摸切"));
+    if (actualTileName) {
+      actualTileName.style.display = "block";
+      actualTileName.textContent = "自动摸切";
+    }
+    if (actualProbBadge) actualProbBadge.textContent = "";
+    if (actualVerdictText) {
+      actualVerdictText.textContent = "立直中";
+      actualVerdictText.className = "kd-tag-verdict cruise";
+    }
+    if (actualBlock) actualBlock.classList.remove("is-blunder");
+
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="5" style="padding:14px 8px;">
+            <div style="text-align:center; color:rgba(235,235,245,0.45); font-size:12px;">自家已立直（自动摸切巡航中，无切牌决策）</div>
+          </td>
+        </tr>
+      `;
+    }
+    return;
+  }
 
   // CASE 3: Normal or Cruise Steps
   if (!dec) {
