@@ -3,7 +3,6 @@ __pycache__
 *.pyc
 backups
 .wrangler
-data/config.json
 data/config.local.json
 data/records/*.json
 vendor/Mortal/target
