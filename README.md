@@ -78,7 +78,20 @@ docker build -t majsoul-analyzer:latest .
 docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_ALLOWED_ORIGINS majsoul-analyzer:latest
 ```
 
-运行前在当前 shell 中设置 `MAJSOUL_API_TOKEN` 和 `MAJSOUL_ALLOWED_ORIGINS`；不要把真实令牌写入仓库或公开日志。Docker/ModelScope 发布前应配置好环境变量并验证实际启动情况。需要雀魂账号时，使用部署平台的私密环境变量 `MAJSOUL_ACCOUNT`、`MAJSOUL_PASSWORD` 或 `MAJSOUL_ACCESS_TOKEN`，不要将配置文件打包进镜像。
+运行前在当前 shell 中设置 `MAJSOUL_API_TOKEN` 和 `MAJSOUL_ALLOWED_ORIGINS`；不要把真实令牌写入仓库或公开日志。Docker/ModelScope 发布前应配置好环境变量并验证实际启动情况。不要将雀魂账号配置文件打包进镜像。
+
+#### 雀魂账号池
+
+本机可在被忽略的 `data/config.local.json` 中配置主账号和 `backup_accounts` 数组。ModelScope 等远程环境可在**密文变量** `MAJSOUL_ACCOUNTS_JSON` 中配置 JSON 数组，例如：
+
+```json
+[
+  {"account": "账号一", "password": "密码一"},
+  {"account": "账号二", "password": "密码二"}
+]
+```
+
+示例仅展示格式，不要把真实账号写入仓库。每项可以提供 `account` 和 `password`，也可提供 `access_token`；可选字段包括 `nickname` 和 `account_id`。服务按数组顺序尝试可用账号，并对重复账号去重。需要增删账号时，直接编辑该密文变量并重新部署；该变量作为账号池的唯一来源，不会偷偷合并旧的本地账号。令牌刷新只保留在运行内存，更新 ModelScope 密文变量后需要重新部署生效。请遵守雀魂服务的使用规则；不要继续使用已公开的账号凭据。
 
 ### 访问控制
 
