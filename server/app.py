@@ -504,20 +504,32 @@ async def protect_api_and_log(request: Request, call_next):
         if origin:
             headers.update({"Access-Control-Allow-Origin": origin,
                             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization",
+                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Api-Token",
                             "Access-Control-Allow-Private-Network": "true"})
         return Response(status_code=204, headers=headers)
 
-    if is_api:
+    if is_api and path != "/api/status":
         peer = request.client.host if request.client else None
         local = _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
         same_origin = not origin or origin == own_origin
-        token = os.environ.get("MAJSOUL_API_TOKEN", "")
+        token = os.environ.get("MAJSOUL_API_TOKEN", "").strip()
         # If a token is configured, require it even on loopback: a reverse
         # proxy can itself connect from loopback and supply an arbitrary Host.
         if token or not (local and same_origin):
-            supplied = request.headers.get("authorization", "")
-            if not token or not hmac.compare_digest(supplied, f"Bearer {token}"):
+            auth_header = request.headers.get("authorization", "").strip()
+            x_token = request.headers.get("x-api-token", "").strip()
+            q_token = request.query_params.get("api_token", "").strip()
+            supplied = ""
+            if auth_header.startswith("Bearer "):
+                supplied = auth_header[7:].strip()
+            elif auth_header:
+                supplied = auth_header
+            elif x_token:
+                supplied = x_token
+            elif q_token:
+                supplied = q_token
+
+            if not token or not hmac.compare_digest(supplied, token):
                 headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin else None
                 return JSONResponse({"detail": "远程访问需要有效的 MAJSOUL_API_TOKEN"}, status_code=401, headers=headers)
 
