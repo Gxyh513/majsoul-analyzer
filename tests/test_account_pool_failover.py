@@ -316,11 +316,21 @@ def test_account_deduplication():
 # Test Case 7: Cache Hit Direct Use (No Network Calls)
 # ---------------------------------------------------------------------------
 @pytest.mark.anyio
-async def test_cache_hit_does_not_fetch():
+async def test_cache_hit_does_not_fetch(tmp_path, monkeypatch):
     """Verify that if paipu JSON is already on disk, it is directly returned without network activity."""
-    existing_uuid = "260922-cf43b187-e6ac-4f73-9de2-ea4968766a80"
-    target_file = RECORDS_DIR / f"{existing_uuid}.json"
-    assert target_file.is_file()
+    records_dir = tmp_path / "records"
+    records_dir.mkdir()
+    monkeypatch.setattr("server.app.RECORDS_DIR", records_dir)
+    existing_uuid = "241026-11111111-2222-3333-4444-555555555555"
+    target_file = records_dir / f"{existing_uuid}.json"
+    target_file.write_text(json.dumps({
+        "head": {
+            "uuid": existing_uuid,
+            "accounts": [{"account_id": 1, "nickname": "PlayerA"}],
+            "result": {"players": [{"total_point": 10000}]},
+        },
+        "actions": [],
+    }), encoding="utf-8")
 
     with patch("server.app.fetch_record_with_failover", new=AsyncMock()) as mock_failover:
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=existing_uuid)
@@ -330,9 +340,21 @@ async def test_cache_hit_does_not_fetch():
 
 
 @pytest.mark.anyio
-async def test_cache_hit_inside_fetch_record_with_failover():
+async def test_cache_hit_inside_fetch_record_with_failover(tmp_path, monkeypatch):
     """Verify that fetch_record_with_failover re-checks disk cache inside lock without network calls."""
-    existing_uuid = "260922-cf43b187-e6ac-4f73-9de2-ea4968766a80"
+    records_dir = tmp_path / "records"
+    records_dir.mkdir()
+    monkeypatch.setattr("server.app.RECORDS_DIR", records_dir)
+    existing_uuid = "241026-11111111-2222-3333-4444-555555555555"
+    target_file = records_dir / f"{existing_uuid}.json"
+    target_file.write_text(json.dumps({
+        "head": {
+            "uuid": existing_uuid,
+            "accounts": [{"account_id": 1, "nickname": "PlayerA"}],
+            "result": {"players": [{"total_point": 10000}]},
+        },
+        "actions": [],
+    }), encoding="utf-8")
     with patch.object(ms_client, "connect", new=AsyncMock()) as mock_conn:
         res = await fetch_record_with_failover(existing_uuid)
         assert isinstance(res, dict)

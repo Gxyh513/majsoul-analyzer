@@ -14,3 +14,4 @@ cloudflared.exe
 
 data/reviews/
 data/config.json
+.claude/
