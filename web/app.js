@@ -26,188 +26,48 @@ const TILE_CN_MAP = {
   "5mr": "赤五万", "5pr": "赤五筒", "5sr": "赤五索",
 };
 
-// Web Audio API Player for tactile Mahjong tile discard
-const SoundFX = {
-  ctx: null,
-  buffer: null,
-  loading: false,
-  currentUrl: null,
-  getAudioUrl() {
-    const variant = localStorage.getItem("majsoul_sound_variant") || "warm";
-    if (variant === "soft") return "/audio/preview/discard_soft.wav";
-    if (variant === "solid") return "/audio/preview/discard_solid.wav";
-    if (variant === "crisp") return "/audio/preview/discard_crisp.wav";
-    if (variant === "amos") return "/audio/preview/discard_amos.wav";
-    return "/audio/discard.wav";
-  },
-  init(forceReload = false) {
-    if (!this.ctx && (window.AudioContext || window.webkitAudioContext)) {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AudioCtx();
-    }
-    if (this.ctx && this.ctx.state === "suspended") {
-      this.ctx.resume().catch(() => {});
-    }
-    const targetUrl = this.getAudioUrl();
-    if ((!this.buffer || forceReload || this.currentUrl !== targetUrl) && !this.loading && this.ctx) {
-      this.loading = true;
-      this.currentUrl = targetUrl;
-      fetch(targetUrl)
-        .then((res) => {
-          if (!res.ok) throw new Error("Audio fetch failed");
-          return res.arrayBuffer();
-        })
-        .then((buf) => this.ctx.decodeAudioData(buf))
-        .then((decoded) => {
-          this.buffer = decoded;
-          this.loading = false;
-        })
-        .catch(() => {
-          this.loading = false;
-        });
-    }
-  },
-  playDiscard() {
-    try {
-      this.init();
-      if (!this.ctx) return;
-
-      const t = this.ctx.currentTime;
-      // Organic pitch micro-variation
-      const pitch = 0.96 + Math.random() * 0.08;
-
-      if (this.buffer) {
-        const source = this.ctx.createBufferSource();
-        source.buffer = this.buffer;
-        source.playbackRate.value = pitch;
-
-        // Gentle lowpass filter at 3200Hz to eliminate harsh high-frequency spikes across earphones/speakers
-        const filter = this.ctx.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.setValueAtTime(3200, t);
-        filter.Q.setValueAtTime(0.7, t);
-
-        const gainNode = this.ctx.createGain();
-        gainNode.gain.setValueAtTime(0.8, t);
-
-        source.connect(filter);
-        filter.connect(gainNode);
-        gainNode.connect(this.ctx.destination);
-        source.start(t);
-        return;
-      }
-
-      // Warm fallback synthesizer if buffer is loading
-      const oscClick = this.ctx.createOscillator();
-      const gainClick = this.ctx.createGain();
-      oscClick.type = "sine";
-      oscClick.frequency.setValueAtTime(1550 * pitch, t);
-      oscClick.frequency.exponentialRampToValueAtTime(820 * pitch, t + 0.016);
-      gainClick.gain.setValueAtTime(0.25, t);
-      gainClick.gain.exponentialRampToValueAtTime(0.001, t + 0.02);
-      oscClick.connect(gainClick);
-      gainClick.connect(this.ctx.destination);
-      oscClick.start(t);
-      oscClick.stop(t + 0.022);
-
-      const oscBody = this.ctx.createOscillator();
-      const gainBody = this.ctx.createGain();
-      oscBody.type = "triangle";
-      oscBody.frequency.setValueAtTime(680 * pitch, t);
-      oscBody.frequency.exponentialRampToValueAtTime(380 * pitch, t + 0.035);
-      gainBody.gain.setValueAtTime(0.32, t);
-      gainBody.gain.exponentialRampToValueAtTime(0.001, t + 0.038);
-      oscBody.connect(gainBody);
-      gainBody.connect(this.ctx.destination);
-      oscBody.start(t);
-      oscBody.stop(t + 0.042);
-    } catch (_) {
-      // AudioContext unavailable or autoplay prevented
-    }
-  }
-};
-
-let lastSoundTime = 0;
-function playTileDiscardSound() {
-  if (!state.soundEnabled) return;
-  const now = performance.now();
-  if (now - lastSoundTime < 60) return;
-  lastSoundTime = now;
-  SoundFX.playDiscard();
-}
-
-function toggleSound() {
-  state.soundEnabled = !state.soundEnabled;
-  localStorage.setItem("majsoul_sound", state.soundEnabled ? "1" : "0");
-  updateSoundButton();
-  if (state.soundEnabled) {
-    SoundFX.playDiscard();
-  }
-}
-
-function updateSoundButton() {
-  const txt = $("toggleAudioText");
-  const btn = $("btnToggleAudio");
-  if (txt) txt.textContent = state.soundEnabled ? "音效: 开" : "音效: 关";
-  if (btn) {
-    if (state.soundEnabled) {
-      btn.classList.add("active");
-    } else {
-      btn.classList.remove("active");
-    }
-  }
-}
+// Audio effects removed per UI simplification
+function playTileDiscardSound() {}
+function toggleSound() {}
+function updateSoundButton() {}
 
 const $ = (id) => document.getElementById(id);
 
-function getPlayerDisplayName(seat) {
-  if (state.hidePlayerId) {
-    return `雀氏${(seat ?? 0) + 1}`;
-  }
-  return state.reviewData?.names?.[seat] || `雀氏${(seat ?? 0) + 1}`;
+function getPlayerDisplayName(seat, kyoku = null) {
+  const s = seat ?? 0;
+  const currentKyoku = kyoku || state.reviewData?.kyokus?.[state.kyokuIdx];
+  const wind = currentKyoku ? handWind(s, currentKyoku) : WIND_CN[s % 4];
+  const isTarget = s === (state.targetActor ?? 0);
+  return isTarget ? `${wind}家 (自家)` : `${wind}家`;
 }
 
 function sanitizeSummaryText(text) {
   if (!text) return "";
-  if (!state.hidePlayerId || !state.reviewData?.names) return text;
   let s = String(text);
-  state.reviewData.names.forEach((origName, seat) => {
-    if (origName) {
-      s = s.split(origName).join(`雀氏${seat + 1}`);
-    }
-  });
+  if (state.reviewData?.names) {
+    const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+    state.reviewData.names.forEach((origName, seat) => {
+      if (origName && origName.trim()) {
+        const wind = currentKyoku ? handWind(seat, currentKyoku) : WIND_CN[seat % 4];
+        const isTarget = seat === (state.targetActor ?? 0);
+        const replacement = isTarget ? `${wind}家 (自家)` : `${wind}家`;
+        s = s.split(origName).join(replacement);
+      }
+    });
+  }
   return s;
 }
 
 function toggleHidePlayerId() {
-  state.hidePlayerId = !state.hidePlayerId;
-  localStorage.setItem("majsoul_hide_id", state.hidePlayerId ? "true" : "false");
-  applyHidePlayerId();
+  // Permanent neutral seat identity mode
 }
 
 function applyHidePlayerId() {
-  const btn = $("btnToggleHideId");
-  if (btn) {
-    btn.textContent = state.hidePlayerId ? "显示ID" : "隐藏ID";
-    if (state.hidePlayerId) btn.classList.add("active");
-    else btn.classList.remove("active");
-  }
-  document.body.classList.toggle("hide-player-ids", state.hidePlayerId);
-  renderSeatTabs();
-  const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (kyoku) {
-    const snap = kyoku?.steps?.[state.stepIdx];
-    const targetActor = state.targetActor ?? 0;
-    const isHeroDahai = snap?.event?.type === "dahai" && snap?.event?.actor === targetActor;
-    const isExact = snap?.decision_idx !== null && snap?.decision_idx !== undefined && !isHeroDahai;
-    const dec = isExact ? kyoku?.decisions?.[snap.decision_idx] : null;
-    renderBoard(kyoku, snap, isExact ? dec : null);
-    renderDecisionCard(dec, isExact, snap);
-  }
+  document.body.classList.add("hide-player-ids");
 }
 
 function getTileBackSrc() {
-  return "/tiles/back.svg";
+  return "/tiles/back-navy.svg?v=canglan";
 }
 
 function escapeHtml(s) {
@@ -398,7 +258,7 @@ function updateAnalysisProgress(percent, message) {
   if (textEl && message) textEl.textContent = message;
 }
 
-function setLoading(visible, title = "AI 牌谱智能检讨", sub = "Mortal 神经网络正在检讨每一手决策") {
+function setLoading(visible, title = "AI 牌谱智能检讨", sub = null) {
   const overlay = $("loadingOverlay");
   if (!overlay) return;
   if (visible) {
@@ -407,7 +267,12 @@ function setLoading(visible, title = "AI 牌谱智能检讨", sub = "Mortal 神�
     if (normalState) normalState.classList.remove("hidden");
     if (errorBox) errorBox.classList.add("hidden");
     if ($("loadingTitle")) $("loadingTitle").textContent = title;
-    if ($("loadingSub")) $("loadingSub").textContent = sub || "Mortal 神经网络正在检讨每一手决策";
+
+    let effectiveSub = sub;
+    if (!effectiveSub) {
+      effectiveSub = "Mortal-V4-582500 神经网络正在检讨每一手决策";
+    }
+    if ($("loadingSub")) $("loadingSub").textContent = effectiveSub;
     updateAnalysisProgress(0, "正在连接检讨引擎...");
     overlay.classList.remove("hidden");
   } else {
@@ -429,6 +294,29 @@ function showAnalysisError(errMsg, retryCallback = null) {
   overlay.classList.remove("hidden");
 }
 
+// A remote API token is kept only for this browser tab. It can be supplied
+// as #api_token=... by a private launcher, then removed from the address bar.
+function getApiToken() {
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const token = fragment.get("api_token");
+  const backend = getBackendUrl();
+  const origin = backend ? new URL(backend.startsWith("http") ? backend : `http://${backend}`).origin : window.location.origin;
+  const key = `majsoul_api_token:${origin}`;
+  if (token) {
+    sessionStorage.setItem(key, token);
+    fragment.delete("api_token");
+    const url = new URL(window.location.href);
+    url.hash = fragment.toString();
+    window.history.replaceState(null, "", url.toString());
+  }
+  return sessionStorage.getItem(key) || "";
+}
+
+function apiAuthHeaders() {
+  const token = getApiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchReviewStream(postBody, onProgress) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const resp = await fetch(url, {
@@ -436,6 +324,7 @@ async function fetchReviewStream(postBody, onProgress) {
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      ...apiAuthHeaders(),
     },
     body: JSON.stringify(postBody),
   });
@@ -552,12 +441,13 @@ async function apiFetch(path, options = {}) {
 
   const resp = await fetch(url, {
     mode: "cors",
+    ...options,
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...apiAuthHeaders(),
       ...(options.headers || {}),
     },
-    ...options,
   });
 
   if (!resp.ok) {
@@ -601,21 +491,28 @@ function formatModelDisplayName(rawName) {
   return name;
 }
 
-function updateEngineStatusDisplay(modelId, device) {
-  const targetModel = (modelId || state.selectedModel || "akagi").toLowerCase();
+function updateEngineStatusDisplay(modelId, device, activeEngine, hasWeights) {
   const dev = device || state.serverStatus?.engine?.device || "CPU";
-  let friendlyName = "Mortal-V4-582500";
-  if (targetModel.includes("mortal")) {
-    friendlyName = "Mortal";
-  } else if (targetModel.includes("akagi")) {
+  const eng = state.serverStatus?.engine || {};
+  const actualActive = activeEngine !== undefined ? activeEngine : (eng.active_engine || (eng.has_mortal_weights ? "mortal" : "unavailable"));
+  const weightsAvailable = hasWeights !== undefined ? hasWeights : Boolean(eng.has_mortal_weights);
+
+  const targetModel = (modelId || state.selectedModel || eng.selected_model || "akagi").toLowerCase();
+  let friendlyName = "";
+
+  if (targetModel === "builtin" || actualActive === "builtin" || (!weightsAvailable && targetModel !== "custom")) {
+    friendlyName = "Mortal-V4-582500（不可用）";
+  } else if (targetModel.includes("akagi") || targetModel.includes("582500") || targetModel.includes("v4")) {
     friendlyName = "Mortal-V4-582500";
+  } else if (targetModel.includes("mortal") || targetModel.includes("v3")) {
+    friendlyName = "Mortal (v3)";
   } else {
-    const available = state.serverStatus?.engine?.available_models || [];
+    const available = eng.available_models || [];
     const found = available.find((m) => m.id && m.id.toLowerCase() === targetModel);
     if (found && found.name) {
       friendlyName = formatModelDisplayName(found.name).split("(")[0].trim() || found.name;
     } else {
-      friendlyName = modelId || state.selectedModel || "Mortal-V4-582500";
+      friendlyName = modelId || state.selectedModel || "Mortal";
     }
   }
 
@@ -623,11 +520,17 @@ function updateEngineStatusDisplay(modelId, device) {
   if (btn) {
     btn.textContent = `${friendlyName} · ${dev}`;
   }
+  const landingDev = $("landingModelDevice");
+  if (landingDev) {
+    landingDev.textContent = `${dev} 就绪`;
+  }
 }
 
 function updateTopbarStatus(st) {
   const eng = st.engine || {};
-  updateEngineStatusDisplay(state.selectedModel || eng.selected_model, eng.device);
+  const hasWeights = Boolean(eng.has_mortal_weights);
+  const activeEngine = eng.active_engine || (hasWeights ? "mortal" : "unavailable");
+  updateEngineStatusDisplay(state.selectedModel || eng.selected_model, eng.device, activeEngine, hasWeights);
 
   const sel = $("engineSelect");
   if (sel) {
@@ -646,9 +549,18 @@ function updateTopbarStatus(st) {
 
   const detail = $("engineModalDetail");
   if (detail) {
+    const modelName = formatModelDisplayName(eng.model_name || "Mortal-V4-582500");
+    const weightFile = eng.model_path ? eng.model_path.split(/[\\/]/).pop() : "mortal_582500.pth";
+    const statusNotice = (!hasWeights && (state.selectedModel || eng.selected_model) !== "builtin")
+      ? `<div style="color: #ff9f0a; margin-top: 8px; font-size: 12px; padding: 6px 10px; background: rgba(255,159,10,0.12); border-radius: 6px;">⚠️ 未检测到有效神经网络权重文件，无法分析，不会回退到其他引擎。</div>`
+      : "";
     detail.innerHTML = `
-      <div><b>当前模型：</b>${escapeHtml(formatModelDisplayName(eng.model_name || "Mortal-V4-582500"))}</div>
-      <div><b>计算硬件：</b>${escapeHtml(eng.device || "CPU")}</div>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">当前运行模型：</span><strong style="color:#ffffff;">${escapeHtml(modelName)}</strong></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">当前计算硬件：</span><span style="color:#30d158; font-weight:600;">${escapeHtml(eng.device || "CPU")}</span></div>
+        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">生效权重文件：</span><code style="color:rgba(235,235,245,0.85); font-size:11.5px;">${escapeHtml(weightFile)}</code></div>
+        ${statusNotice}
+      </div>
     `;
   }
 }
@@ -671,6 +583,7 @@ function showTier(tierNum) {
   const t2 = $("tier2Screen");
   if (tierNum === 1) {
     if (state.isPlaying) togglePlay(false);
+    state.selectedModel = "akagi";
     t1.classList.remove("hidden");
     t2.classList.add("hidden");
     const input = $("homePaipuInput");
@@ -682,6 +595,32 @@ function showTier(tierNum) {
     updateEngineStatusDisplay();
     window.scrollTo(0, 0);
   }
+}
+
+const REVIEW_SCHEMA = "mortal-582500-only-v2";
+
+function isTrustedReview(result) {
+  const status = state.serverStatus?.engine;
+  const engine = result?.engine;
+  return Boolean(status?.has_mortal_weights && status.active_engine === "mortal" &&
+    status.weight_sha256 && engine?.type === "mortal" && engine.id === "akagi" &&
+    engine.weight_file === "mortal_582500.pth" && engine.version === 4 &&
+    engine.steps === 582500 && engine.q_source === "neural_network" &&
+    engine.review_schema === REVIEW_SCHEMA && engine.weight_sha256 === status.weight_sha256);
+}
+
+async function requireModelStatus() {
+  await refreshServerStatus();
+  if (!state.serverStatus?.engine?.has_mortal_weights ||
+      state.serverStatus.engine.active_engine !== "mortal" ||
+      !state.serverStatus.engine.weight_sha256 ||
+      state.serverStatus.engine.review_schema !== REVIEW_SCHEMA) {
+    throw new Error("无法验证 mortal_582500.pth，请启动已更新的后端并检查模型状态。");
+  }
+}
+
+function requireTrustedReview(result) {
+  if (!isTrustedReview(result)) throw new Error("分析结果的模型来源无法验证，请重新分析。");
 }
 
 const inFlightRequests = {};
@@ -702,12 +641,6 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
 
       try {
         let res;
-        if (gameId === "demo" || !isBackendOnline()) {
-          try {
-            const resp = await fetch(`/demo_review_${seat}.json`).catch(() => fetch("/demo_review.json"));
-            if (resp && resp.ok) res = await resp.json();
-          } catch (_) {}
-        }
         if (!res) {
           const p = apiFetch("/api/analyze/paipu", {
             method: "POST",
@@ -717,6 +650,7 @@ function preloadOtherPerspectives(gameId, model, currentSeat) {
           res = await p;
         }
         if (res) {
+          requireTrustedReview(res);
           if (!state.perspectiveCache) state.perspectiveCache = {};
           state.perspectiveCache[cacheKey] = res;
           await idbReviewCache.set(`${gameId}_${seat}_${model}`, res);
@@ -745,10 +679,17 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   const paipuId = isJsonInput ? "custom-json" : parsePaipuUuid(trimmedInput);
   state.selectedModel = model;
   updateEngineStatusDisplay(model);
+  try {
+    await requireModelStatus();
+  } catch (err) {
+    setLoading(true);
+    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, model, seat));
+    return;
+  }
 
   // 1. 检查内存缓存
   const cacheKey = seat !== null && seat !== undefined ? `${paipuId}_${model}_${seat}` : null;
-  if (!isJsonInput && cacheKey && state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+  if (!isJsonInput && cacheKey && state.perspectiveCache && isTrustedReview(state.perspectiveCache[cacheKey])) {
     const cachedRes = state.perspectiveCache[cacheKey];
     state.reviewData = cachedRes;
     state.gameId = cachedRes.game_id || paipuId;
@@ -772,7 +713,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   if (!isJsonInput) {
     try {
       const idbCached = await idbReviewCache.findByGame(paipuId, model, seat);
-      if (idbCached) {
+      if (isTrustedReview(idbCached)) {
         state.reviewData = idbCached;
         state.gameId = idbCached.game_id || paipuId;
         state.targetActor = idbCached.target_actor !== undefined ? idbCached.target_actor : (seat ?? 0);
@@ -801,21 +742,11 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     }
   }
 
-  setLoading(true, "正在分析牌谱...", "正在使用深度神经网络检讨每一手决策");
+  const loadingSub = "正在使用 Mortal-V4-582500 神经网络检讨每一手决策";
+  setLoading(true, "正在分析牌谱...", loadingSub);
 
   try {
     let res;
-    if (paipuId === "demo" && !isBackendOnline()) {
-      try {
-        const s = seat !== null && seat !== undefined ? seat : 0;
-        const resp = await fetch(`/demo_review_${s}.json`).catch(() => fetch("/demo_review.json"));
-        if (resp && resp.ok) {
-          res = await resp.json();
-        }
-      } catch (e) {
-        console.warn("Static demo fetch fallback:", e);
-      }
-    }
 
     if (!res) {
       const postBody = isJsonInput
@@ -843,6 +774,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
       }
     }
 
+    requireTrustedReview(res);
     state.reviewData = res;
     state.gameId = res.game_id || paipuId;
     state.targetActor = res.target_actor !== undefined ? res.target_actor : (seat ?? 0);
@@ -867,31 +799,19 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     selectKyoku(0, true);
     showToast(`分析完成：共检讨 ${res.kyokus?.length || 0} 局`, "success");
 
+    if (res.engine) {
+      const isResBuiltin = res.engine.type === "builtin" || res.engine.id === "builtin";
+      updateEngineStatusDisplay(
+        res.engine.id,
+        res.engine.device,
+        isResBuiltin ? "builtin" : "mortal",
+        !isResBuiltin
+      );
+    }
+
     preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
     setLoading(false);
   } catch (err) {
-    if (paipuId === "demo" || !isBackendOnline()) {
-      try {
-        const s = seat !== null && seat !== undefined ? seat : 0;
-        const resp = await fetch(`/demo_review_${s}.json`).catch(() => fetch("/demo_review.json"));
-        if (resp && resp.ok) {
-          const res = await resp.json();
-          state.reviewData = res;
-          state.gameId = res.game_id || "demo";
-          state.targetActor = res.target_actor !== undefined ? res.target_actor : s;
-          state.kyokuIdx = 0;
-          if (!state.perspectiveCache) state.perspectiveCache = {};
-          state.perspectiveCache[`${state.gameId}_${state.selectedModel}_${state.targetActor}`] = res;
-          showTier(2);
-          renderSummaryDashboard();
-          selectKyoku(0, true);
-          showToast(`已载入示例牌谱（共检讨 ${res.kyokus?.length || 0} 局）`, "success");
-          preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
-          setLoading(false);
-          return;
-        }
-      } catch (_) {}
-    }
     showAnalysisError(`分析失败：${err.message}`, () => {
       startAnalysisFromInput(rawInput, model, seat);
     });
@@ -904,9 +824,15 @@ async function switchSeatPerspective(newSeat) {
   if (!paipuId) return;
 
   const cacheKey = `${paipuId}_${state.selectedModel}_${newSeat}`;
+  try {
+    await requireModelStatus();
+  } catch (err) {
+    showToast(`切换视角失败：${err.message}`, "error");
+    return;
+  }
 
   // 1. 若已命中缓存：直接同步切换，0 毫秒瞬间秒切！
-  if (state.perspectiveCache && state.perspectiveCache[cacheKey]) {
+  if (state.perspectiveCache && isTrustedReview(state.perspectiveCache[cacheKey])) {
     const cachedRes = state.perspectiveCache[cacheKey];
     state.reviewData = cachedRes;
     state.targetActor = newSeat;
@@ -921,7 +847,7 @@ async function switchSeatPerspective(newSeat) {
   // 1.5 检查 IndexedDB 本地缓存
   try {
     const idbCached = await idbReviewCache.findByGame(paipuId, state.selectedModel, newSeat);
-    if (idbCached) {
+    if (isTrustedReview(idbCached)) {
       if (!state.perspectiveCache) state.perspectiveCache = {};
       state.perspectiveCache[cacheKey] = idbCached;
       state.reviewData = idbCached;
@@ -936,16 +862,11 @@ async function switchSeatPerspective(newSeat) {
   } catch (_) {}
 
   // 2. 若未命中缓存：仅在首次请求该视角时向后端请求
-  const seatName = state.reviewData?.names?.[newSeat] ?? `${newSeat}`;
+  const seatName = getPlayerDisplayName(newSeat);
   setLoading(true, `切换到「${seatName}」视角...`);
   try {
     let res;
-    if (paipuId === "demo" || !isBackendOnline()) {
-      try {
-        const resp = await fetch(`/demo_review_${newSeat}.json`).catch(() => fetch("/demo_review.json"));
-        if (resp && resp.ok) res = await resp.json();
-      } catch (_) {}
-    }
+
     if (!res) {
       if (inFlightRequests[cacheKey]) {
         res = await inFlightRequests[cacheKey];
@@ -958,6 +879,7 @@ async function switchSeatPerspective(newSeat) {
         res = await p;
       }
     }
+    requireTrustedReview(res);
     if (!state.perspectiveCache) state.perspectiveCache = {};
     state.perspectiveCache[cacheKey] = res;
     await idbReviewCache.set(`${paipuId}_${newSeat}_${state.selectedModel}`, res);
@@ -999,11 +921,9 @@ function renderSummaryDashboard() {
   const pill = $("gameSummaryPill");
   if (pill) {
     pill.innerHTML = `
-      <span class="kd-badge-match">模型一致率: <strong>${fmtPct(sum.match_rate)}</strong></span>
-      <span class="kd-badge-sep">|</span>
-      <span class="kd-badge-blunder">恶手: <strong>${sum.blunders || 0}</strong></span>
-      <span class="kd-badge-sep">|</span>
-      <span class="kd-badge-rating">Rating: <strong>${(sum.rating ?? 0).toFixed(1)}</strong></span>
+      <div class="kd-badge-item">一致率: <strong>${fmtPct(sum.match_rate)}</strong></div>
+      <div class="kd-badge-item">恶手: <strong style="color:#ff453a;">${sum.blunders || 0}</strong></div>
+      <div class="kd-badge-item">Rating: <strong style="color:#ffcc00;">${(sum.rating ?? 0).toFixed(1)}</strong></div>
     `;
   }
 }
@@ -1011,17 +931,19 @@ function renderSummaryDashboard() {
 function renderSeatTabs() {
   const res = state.reviewData;
   if (!res) return;
-  const oya = res.kyokus?.[state.kyokuIdx]?.oya ?? 0;
+  const currentKyoku = res.kyokus?.[state.kyokuIdx];
+  const oya = currentKyoku?.oya ?? 0;
   const seatTabs = $("seatTabs");
   if (!seatTabs) return;
-  const names = res.names || ["雀氏1", "雀氏2", "雀氏3", "雀氏4"];
-  seatTabs.innerHTML = names
-    .map((name, seat) => {
+  const seats = [0, 1, 2, 3];
+  seatTabs.innerHTML = seats
+    .map((seat) => {
       const wind = WIND_CN[(seat - oya + 4) % 4];
-      const active = seat === res.target_actor ? "active" : "";
-      const displayName = getPlayerDisplayName(seat);
-      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${escapeHtml(displayName)}">
-        <span class="kd-seat-wind">${wind}家</span><span class="kd-seat-name">${escapeHtml(displayName)}</span>
+      const isTarget = seat === res.target_actor;
+      const active = isTarget ? "active" : "";
+      const label = isTarget ? `${wind}·自家` : `${wind}家`;
+      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${label}视角">
+        <span class="kd-seat-label">${label}</span>
       </button>`;
     })
     .join("");
@@ -1225,7 +1147,6 @@ function toggleHandsVisibility() {
   if (textEl) {
     textEl.textContent = state.openHands ? "明牌" : "暗牌";
   }
-  // 静默切换，不再弹出任何打扰的 Toast 提示
   if (state.reviewData) {
     setStep(state.stepIdx);
   }
@@ -1237,10 +1158,9 @@ function getStepActionDesc(snap, kyoku) {
   const currentKyoku = kyoku || state.reviewData?.kyokus?.[state.kyokuIdx];
   const getPlayerLabel = (seat) => {
     if (seat === undefined || seat === null) return "";
-    const w = currentKyoku ? handWind(seat, currentKyoku) : "";
+    const w = currentKyoku ? handWind(seat, currentKyoku) : WIND_CN[seat % 4];
     const isHero = seat === state.targetActor;
-    const pName = ` ${getPlayerDisplayName(seat)}`;
-    return `${w}家${isHero ? "(自家)" : pName}`;
+    return `${w}家${isHero ? " (自家)" : ""}`;
   };
 
   const actorLabel = getPlayerLabel(ev.actor);
@@ -1292,12 +1212,22 @@ function setStep(stepIdx) {
   const snap = kyoku.steps[clamped];
 
   // Play tile discard sound when advancing or landing on a discard
-  if (clamped !== prevStep && snap?.event?.type === "dahai") {
-    playTileDiscardSound();
-  }
 
-  if ($("stepSlider")) $("stepSlider").value = clamped;
-  if ($("stepCounterText")) $("stepCounterText").textContent = `${clamped} / ${kyoku.steps.length - 1}`;
+
+  const totalSteps = Math.max(0, kyoku.steps.length - 1);
+  const sliderEl = $("stepSlider");
+  if (sliderEl) {
+    sliderEl.max = totalSteps;
+    sliderEl.value = clamped;
+    const pct = totalSteps > 0 ? ((clamped / totalSteps) * 100).toFixed(1) : 0;
+    sliderEl.style.setProperty("--slider-pct", `${pct}%`);
+  }
+  const curNum = $("stepCurrentNum");
+  const totNum = $("stepTotalNum");
+  if (curNum) curNum.textContent = clamped;
+  if (totNum) totNum.textContent = totalSteps;
+  const counterText = $("stepCounterText");
+  if (counterText && !curNum) counterText.textContent = `${clamped} / ${totalSteps}`;
 
   const targetActor = state.targetActor ?? 0;
   const isHeroDahai = snap?.event?.type === "dahai" && snap?.event?.actor === targetActor;
@@ -1384,14 +1314,15 @@ function renderBoard(kyoku, snap, activeDecision) {
   const p2 = (hero + 2) % 4; // Top
   const p3 = (hero + 3) % 4; // Left
 
+  const roundScores = kyoku.init_scores || kyoku.steps?.[0]?.scores || [25000, 25000, 25000, 25000];
   const giP0 = $("giP0");
-  if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${snap.scores[hero] ?? 25000}</span>`;
+  if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`;
   const giP1 = $("giP1");
-  if (giP1) giP1.innerHTML = `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${snap.scores[p1] ?? 25000}</span>`;
+  if (giP1) giP1.innerHTML = `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${roundScores[p1] ?? 25000}</span>`;
   const giP2 = $("giP2");
-  if (giP2) giP2.innerHTML = `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${snap.scores[p2] ?? 25000}</span>`;
+  if (giP2) giP2.innerHTML = `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${roundScores[p2] ?? 25000}</span>`;
   const giP3 = $("giP3");
-  if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${snap.scores[p3] ?? 25000}</span>`;
+  if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`;
 
   // Rivers
   renderPlayerRiver("Bottom", hero, snap, isRon, targetActor);
@@ -1400,65 +1331,91 @@ function renderBoard(kyoku, snap, activeDecision) {
   renderPlayerRiver("Left", p3, snap, isRon, targetActor);
 
   // Hands
-  renderHeroHand(hero, snap, activeDecision, agariTile, winActor, isRon);
-  renderOpponentHand("Right", p1, snap, agariTile, winActor, isRon);
-  renderOpponentHand("Top", p2, snap, agariTile, winActor, isRon);
-  renderOpponentHand("Left", p3, snap, agariTile, winActor, isRon);
+  const nextSnap = kyoku.steps?.[state.stepIdx + 1] || null;
+  renderHeroHand(hero, snap, activeDecision, agariTile, winActor, isRon, nextSnap);
+  renderOpponentHand("Right", p1, snap, agariTile, winActor, isRon, nextSnap);
+  renderOpponentHand("Top", p2, snap, agariTile, winActor, isRon, nextSnap);
+  renderOpponentHand("Left", p3, snap, agariTile, winActor, isRon, nextSnap);
 }
 
 function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const container = $(`river${pos}`);
   if (!container) return;
   const fullRiver = snap.rivers[seat] || [];
-  const river = fullRiver.filter((r) => !r.called);
+  const river = fullRiver;
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
   const isRonTarget = isRon && seat === targetActor;
 
-  // Avoid rebuilding river DOM if length, last tile, and flags have not changed
-  const lastR = river.length > 0 ? river[river.length - 1] : null;
-  const lastSig = lastR ? `${lastR.pai}_${lastR.tsumogiri ? 1 : 0}_${lastR.riichi ? 1 : 0}_${lastR.called ? 1 : 0}` : "none";
-  const sig = `${river.length}#${lastSig}#${isLastDiscardActor ? 1 : 0}#${isRonTarget ? 1 : 0}`;
+  // Include every tile and its flags: length plus the final tile is not unique
+  // across rounds, seats or rewound replay states.
+  const sig = JSON.stringify([state.gameId, state.kyokuIdx, state.targetActor, seat,
+    river, isLastDiscardActor, isRonTarget]);
   if (container.dataset.riverSig === sig) {
     return;
   }
   container.dataset.riverSig = sig;
 
-  // Exactly 6 tiles per row horizontal, exactly 3 rows vertical
-  const rows = [[], [], []];
-  river.forEach((r, idx) => {
-    const rowIdx = idx < 6 ? 0 : idx < 12 ? 1 : 2;
-    rows[rowIdx].push({ ...r, origIdx: idx });
-  });
+  // Strictly 3 rows max: Row 1 (0..6), Row 2 (6..12), Row 3 (12+)
+  // Overflow discards remain in Row 3 without creating a 4th row!
+  const rowSlices = [
+    river.slice(0, 6),
+    river.slice(6, 12),
+    river.slice(12)
+  ];
 
   let html = "";
-  rows.forEach((rowTiles) => {
-    if (!rowTiles.length) return;
-    let rowHtml = `<div class="river-row">`;
-    rowTiles.forEach((r) => {
-      const isLast = isLastDiscardActor && r.origIdx === river.length - 1;
-      const isRonTile = isRonTarget && r.origIdx === river.length - 1;
+  for (let rowIdx = 0; rowIdx < 3; rowIdx++) {
+    const rowTiles = rowSlices[rowIdx];
+    let rowHtml = `<div class="river-row river-row-${rowIdx + 1}">`;
+    for (let colIdx = 0; colIdx < rowTiles.length; colIdx++) {
+      const r = rowTiles[colIdx];
+      const globalIdx = rowIdx === 0 ? colIdx : (rowIdx === 1 ? 6 + colIdx : 12 + colIdx);
+      const isLast = isLastDiscardActor && globalIdx === river.length - 1;
+      const isRonTile = isRonTarget && globalIdx === river.length - 1;
       const cls = ["tileImg"];
       if (r.tsumogiri) cls.push("tsumogiri");
       if (r.riichi) cls.push("rotate");
-      if (r.called) cls.push("called");
       if (isLast) cls.push("last-discard");
       if (isRonTile) cls.push("ron-claimed");
 
-      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${r.called ? " · 被鸣" : ""}${isRonTile ? " · 放铳 (被荣和)" : ""}）`;
+      let calledDesc = "";
+      if (r.called) {
+        let callerName = "";
+        let callType = "鸣";
+        const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+        if (currentKyoku && currentKyoku.steps) {
+          // Look for who called this tile in the round's events
+          for (let si = 0; si < currentKyoku.steps.length; si++) {
+            const ev = currentKyoku.steps[si]?.event;
+            if (ev && (ev.type === "chi" || ev.type === "pon" || ev.type === "daiminkan")) {
+              if (ev.target === seat && (ev.pai === r.pai || (ev.consumed && ev.consumed.includes(r.pai)))) {
+                const heroSeat = state.targetActor ?? 0;
+                const diff = (ev.actor - heroSeat + 4) % 4;
+                callerName = ["自家", "下家", "对家", "上家"][diff];
+                callType = ev.type === "chi" ? "吃" : (ev.type === "pon" ? "碰" : "大明杠");
+                break;
+              }
+            }
+          }
+        }
+        calledDesc = callerName ? ` · 被${callerName}${callType}` : " · 被鸣";
+      }
+      const tip = `${tileCn(r.pai)}（${r.tsumogiri ? "摸切" : "手切"}${r.riichi ? " · 立直宣言" : ""}${calledDesc}${isRonTile ? " · 放铳 (被荣和)" : ""}）`;
       const divCls = ["tileDiv"];
       if (r.riichi) divCls.push("has-rotate");
       if (isLast) divCls.push("has-last-discard");
+      if (r.called) divCls.push("called");
 
       rowHtml += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
-    });
+    }
     rowHtml += `</div>`;
     html += rowHtml;
-  });
+  }
 
   container.innerHTML = html;
 }
 
-function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor = null, isRon = false) {
+function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor = null, isRon = false, nextSnap = null) {
   const closedWrap = $("handBottomClosed");
   const callsWrap = $("handBottomCalls");
   const svgEl = $("discardBarsSvg");
@@ -1470,30 +1427,52 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   if (drawn) allTiles.push({ pai: drawn, isDrawn: true });
 
   const tileBars = activeDecision?.tile_bars || {};
-  const actualPai = activeDecision?.actual?.pai || null;
+  let actualPai = activeDecision?.actual?.pai || null;
+  const isAnkanDec = activeDecision?.actual?.type === "ankan" || activeDecision?.decision_type === "ankan";
+  const ankanTile = activeDecision?.actual?.consumed?.[0];
 
-  // Only highlight the intended discard in hand during active decision step (before tile is played)
-  let highlightedIdx = -1;
-  if (activeDecision && actualPai) {
-    allTiles.forEach(({ pai }, idx) => {
-      if (actualPai === pai && highlightedIdx === -1) {
-        highlightedIdx = idx;
+  // Highlight intended discard or ankan tiles in hand during draw/decision step or after call
+  const highlightedIdxs = new Set();
+  if (activeDecision) {
+    if (isAnkanDec && ankanTile) {
+      allTiles.forEach(({ pai }, idx) => {
+        if (pai === ankanTile) highlightedIdxs.add(idx);
+      });
+    } else if (actualPai) {
+      allTiles.forEach(({ pai }, idx) => {
+        if (pai === actualPai && highlightedIdxs.size === 0) {
+          highlightedIdxs.add(idx);
+        }
+      });
+    }
+  } else {
+    // If hero is about to discard (on normal draw OR after calling pon/chi)
+    const nextEvent = nextSnap?.event;
+    if (nextEvent?.type === "dahai" && nextEvent?.actor === seat) {
+      if (nextEvent.tsumogiri && drawn) {
+        highlightedIdxs.add(hand.length);
+      } else {
+        for (let i = 0; i < hand.length; i++) {
+          if (hand[i] === nextEvent.pai) {
+            highlightedIdxs.add(i);
+            break;
+          }
+        }
       }
-    });
+    }
   }
 
   // 1. Render Closed Hand Tiles into DOM first
   let handHtml = "";
   hand.forEach((pai, idx) => {
-    const isAct = highlightedIdx === idx;
+    const isAct = highlightedIdxs.has(idx);
     handHtml += `<div class="tileDiv" data-pai="${escapeHtml(pai)}"><img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""}"></div>`;
   });
 
   if (drawn) {
-    const isAct = highlightedIdx === hand.length;
+    const isAct = highlightedIdxs.has(hand.length);
     const isWinTile = seat === winActor;
-    handHtml += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    handHtml += `<div class="tileDiv ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
+    handHtml += `<div class="tileDiv is-drawn ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
   }
 
   closedWrap.innerHTML = handHtml;
@@ -1506,7 +1485,7 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
       if (svgEl.innerHTML !== "") svgEl.innerHTML = "";
     } else {
       let svgHtml = "";
-      const renderedTiles = closedWrap.querySelectorAll(".tileDiv:not(.narrow)");
+      const renderedTiles = closedWrap.querySelectorAll(".tileDiv");
       // Batch DOM measurements together to eliminate layout thrashing
       const svgRect = svgEl.getBoundingClientRect();
       const tileRects = Array.from(renderedTiles).map((t) => t.getBoundingClientRect());
@@ -1527,7 +1506,7 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
             const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
             const height = Math.max(3, Math.round((prob / 100) * 45));
             const y = 50 - height;
-            svgHtml += `<rect x="${Math.round(centerX - 5)}" y="${y}" width="10" height="${height}" fill="#30d158" rx="3"></rect>`;
+            svgHtml += `<rect x="${Math.round(centerX - 4.5)}" y="${y}" width="9" height="${height}" fill="#5ecb7d" rx="2"></rect>`;
           }
         }
       });
@@ -1535,14 +1514,14 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     }
   }
 
-  // 3. Render Calls
+  // 3. Render Calls: Direct tiles, newest on left towards closed hand, earliest on far right
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
-    callsWrap.innerHTML = melds.map((m) => renderMeldHtml(m, seat, "bottom")).join("");
+    callsWrap.innerHTML = renderCallsHtml(melds, seat, 0);
   }
 }
 
-function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, isRon = false) {
+function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, isRon = false, nextSnap = null) {
   const closedWrap = $(`hand${pos}Closed`);
   const callsWrap = $(`hand${pos}Calls`);
   if (!closedWrap) return;
@@ -1554,62 +1533,112 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
   const isWinner = seat === winActor;
   const showTiles = state.openHands || isWinner;
 
-  hand.forEach((pai) => {
+  // Highlight the intended discard tile immediately on draw or after call (before dahai!)
+  // ONLY show red outline when showTiles is TRUE ("暗牌的时候不需要显示红框")
+  let highlightedIdx = -1;
+  if (showTiles) {
+    const nextEvent = nextSnap?.event;
+    if (nextEvent?.type === "dahai" && nextEvent?.actor === seat) {
+      if (nextEvent.tsumogiri && drawn) {
+        highlightedIdx = 999;
+      } else {
+        for (let i = 0; i < hand.length; i++) {
+          if (hand[i] === nextEvent.pai) {
+            highlightedIdx = i;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  hand.forEach((pai, idx) => {
+    const isThisDiscard = idx === highlightedIdx;
     const src = showTiles ? `/tiles/${encodeURIComponent(pai)}.svg` : backSrc;
-    html += `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
+    html += `<div class="tileDiv"><img src="${src}" class="tileImg ${isThisDiscard ? "tileImgHighlight" : ""}"></div>`;
   });
 
   if (drawn) {
+    const isDrawnDiscard = highlightedIdx === 999;
     const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
-    html += `<div class="tileDiv narrow" style="opacity:0;"><img src="/tiles/Blank.svg" class="tileImg"></div>`;
-    html += `<div class="tileDiv ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
+    html += `<div class="tileDiv is-drawn ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""} ${isDrawnDiscard ? "tileImgHighlight" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
   }
 
   closedWrap.innerHTML = html;
 
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
-    callsWrap.innerHTML = melds.map((m) => renderMeldHtml(m, seat, pos.toLowerCase())).join("");
+    const povSeat = pos === "Right" ? 1 : (pos === "Top" ? 2 : 3);
+    callsWrap.innerHTML = renderCallsHtml(melds, seat, povSeat);
   }
 }
 
-function renderMeldHtml(m, ownerSeat, pov = "bottom") {
-  const tiles = [...(m.tiles || [])];
-  if (!tiles.length) return "";
+function renderCallsHtml(melds, seat, povSeat) {
+  if (!melds || !melds.length) return "";
   const backSrc = getTileBackSrc();
 
-  if (m.type === "ankan") {
-    return `<div class="meld-block meld-block-${pov}">${tiles
-      .map((t, i) => {
-        const src = i === 0 || i === tiles.length - 1 ? backSrc : `/tiles/${encodeURIComponent(t)}.svg`;
-        return `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
-      })
-      .join("")}</div>`;
+  // In KillerDucky & Riichi Mahjong, calls are ordered NEWEST first, EARLIEST last!
+  // Earliest call is positioned furthest from the closed hand (outer edge).
+  const orderedMelds = [...melds].reverse();
+  let html = "";
+
+  for (let meldIdx = 0; meldIdx < orderedMelds.length; meldIdx++) {
+    const m = orderedMelds[meldIdx];
+    const type = (m.type || "").toLowerCase();
+    const pai = m.pai;
+    const consumed = [...(m.consumed || m.tiles || [])];
+
+    if (type === "ankan") {
+      // Standard Riichi Mahjong Ankan: [back, tile, tile, back]
+      const cTiles = m.consumed?.length >= 4 ? m.consumed : (m.tiles?.length >= 4 ? m.tiles : [pai, pai, pai, pai]);
+      for (let i = 0; i < 4; i++) {
+        const src = (i === 0 || i === 3) ? backSrc : `/tiles/${encodeURIComponent(cTiles[i] || pai)}.svg`;
+        html += `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
+      }
+      continue;
+    }
+
+    // Relative seat from who discarded:
+    // Kamicha (上家, left): fromIdxRel = 0
+    // Toimen (对家, across): fromIdxRel = 1
+    // Shimocha (下家, right): fromIdxRel = 2
+    let fromIdxRel = 0;
+    if (m.from !== undefined && m.from !== null) {
+      fromIdxRel = (4 + seat - m.from - 1) % 4;
+      if (fromIdxRel > 2) fromIdxRel = 2;
+    }
+
+    const allTiles = [...consumed];
+    allTiles.splice(fromIdxRel, 0, pai);
+    if (type === "kakan") {
+      // Keep the actual added tile (including red five) in the stacked slot.
+      const added = m.added || (m.tiles?.length === 4 ? m.tiles[3] : pai);
+      allTiles.splice(fromIdxRel + 1, 0, added);
+    }
+
+    for (let i = 0; i < allTiles.length; i++) {
+      const tile = allTiles[i];
+      const isDaiminkanOrKakan = (type === "daiminkan" || type === "kakan");
+      const isRotated = (i === fromIdxRel || (i === fromIdxRel + 1 && isDaiminkanOrKakan));
+      const isFloated = (i === fromIdxRel + 1 && isDaiminkanOrKakan);
+
+      const divClasses = ["tileDiv"];
+      if (isRotated) divClasses.push("has-rotate");
+      if (isFloated) divClasses.push("has-float");
+
+      const imgClasses = ["tileImg"];
+      if (isRotated) imgClasses.push("rotate");
+      if (isFloated) imgClasses.push("float");
+
+      html += `<div class="${divClasses.join(" ")}"><img src="/tiles/${encodeURIComponent(tile)}.svg" class="${imgClasses.join(" ")}"></div>`;
+    }
   }
 
-  let sideIdx = -1;
-  let order = tiles;
-  if (m.from !== undefined && m.from !== null) {
-    const called = tiles[0];
-    const rest = tiles.slice(1);
-    const rel = (m.from - ownerSeat + 4) % 4;
-    if (rel === 3) { order = [called, ...rest]; sideIdx = 0; }
-    else if (rel === 2) { order = [rest[0], called, ...rest.slice(1)]; sideIdx = 1; }
-    else { order = [...rest, called]; sideIdx = order.length - 1; }
-  }
-
-  return `<div class="meld-block meld-block-${pov}">${order
-    .map((t, i) => {
-      const isRotated = i === sideIdx;
-      const divCls = ["tileDiv"];
-      if (isRotated) divCls.push("has-rotate");
-      return `<div class="${divCls.join(" ")}"><img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg ${isRotated ? "rotate" : ""}"></div>`;
-    })
-    .join("")}</div>`;
+  return html;
 }
 
 function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
-  const actType = (actionObj?.type || actionObj?.action || actionCn || (pai ? "dahai" : "pass")).toLowerCase();
+  const actType = (actionObj?.type || actionObj?.action?.type || actionCn || (pai ? "dahai" : "pass")).toLowerCase();
 
   if (actType.includes("pass") || actType.includes("none") || actType.includes("跳过") || actType.includes("过") || actType.includes("不鸣")) {
     return `
@@ -1618,24 +1647,79 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
       </div>
     `;
   }
-  if (actType.includes("chi") || actType.includes("吃")) {
+  if (actType === "ankan" || actType.includes("暗杠")) {
+    const consumed = actionObj?.consumed || [];
+    const tile = pai || consumed[0];
+    const tilesList = consumed.length >= 4 ? consumed.slice(0, 4) : (tile ? [tile, tile, tile, tile] : []);
+    const tilesHtml = tilesList.length > 0
+      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="暗杠: ${tileCn(t)}">`).join("")}</div>`
+      : "";
     return `
-      <div class="action-badge action-badge-chi" title="Chi">
-        <span class="action-badge-text">Chi</span>
+      <div class="kd-action-combo-wrap">
+        <div class="action-badge action-badge-kan action-badge-ankan" title="暗杠">
+          <span class="action-badge-text">暗杠</span>
+        </div>
+        ${tilesHtml}
+      </div>
+    `;
+  }
+  if (actType.includes("kakan") || actType.includes("加杠")) {
+    const tile = pai || actionObj?.pai || actionObj?.consumed?.[0];
+    const tileHtml = tile ? `<div class="kd-action-combo-tiles"><img src="/tiles/${encodeURIComponent(tile)}.svg" class="tileImg" title="加杠: ${tileCn(tile)}"></div>` : "";
+    return `
+      <div class="kd-action-combo-wrap">
+        <div class="action-badge action-badge-kan" title="加杠">
+          <span class="action-badge-text">加杠</span>
+        </div>
+        ${tileHtml}
+      </div>
+    `;
+  }
+  if (actType.includes("daiminkan") || actType.includes("大明杠") || actType === "kan" || actType.includes("杠")) {
+    const consumed = actionObj?.consumed || [];
+    const tile = pai || actionObj?.pai || consumed[0];
+    const tilesList = consumed.length >= 3 ? consumed : (tile ? [tile, tile, tile] : []);
+    const tilesHtml = tilesList.length > 0
+      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="明杠: ${tileCn(t)}">`).join("")}</div>`
+      : "";
+    return `
+      <div class="kd-action-combo-wrap">
+        <div class="action-badge action-badge-kan" title="明杠">
+          <span class="action-badge-text">明杠</span>
+        </div>
+        ${tilesHtml}
+      </div>
+    `;
+  }
+  if (actType.includes("chi") || actType.includes("吃")) {
+    const consumed = actionObj?.consumed || [];
+    const comboTiles = consumed.length > 0 ? [...consumed] : (pai ? [pai] : []);
+    if (pai && !comboTiles.includes(pai)) comboTiles.push(pai);
+    comboTiles.sort((a, b) => tileSortOrder(a) - tileSortOrder(b));
+    const tilesHtml = comboTiles.length > 0
+      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="吃: ${tileCn(t)}">`).join("")}</div>`
+      : "";
+    return `
+      <div class="kd-action-combo-wrap">
+        <div class="action-badge action-badge-chi" title="Chi">
+          <span class="action-badge-text">Chi</span>
+        </div>
+        ${tilesHtml}
       </div>
     `;
   }
   if (actType.includes("pon") || actType.includes("碰")) {
+    const tile = pai || actionObj?.pai || actionObj?.consumed?.[0];
+    const comboTiles = actionObj?.consumed?.length ? actionObj.consumed : (tile ? [tile, tile] : []);
+    const tilesHtml = comboTiles.length > 0
+      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="碰: ${tileCn(t)}">`).join("")}</div>`
+      : "";
     return `
-      <div class="action-badge action-badge-pon" title="Pon">
-        <span class="action-badge-text">Pon</span>
-      </div>
-    `;
-  }
-  if (actType.includes("kan") || actType.includes("杠")) {
-    return `
-      <div class="action-badge action-badge-kan" title="Kan">
-        <span class="action-badge-text">Kan</span>
+      <div class="kd-action-combo-wrap">
+        <div class="action-badge action-badge-pon" title="Pon">
+          <span class="action-badge-text">Pon</span>
+        </div>
+        ${tilesHtml}
       </div>
     `;
   }
@@ -1740,139 +1824,76 @@ const MAJSOUL_TITLES = {
   9: "五倍役满",
 };
 
-function renderDecisionCard(dec, isExactStep, snap) {
-  const card = $("decisionCard");
-  if (!card) return;
+function getKillerActionSpan(item) {
+  if (!item) return "";
+  const act = item.action || item;
+  if (!act || !act.type) return "";
 
-  const headerEl = card.querySelector(".kd-dec-header");
-  const turnEl = $("decTurnText");
-  const badgeEl = $("decVerdictBadge");
-  const compWrap = $("decComparisonWrap");
-  const settWrap = $("decSettlementWrap");
-  const candTitle = $("decCandTitle");
-  const candTable = $("decCandTable");
-  const candTableHead = $("decCandTableHead");
+  const typeMap = {
+    dahai: "切",
+    chi: "吃",
+    pon: "碰",
+    daiminkan: "杠",
+    kakan: "杠",
+    ankan: "暗杠",
+    reach: "立直",
+    hora: act.actor !== act.target && act.target !== undefined && act.target !== null ? "荣和" : "自摸",
+    ron: "荣和",
+    tsumo: "自摸",
+    none: "跳过",
+    pass: "跳过"
+  };
+  const label = typeMap[act.type] !== undefined ? typeMap[act.type] : (act.type || "");
 
-  const aiTileWrap = $("decAiTileWrap");
-  const aiTileName = $("decAiTileName");
-  const aiProbBadge = $("decAiProbBadge");
-  const aiShantenBadge = $("decAiShantenBadge");
-  const aiUkeireBadge = $("decAiUkeireBadge");
+  let pai = (act.type && act.type.endsWith("kan")) ? (act.consumed?.[0] || act.pai) : act.pai;
+  let tilesHtml = "";
+  if (pai) {
+    let tiles = [pai];
+    if (act.consumed && !act.type.endsWith("kan")) {
+      tiles = act.consumed;
+    }
+    const tilesImgHtml = tiles.map((t) => {
+      return `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" alt="${escapeHtml(t)}">`;
+    }).join("");
+    tilesHtml = `<span class="killer-act-tiles">${tilesImgHtml}</span>`;
+  }
+  const labelHtml = label ? `<span class="killer-act-label">${escapeHtml(label)}</span>` : "";
+  return `<span class="killer-act-wrap">${labelHtml}${tilesHtml}</span>`;
+}
 
-  const actualTileWrap = $("decActualTileWrap");
-  const actualTileName = $("decActualTileName");
-  const actualProbBadge = $("decActualProbBadge");
-  const actualVerdictText = $("decActualVerdictText");
-  const actualBlock = card.querySelector(".kd-choice-actual");
-  const actualLabel = card.querySelector(".kd-choice-actual .kd-choice-badge-label");
-  const aiLabel = card.querySelector(".kd-choice-ai .kd-choice-badge-label");
-
-  const tableBody = $("decCandTableBody");
-
+function renderThisRoundModalContent(snap, currentKyoku) {
+  const contentEl = $("infoThisRoundContent");
+  if (!contentEl) return;
   const targetActor = state.targetActor ?? 0;
-  const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  const wind = currentKyoku ? handWind(targetActor, currentKyoku) : "";
-  const names = [0, 1, 2, 3].map((s) => getPlayerDisplayName(s));
   const isHora = snap?.event?.type === "hora";
   const isRyuukyoku = snap?.event?.type === "ryuukyoku" || snap?.event?.type === "ryukyoku";
 
-  const setTileWrapContent = (wrap, html) => {
-    if (!wrap) return;
-    wrap.innerHTML = html;
-    wrap.classList.toggle("has-action-badge", html.includes("action-badge"));
-    wrap.classList.toggle("has-rotate", html.includes("rotate"));
-  };
-
-  // CASE 1: Round End (Hora / 自摸/荣和结算) - Clean Standalone Round Settlement Card
+  let html = "";
   if (isHora) {
-    card.classList.remove("is-idle");
-    if (headerEl) headerEl.style.display = "flex";
     const winActor = snap.event.actor;
     const tgtActor = snap.event.target;
     const isRon = winActor !== tgtActor && tgtActor !== undefined && tgtActor !== null;
     const isHeroWin = winActor === targetActor;
     const isHeroLoser = isRon && tgtActor === targetActor;
 
-    const winName = names[winActor] || `玩家 ${winActor + 1}`;
-    const winWind = currentKyoku ? handWind(winActor, currentKyoku) : "";
-    const tgtName = isRon ? (names[tgtActor] || `玩家 ${tgtActor + 1}`) : "";
-    const tgtWind = isRon && currentKyoku ? handWind(tgtActor, currentKyoku) : "";
+    const relativeSeatName = (seat) => {
+      const diff = (seat - targetActor + 4) % 4;
+      return ["自家", "下家", "对家", "上家"][diff];
+    };
 
-    const scoreDelta = snap.event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
-    const rawSummaryText = currentKyoku?.end_summaries?.length
-      ? currentKyoku.end_summaries.join("<br>")
-      : (isRon ? `${winWind}家 ${escapeHtml(winName)} 荣和 ${tgtWind}家 ${escapeHtml(tgtName)} +${scoreDelta}` : `${winWind}家 ${escapeHtml(winName)} 自摸 +${scoreDelta}`);
-    const summaryText = sanitizeSummaryText(rawSummaryText);
+    const winLabel = relativeSeatName(winActor);
+    const tgtLabel = isRon ? relativeSeatName(tgtActor) : "";
 
-    if (turnEl) turnEl.textContent = "";
+    // 1. Header: Winner and Action
+    const winTitle = isRon ? `${winLabel} 荣和 ${tgtLabel}` : `${winLabel} 自摸`;
+    const winTitleColor = isHeroWin ? "#30d158" : isHeroLoser ? "#ff453a" : "#ffffff";
+    html += `<div class="kd-settle-header" style="text-align:center; margin-bottom:12px; padding-top:4px;">
+      <div style="font-size:16px; font-weight:700; color:${winTitleColor}; margin-bottom:4px; letter-spacing:0.3px;">${winTitle}</div>`;
 
-    // 1. Title badge: [自家自摸] / [自家荣和] / [自家放铳] / [X家自摸] / [X家荣和]
-    if (badgeEl) {
-      if (isHeroWin) {
-        badgeEl.textContent = isRon ? "自家荣和" : "自家自摸";
-        badgeEl.className = "kd-dec-verdict best round-end";
-      } else if (isHeroLoser) {
-        badgeEl.textContent = "自家放铳";
-        badgeEl.className = "kd-dec-verdict blunder round-end";
-      } else {
-        badgeEl.textContent = `${winWind}家${isRon ? "荣和" : "自摸"}`;
-        badgeEl.className = "kd-dec-verdict agari round-end";
-      }
-    }
-
-    // 2. Hide active decision comparison blocks completely (Duelling 'Player vs AI' eliminated on round settlement)
-    if (compWrap) compWrap.style.display = "none";
-    setTileWrapContent(actualTileWrap, "");
-    setTileWrapContent(aiTileWrap, "");
-    if (actualTileName) actualTileName.textContent = "";
-    if (aiTileName) aiTileName.textContent = "";
-
-    // 3. Identify Winning Agari Tile
-    let agariTile = null;
-    if (isRon && tgtActor !== null && tgtActor !== undefined) {
-      const river = snap.rivers?.[tgtActor] || [];
-      if (river.length > 0) agariTile = river[river.length - 1].pai;
-      if (!agariTile && currentKyoku?.steps?.[state.stepIdx - 1]?.event?.pai) {
-        agariTile = currentKyoku.steps[state.stepIdx - 1].event.pai;
-      }
-    } else if (winActor !== null && winActor !== undefined) {
-      agariTile = snap.drawn?.[winActor];
-      if (!agariTile && currentKyoku?.steps?.[state.stepIdx - 1]?.event?.pai) {
-        agariTile = currentKyoku.steps[state.stepIdx - 1].event.pai;
-      }
-    }
-
-    // Ura Dora Information
-    const uras = snap.event.ura_markers || [];
-    const uraHtml = uras.length
-      ? `<div class="kd-settlement-uradora-badge">
-           <span class="kd-settlement-uradora-label">里宝牌</span>
-           <div class="kd-settlement-uradora-tiles">
-             ${uras.map((u) => `<img src="/tiles/${encodeURIComponent(u)}.svg" class="kd-settlement-uradora-tile" title="里宝牌: ${tileCn(u)}" alt="${tileCn(u)}">`).join("")}
-           </div>
-         </div>`
-      : `<div class="kd-settlement-uradora-badge"><span class="kd-settlement-uradora-label">里宝牌: 无</span></div>`;
-
-    // 4. Render Single Prominent Settlement Banner & 4-Seat Delta Grid directly inside decSettlementWrap
-    const roundHonba = snap.honba ?? currentKyoku?.honba ?? 0;
-    const honbaPts = roundHonba * 300;
-    const roundKyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
-    const kyotakuPts = roundKyotaku * 1000;
-    const dadian = snap.event?.dadian || (scoreDelta > 0 ? (scoreDelta - honbaPts - kyotakuPts) : null);
-
-    // Extract Han & Fu and Title
+    // 2. Score, Han/Fu, and Title Tag
     let han = snap.event?.han ?? snap.event?.count ?? null;
     let fu = snap.event?.fu ?? null;
     let titleId = snap.event?.title_id ?? 0;
-
-    if (han === null && rawSummaryText) {
-      const m = rawSummaryText.match(/(\d+)符\s*(\d+)番/);
-      if (m) {
-        fu = parseInt(m[1], 10);
-        han = parseInt(m[2], 10);
-      }
-    }
-
     let titleName = MAJSOUL_TITLES[titleId] || null;
     if (!titleName && han !== null) {
       if (han >= 13) titleName = "役满";
@@ -1882,629 +1903,191 @@ function renderDecisionCard(dec, isExactStep, snap) {
       else if (han === 5 || (han === 4 && fu >= 40) || (han === 3 && fu >= 70)) titleName = "满贯";
     }
 
-    let titleCls = "";
-    if (titleName === "满贯") titleCls = "mangan";
-    else if (titleName === "跳满") titleCls = "haneman";
-    else if (titleName && (titleName.includes("倍满") || titleName.includes("役满"))) titleCls = "yakuman";
+    const scoreDelta = snap.event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
+    const fuHanText = [fu ? `${fu} 符` : "", han ? `${han} 番` : ""].filter(Boolean).join(" ");
+    const scoreText = scoreDelta > 0 ? `${scoreDelta} 点` : "";
 
-    const hanFuPillHtml = (han !== null && han !== undefined)
-      ? `<div class="kd-settlement-hanfu-row">
-           <span class="kd-settlement-hanfu-pill">${fu ? `${fu} 符 ` : ""}${han} 番</span>
-           ${dadian && dadian > 0 ? `<span class="kd-settlement-dadian-pill">手牌 ${dadian} 点</span>` : ""}
-           ${titleName ? `<span class="kd-settlement-title-pill ${titleCls}">${titleName}</span>` : ""}
-         </div>`
-      : "";
+    html += `<div style="font-size:14px; font-weight:600; color:#ffcc00; display:flex; align-items:center; justify-content:center; gap:8px;">
+      ${titleName ? `<span class="kd-settle-tag" style="background:rgba(255,204,0,0.18); border:1px solid rgba(255,204,0,0.35); padding:1px 6px; border-radius:4px; font-size:12px; color:#ffcc00; font-weight:700;">${titleName}</span>` : ""}
+      <span>${fuHanText}${fuHanText && scoreText ? " · " : ""}${scoreText}</span>
+    </div></div>`;
 
-    // Subtitle under total score
-    let scoreSubParts = [];
-    if (kyotakuPts > 0) scoreSubParts.push(`场供 +${kyotakuPts}`);
-    if (honbaPts > 0) scoreSubParts.push(`本场 +${honbaPts}`);
-    const scoreSubText = scoreSubParts.length > 0 ? `(含${scoreSubParts.join(" / ")})` : "";
-
-    // Yaku Breakdown Chips
+    // 3. Yaku List Breakdown
     const rawFans = snap.event?.fans || [];
-    const validFans = rawFans
-      .filter((f) => (f.val || 0) > 0)
-      .map((f) => {
+    const validFans = rawFans.filter((f) => (f.val || 0) > 0);
+    if (validFans.length > 0) {
+      html += `<div class="kd-settle-yaku-list" style="margin:10px 0 12px; border-top:1px solid rgba(255,255,255,0.08); border-bottom:1px solid rgba(255,255,255,0.08); padding:6px 2px;">`;
+      for (const f of validFans) {
         const name = f.name || MAJSOUL_YAKU_NAMES[f.id] || `役种 ${f.id}`;
-        const isDora = f.id === 31 || f.id === 32 || f.id === 33 || name.includes("宝牌");
-        return { name, val: f.val, isDora };
-      });
-
-    const yakuChipsHtml = validFans.length > 0
-      ? `<div class="kd-settlement-yaku-grid">
-           ${validFans.map((f) => `
-             <span class="kd-settlement-yaku-chip ${f.isDora ? 'dora' : ''}">
-               <span class="kd-yaku-name">${escapeHtml(f.name)}</span>
-               <span class="kd-yaku-val">${f.val}番</span>
-             </span>
-           `).join("")}
-         </div>`
-      : (summaryText ? `<div class="kd-settlement-yaku-text">${summaryText}</div>` : "");
-
-    if (settWrap) {
-      settWrap.style.display = "flex";
-      const bannerClass = isHeroWin ? "is-hero-win" : isHeroLoser ? "is-hero-blunder" : "";
-      settWrap.innerHTML = `
-        <div class="kd-settlement-banner ${bannerClass}">
-          <div class="kd-settlement-banner-top">
-            ${agariTile ? `
-              <div class="kd-settlement-agari-tile-wrap" title="和了牌: ${tileCn(agariTile)}">
-                <img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile" alt="${tileCn(agariTile)}">
-              </div>
-            ` : `
-              <div class="kd-settlement-agari-tile-wrap" style="background:transparent; border:none; box-shadow:none;">
-                <span class="action-badge-text" style="color:#30d158;">${isRon ? "Ron" : "自摸"}</span>
-              </div>
-            `}
-            <div class="kd-settlement-banner-info">
-              <div class="kd-settlement-winner-title">
-                <span class="kd-settlement-seat-wind">${winWind}家</span>
-                <span class="kd-settlement-player-highlight winner">${escapeHtml(winName)}</span>
-                <span class="kd-settlement-win-badge ${isRon ? 'ron' : 'tsumo'}">${isRon ? "荣和" : "自摸"}</span>
-              </div>
-              ${hanFuPillHtml}
-            </div>
-            <div class="kd-settlement-score-tag ${scoreDelta < 0 ? 'neg' : ''}">
-              <span class="kd-settlement-score-num">${scoreDelta > 0 ? `+${scoreDelta}` : scoreDelta} 点</span>
-              ${scoreSubText ? `<span class="kd-settlement-score-sub">${scoreSubText}</span>` : ""}
-            </div>
-          </div>
-
-          <div class="kd-settlement-details-box">
-            ${isRon ? `
-              <div class="kd-settlement-loser-line">
-                <span class="kd-settlement-loser-action">放铳:</span>
-                <span class="kd-settlement-seat-wind">${tgtWind}家</span>
-                <span class="kd-settlement-player-highlight loser">${escapeHtml(tgtName)}</span>
-                <span class="kd-settlement-loser-points">(-${Math.abs(snap.event.deltas?.[tgtActor] || 0)}点${honbaPts > 0 ? `，含本场+${honbaPts}` : ""})</span>
-              </div>
-            ` : `
-              <div class="kd-settlement-tsumo-action">
-                自摸和了 ${roundHonba > 0 ? `<span class="kd-settlement-tsumo-honba-note">(含各家本场+${roundHonba * 100}点)</span>` : ""}
-              </div>
-            `}
-            ${uraHtml}
-            ${yakuChipsHtml}
-          </div>
-
-          ${roundHonba > 0 ? `
-            <div class="kd-settlement-bonus-strip honba">
-              <div class="kd-bonus-pill">
-                <span class="honba-stick-mini"></span>
-                <span class="kd-bonus-tag">本场加成</span>
-              </div>
-              <div class="kd-bonus-pts">+${honbaPts} 点</div>
-              <div class="kd-bonus-desc">${roundHonba} 本场 (${isRon ? `放铳全付` : `各家付 +${roundHonba * 100}`})</div>
-            </div>
-          ` : ""}
-
-          ${roundKyotaku > 0 ? `
-            <div class="kd-settlement-bonus-strip kyotaku">
-              <div class="kd-bonus-pill">
-                <span class="riichi-stick-mini"></span>
-                <span class="kd-bonus-tag">场供收入</span>
-              </div>
-              <div class="kd-bonus-pts">+${kyotakuPts} 点</div>
-              <div class="kd-bonus-desc">含 ${roundKyotaku} 根立直供托棒</div>
-            </div>
-          ` : ""}
-        </div>
-
-        <div class="kd-settlement-delta-grid">
-          ${[0, 1, 2, 3].map((seat) => {
-            const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
-            const deltaClass = delta > 0 ? "pos" : delta < 0 ? "neg" : "zero";
-            const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
-            const isWin = seat === winActor;
-            const isLos = isRon && seat === tgtActor;
-            const cellClass = isWin ? "winner" : isLos ? "loser" : "";
-            const pName = names[seat] || `P${seat + 1}`;
-            const pWind = currentKyoku ? handWind(seat, currentKyoku) : "";
-            return `
-              <div class="kd-settlement-delta-cell ${cellClass}">
-                <div class="kd-settlement-player-name">${escapeHtml(pName)}</div>
-                <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
-              </div>
-            `;
-          }).join("")}
-        </div>
-      `;
+        html += `<div style="display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:rgba(255,255,255,0.85); padding:2.5px 4px;">
+          <span>${escapeHtml(name)}</span>
+          <span style="font-family:monospace; color:#ffd60a; font-weight:600;">${f.val} 番</span>
+        </div>`;
+      }
+      html += `</div>`;
     }
 
-    // 5. Hide Candidates Table completely on Round End
-    if (candTitle) candTitle.style.display = "none";
-    if (candTable) candTable.style.display = "none";
-    if (tableBody) tableBody.innerHTML = "";
-    return;
-  }
-
-  // CASE 2: Round End (Ryuukyoku / 流局结算)
-  if (isRyuukyoku) {
-    card.classList.remove("is-idle");
-    if (headerEl) headerEl.style.display = "flex";
-    if (turnEl) turnEl.textContent = "";
-    if (badgeEl) {
-      badgeEl.textContent = "荒牌流局";
-      badgeEl.className = "kd-dec-verdict cruise round-end";
+    // 4. 4-Seat Delta Table
+    html += `<table class="kd-settle-delta-table" style="width:100%; border-collapse:collapse; margin-top:6px; font-size:13px;">
+      <tbody>`;
+    for (let diff = 0; diff < 4; diff++) {
+      const seat = (targetActor + diff) % 4;
+      const seatLabel = ["自家", "下家", "对家", "上家"][diff];
+      const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
+      let deltaStr = String(delta);
+      let deltaColor = "rgba(255,255,255,0.7)";
+      if (delta > 0) {
+        deltaStr = `+${delta}`;
+        deltaColor = "#30d158";
+      } else if (delta < 0) {
+        deltaColor = "#ff453a";
+      }
+      const isTarget = diff === 0;
+      const rowBg = isTarget ? "background:rgba(10,132,255,0.12); border-radius:4px;" : "";
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06); ${rowBg}">
+        <td style="padding:5px 8px; font-weight:${isTarget ? "700" : "500"}; color:${isTarget ? "#ffffff" : "rgba(255,255,255,0.8)"};">${seatLabel}</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; font-weight:700; color:${deltaColor};">${deltaStr}</td>
+      </tr>`;
     }
+    const honbaCount = snap.honba ?? currentKyoku?.honba ?? 0;
+    if (honbaCount > 0) {
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">本场供 (${honbaCount}本场)</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:#ffd60a; font-weight:700;">${honbaCount * 300}</td>
+      </tr>`;
+    }
+    const kyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
+    if (kyotaku > 0) {
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">立直场供 (${kyotaku}根)</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:rgba(255,255,255,0.65);">${kyotaku * 1000}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  } else if (isRyuukyoku) {
+    html += `<div class="kd-settle-header" style="text-align:center; margin-bottom:12px; padding-top:4px;">
+      <div style="font-size:16px; font-weight:700; color:#ff9f0a; margin-bottom:4px; letter-spacing:0.3px;">荒牌流局</div>`;
 
-    if (compWrap) compWrap.style.display = "none";
-    setTileWrapContent(actualTileWrap, "");
-    setTileWrapContent(aiTileWrap, "");
-    if (actualTileName) actualTileName.textContent = "";
-    if (aiTileName) aiTileName.textContent = "";
-
-    const roundKyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
-
-    // Calculate pure round-end tenpai fee (+3000 / -1000 etc.)
-    // Note: Do NOT subtract the 1000 riichi stick deposit here. Per Majsoul rule and user request:
-    // Display pure tenpai fee directly (+3000, not +2000), without "(立直-1k)".
     const pureDeltas = [0, 1, 2, 3].map((seat) => {
       let d = snap?.event?.deltas?.[seat];
       if (d === undefined || d === null) {
         d = currentKyoku?.score_deltas?.[seat] ?? 0;
-        // If cumulative score_deltas had deducted the 1000 riichi stick, restore pure tenpai fee
-        if (snap?.riichi?.[seat]) {
-          d += 1000;
-        }
+        if (snap?.riichi?.[seat]) d += 1000;
       }
       return d;
     });
-
     const tenpaiSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] > 0);
-    const notenSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] < 0);
+    const summary = tenpaiSeats.length > 0 ? "罚符结算" : "全员不听";
+    html += `<div style="font-size:13px; color:rgba(255,255,255,0.7);">${summary}</div></div>`;
 
-    let tenpaiSummary = "荒牌流局 · 罚符结算";
-    if (tenpaiSeats.length === 1) {
-      tenpaiSummary = "1人听牌 · 罚符收付 (+3000 / -1000)";
-    } else if (tenpaiSeats.length === 2) {
-      tenpaiSummary = "2人听牌 · 罚符收付 (+1500 / -1500)";
-    } else if (tenpaiSeats.length === 3) {
-      tenpaiSummary = "3人听牌 · 罚符收付 (+1000 / -3000)";
-    } else if (tenpaiSeats.length === 4) {
-      tenpaiSummary = "全员听牌 · 无罚符收支 (0点)";
-    } else if (tenpaiSeats.length === 0) {
-      tenpaiSummary = "全员不听 · 无罚符收支 (0点)";
+    html += `<table class="kd-settle-delta-table" style="width:100%; border-collapse:collapse; margin-top:6px; font-size:13px;">
+      <tbody>`;
+    for (let diff = 0; diff < 4; diff++) {
+      const seat = (targetActor + diff) % 4;
+      const seatLabel = ["自家", "下家", "对家", "上家"][diff];
+      const delta = pureDeltas[seat] ?? 0;
+      let deltaStr = String(delta);
+      let deltaColor = "rgba(255,255,255,0.7)";
+      if (delta > 0) {
+        deltaStr = `+${delta}`;
+        deltaColor = "#30d158";
+      } else if (delta < 0) {
+        deltaColor = "#ff453a";
+      }
+      const isTarget = diff === 0;
+      const rowBg = isTarget ? "background:rgba(10,132,255,0.12); border-radius:4px;" : "";
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06); ${rowBg}">
+        <td style="padding:5px 8px; font-weight:${isTarget ? "700" : "500"}; color:${isTarget ? "#ffffff" : "rgba(255,255,255,0.8)"};">${seatLabel}</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; font-weight:700; color:${deltaColor};">${deltaStr}</td>
+      </tr>`;
     }
-
-    if (settWrap) {
-      settWrap.style.display = "flex";
-      settWrap.innerHTML = `
-        <div class="kd-settlement-banner is-ryuukyoku">
-          <div class="kd-settlement-banner-top">
-            <div class="kd-settlement-ryuukyoku-icon">🀄</div>
-            <div class="kd-settlement-banner-info">
-              <div class="kd-settlement-winner-title">
-                <span>荒牌流局</span>
-                <span class="kd-settlement-ryuukyoku-subtag">${tenpaiSummary}</span>
-              </div>
-              <div class="kd-settlement-meta-row" style="color:rgba(235,235,245,0.7); font-size:12px; margin-top:2px;">
-                ${tenpaiSeats.length > 0 ? `听牌玩家：<strong style="color:#ffffff;">${tenpaiSeats.map((s) => escapeHtml(names[s])).join("、")}</strong>` : "无玩家听牌 (全员不听)"}
-              </div>
-            </div>
-          </div>
-          ${roundKyotaku > 0 ? `
-            <div class="kd-settlement-kyotaku-strip">
-              <div class="kd-kyotaku-pill">
-                <span class="riichi-stick-mini"></span>
-                <span class="kd-kyotaku-tag">场供留存</span>
-              </div>
-              <div class="kd-kyotaku-pts">${roundKyotaku * 1000} 点</div>
-              <div class="kd-kyotaku-desc">结转至下局</div>
-            </div>
-          ` : ""}
-        </div>
-        <div class="kd-settlement-delta-grid">
-          ${[0, 1, 2, 3].map((seat) => {
-            const delta = pureDeltas[seat];
-            const isTenpai = delta > 0;
-            const isNoten = delta < 0;
-            const deltaClass = isTenpai ? "pos" : isNoten ? "neg" : "zero";
-            const deltaFormatted = delta > 0 ? `+${delta}` : `${delta}`;
-            const pName = names[seat] || `P${seat + 1}`;
-            const cellClass = isTenpai ? "winner" : isNoten ? "loser" : "";
-            const statusBadge = isTenpai
-              ? `<span class="kd-ryuukyoku-status-tag tenpai">听牌</span>`
-              : (isNoten ? `<span class="kd-ryuukyoku-status-tag noten">不听</span>` : `<span class="kd-ryuukyoku-status-tag neutral">${tenpaiSeats.length === 4 ? "听牌" : "不听"}</span>`);
-            return `
-              <div class="kd-settlement-delta-cell ${cellClass}">
-                <div class="kd-settlement-player-name">
-                  ${escapeHtml(pName)}
-                  ${statusBadge}
-                </div>
-                <div class="kd-settlement-score-diff ${deltaClass}">${deltaFormatted}</div>
-              </div>
-            `;
-          }).join("")}
-        </div>
-      `;
+    const honbaCount = snap.honba ?? currentKyoku?.honba ?? 0;
+    if (honbaCount > 0) {
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">本场供 (${honbaCount}本场)</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:#ffd60a; font-weight:700;">${honbaCount * 300}</td>
+      </tr>`;
     }
+    const kyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
+    if (kyotaku > 0) {
+      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">立直场供 (${kyotaku}根)</td>
+        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:rgba(255,255,255,0.65);">${kyotaku * 1000}</td>
+      </tr>`;
+    }
+    html += `</tbody></table>`;
+  }
 
-    // Hide Candidates Table completely on Round End
-    if (candTitle) candTitle.style.display = "none";
-    if (candTable) candTable.style.display = "none";
+  contentEl.innerHTML = html;
+  const modal = $("infoThisRoundModal");
+  if (modal && !modal.open) {
+    modal.dataset.openedAt = String(Date.now());
+    if (typeof modal.showModal === "function") {
+      modal.showModal();
+    } else {
+      modal.setAttribute("open", "");
+    }
+  }
+}
+
+function renderDecisionCard(dec, isExactStep, snap) {
+  const optInfo = $("optInfo");
+  const actualCell = $("optActualCell");
+  const aiCell = $("optAiCell");
+  const tableBody = $("candTableBody");
+  const roundModal = $("infoThisRoundModal");
+
+  const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+  const isHora = snap?.event?.type === "hora";
+  const isRyuukyoku = snap?.event?.type === "ryuukyoku" || snap?.event?.type === "ryukyoku";
+
+  // Case 1: Round End (Hora or Ryuukyoku)
+  if (isHora || isRyuukyoku) {
+
+    if (actualCell) actualCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
+    if (aiCell) aiCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
     if (tableBody) tableBody.innerHTML = "";
+    renderThisRoundModalContent(snap, currentKyoku);
     return;
   }
 
-  card.classList.remove("is-idle");
+  // If not round end, close the round settlement modal if open
+  if (roundModal && roundModal.open) {
+    if (typeof roundModal.close === "function") roundModal.close();
+    else roundModal.removeAttribute("open");
+  }
 
-  // Restore decision comparison blocks & candidates section for normal steps
-  if (compWrap) compWrap.style.display = "flex";
-  if (settWrap) settWrap.style.display = "none";
-  if (candTitle) candTitle.style.display = "none";
-  if (candTable) candTable.style.display = "";
-  if (candTableHead) candTableHead.style.display = "";
-  if (actualLabel) actualLabel.textContent = "玩家";
-  if (aiLabel) aiLabel.textContent = "模型";
+  // Case 2: Non-decision step -> Keep table structure but do NOT show tiles
+  if (optInfo) optInfo.style.display = "flex";
 
-  // Non-decision steps: strictly keep right decision card empty per user requirement
   if (!dec || !isExactStep) {
-    card.classList.add("is-idle");
-    if (headerEl) headerEl.style.display = "none";
-    if (turnEl) turnEl.textContent = "";
-    if (badgeEl) {
-      badgeEl.textContent = "";
-      badgeEl.className = "kd-dec-verdict is-empty";
-    }
-    if (compWrap) compWrap.style.display = "none";
-    if (settWrap) settWrap.style.display = "none";
-    if (candTitle) candTitle.style.display = "none";
-    if (candTable) candTable.style.display = "none";
-    if (candTableHead) candTableHead.style.display = "none";
+    if (actualCell) actualCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
+    if (aiCell) aiCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
     if (tableBody) tableBody.innerHTML = "";
-    setTileWrapContent(actualTileWrap, "");
-    setTileWrapContent(aiTileWrap, "");
-    if (actualTileName) actualTileName.textContent = "";
-    if (aiTileName) aiTileName.textContent = "";
-    if (actualProbBadge) actualProbBadge.textContent = "";
-    if (aiProbBadge) aiProbBadge.textContent = "";
-    if (aiShantenBadge) aiShantenBadge.textContent = "";
-    if (aiUkeireBadge) aiUkeireBadge.textContent = "";
-    if (actualVerdictText) {
-      actualVerdictText.textContent = "";
-      actualVerdictText.className = "kd-tag-verdict";
-    }
-    if (actualBlock) actualBlock.classList.remove("is-blunder");
     return;
   }
 
-  card.classList.remove("is-idle");
-  if (headerEl) headerEl.style.display = "flex";
+  // Case 3: Exact Decision Step
+  const heroAct = dec.actual || dec.candidates?.find((c) => c.is_actual);
+  const aiAct = dec.expected || dec.candidates?.[0];
 
-  const isMatch = dec.is_equal;
-  const isCallDec = dec.decision_type === "call_response";
-  const isReachDec = dec.decision_type === "reach";
-
-  if (turnEl) turnEl.textContent = "";
-
-  if (badgeEl) {
-    if (isMatch) {
-      badgeEl.textContent = "模型一致";
-      badgeEl.className = "kd-dec-verdict best";
-    } else if (dec.verdict === "blunder") {
-      badgeEl.textContent = "恶手";
-      badgeEl.className = "kd-dec-verdict blunder";
-    } else {
-      badgeEl.textContent = dec.verdict_cn || "疑问手";
-      badgeEl.className = "kd-dec-verdict question";
-    }
-  }
-
-  // 1. Actual Choice (On Top)
-  let actPai = dec.actual?.pai;
-  if (!actPai && (dec.actual?.type === "reach" || dec.decision_type === "reach")) {
-    const startIdx = dec.step_idx;
-    for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
-      const ev = currentKyoku?.steps?.[s]?.event;
-      if (ev?.actor === targetActor && ev?.type === "dahai") {
-        actPai = ev.pai;
-        break;
-      }
-    }
-  }
-  const isActTile = actPai && actPai !== "none" && actPai !== "pass";
-  setTileWrapContent(actualTileWrap, renderDecisionTileOrBadge(actPai, dec.actual, dec.actual_cn));
-
-  if (actualTileName) {
-    if (isActTile && (!dec.actual || dec.actual.type === "dahai")) {
-      actualTileName.textContent = "";
-      actualTileName.style.display = "none";
-    } else {
-      actualTileName.style.display = "block";
-      const actType = (dec.actual?.type || "").toLowerCase();
-      let actText = dec.actual_cn || "";
-      if (
-        actType === "pass" ||
-        actType === "none" ||
-        !actText ||
-        actText.includes("跳过") ||
-        actText.toLowerCase().includes("pass") ||
-        actText.includes("不鸣") ||
-        actText.includes("过")
-      ) {
-        actText = "PASS";
-      } else if (actType.includes("chi") || actText.includes("吃")) {
-        actText = "Chi";
-      } else if (actType.includes("pon") || actText.includes("碰")) {
-        actText = "Pon";
-      } else if (actType.includes("kan") || actText.includes("杠")) {
-        actText = "Kan";
-      } else if (actType.includes("ron") || (isCallDec && (actType.includes("hora") || actText.includes("和")))) {
-        actText = "Ron";
-      } else if (actType.includes("reach") || actType.includes("riichi") || actText.includes("立直")) {
-        actText = actPai ? `立直 ${tileCn(actPai)}` : "Riichi";
-      } else {
-        actText = actText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
-      }
-      actualTileName.textContent = actText;
-    }
-  }
-  if (actualProbBadge) {
-    actualProbBadge.textContent = "";
-  }
-  if (actualVerdictText) {
-    if (isMatch) {
-      actualVerdictText.textContent = "模型一致";
-      actualVerdictText.className = "kd-tag-verdict best";
-    } else if (dec.verdict === "blunder") {
-      actualVerdictText.textContent = "恶手";
-      actualVerdictText.className = "kd-tag-verdict blunder";
-    } else {
-      actualVerdictText.textContent = dec.verdict_cn || "疑问手";
-      actualVerdictText.className = "kd-tag-verdict question";
-    }
-  }
-  if (actualBlock) {
-    if (isExactStep && dec.verdict === "blunder") actualBlock.classList.add("is-blunder");
-    else actualBlock.classList.remove("is-blunder");
-  }
-
-  // 2. AI Recommended Choice (On Bottom)
-  let expPai = dec.expected?.pai || dec.candidates?.[0]?.pai;
-  if (!expPai && (dec.expected?.type === "reach" || dec.candidates?.[0]?.action?.type === "reach")) {
-    expPai = dec.candidates?.[0]?.pai || dec.candidates?.[1]?.pai;
-    if (!expPai) {
-      const startIdx = dec.step_idx;
-      for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
-        const ev = currentKyoku?.steps?.[s]?.event;
-        if (ev?.actor === targetActor && ev?.type === "dahai") {
-          expPai = ev.pai;
-          break;
-        }
-      }
-    }
-  }
-  const isExpTile = expPai && expPai !== "none" && expPai !== "pass";
-  const bestCand = dec.candidates?.[0];
-  setTileWrapContent(aiTileWrap, renderDecisionTileOrBadge(expPai, dec.expected, dec.expected_cn));
-
-  if (aiTileName) {
-    if (isExpTile && (!dec.expected || dec.expected.type === "dahai")) {
-      aiTileName.textContent = "";
-      aiTileName.style.display = "none";
-    } else {
-      aiTileName.style.display = "block";
-      const expType = (dec.expected?.type || "").toLowerCase();
-      let expText = dec.expected_cn || "";
-      if (
-        expType === "pass" ||
-        expType === "none" ||
-        !expText ||
-        expText.includes("跳过") ||
-        expText.toLowerCase().includes("pass") ||
-        expText.includes("不鸣") ||
-        expText.includes("过")
-      ) {
-        expText = "PASS";
-      } else if (expType.includes("chi") || expText.includes("吃")) {
-        expText = "Chi";
-      } else if (expType.includes("pon") || expText.includes("碰")) {
-        expText = "Pon";
-      } else if (expType.includes("kan") || expText.includes("杠")) {
-        expText = "Kan";
-      } else if (expType.includes("ron") || (isCallDec && (expType.includes("hora") || expText.includes("和")))) {
-        expText = "Ron";
-      } else if (expType.includes("reach") || expType.includes("riichi") || expText.includes("立直")) {
-        expText = expPai ? `立直 ${tileCn(expPai)}` : "Riichi";
-      } else {
-        expText = expText.replace(/和牌/g, isCallDec ? "Ron" : "自摸");
-      }
-      aiTileName.textContent = expText;
-    }
-  }
-  if (aiProbBadge) {
-    aiProbBadge.textContent = "";
-  }
-  if (aiShantenBadge) {
-    const sVal = bestCand?.shanten_after ?? bestCand?.shanten ?? dec.shanten;
-    aiShantenBadge.textContent = shantenText(sVal, isCallDec ? "荣和" : "自摸");
-  }
-  if (aiUkeireBadge) {
-    const uk = bestCand?.ukeire ?? dec.expected?.ukeire;
-    aiUkeireBadge.textContent = uk !== undefined && uk !== null ? `进张 ${uk} 张` : "进张 --";
-  }
-
-  // 3. Top Candidates Table with Pure Graphic & Expandable Ukeire Detail Drawer
-  const cands = (dec.candidates || []).slice(0, 5);
+  if (actualCell) actualCell.innerHTML = getKillerActionSpan(heroAct);
+  if (aiCell) aiCell.innerHTML = getKillerActionSpan(aiAct);
 
   if (tableBody) {
-    const rowsHtml = cands
-      .map((c, i) => {
-        const act = c.action || {};
-        const rawType = (act.type || "").toLowerCase();
-        const cn = (c.action_cn || c.short_cn || "").toLowerCase();
-
-        let actionType = "dahai";
-        let actionLabel = "切";
-        let badgeClass = "action-dahai";
-
-        if (rawType.includes("chi") || cn.includes("吃")) {
-          actionType = "chi";
-          actionLabel = "Chi";
-          badgeClass = "action-chi";
-        } else if (rawType.includes("pon") || cn.includes("碰")) {
-          actionType = "pon";
-          actionLabel = "Pon";
-          badgeClass = "action-pon";
-        } else if (rawType.includes("kan") || cn.includes("杠")) {
-          actionType = "kan";
-          actionLabel = "Kan";
-          badgeClass = "action-kan";
-        } else if (rawType.includes("ron") || cn.includes("荣") || (isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
-          actionType = "ron";
-          actionLabel = "Ron";
-          badgeClass = "action-hora";
-        } else if (rawType.includes("tsumo") || cn.includes("自摸") || (!isCallDec && (rawType.includes("hora") || cn.includes("和")))) {
-          actionType = "tsumo";
-          actionLabel = "自摸";
-          badgeClass = "action-hora";
-        } else if (rawType.includes("reach") || rawType.includes("riichi") || cn.includes("立直")) {
-          actionType = "riichi";
-          actionLabel = "Riichi";
-          badgeClass = "action-riichi";
-        } else if (rawType.includes("none") || rawType.includes("pass") || cn.includes("pass") || cn.includes("跳过") || cn.includes("过") || cn.includes("不鸣")) {
-          actionType = "pass";
-          actionLabel = "PASS";
-          badgeClass = "action-pass";
-        } else if (isCallDec) {
-          actionType = "pass";
-          actionLabel = "PASS";
-          badgeClass = "action-pass";
-        } else {
-          actionType = "dahai";
-          actionLabel = "切";
-          badgeClass = "action-dahai";
-        }
-
-        // 牌面列
-        let tileDisplay = "";
-        const mainPai = c.pai || act.pai;
-        const consumed = act.consumed || [];
-
-        if (actionType === "chi" || actionType === "pon" || actionType === "kan") {
-          let comboTiles = [];
-          if (consumed.length > 0) {
-            comboTiles = [...consumed].filter(Boolean);
-          } else if (mainPai) {
-            if (actionType === "pon") comboTiles = [mainPai, mainPai];
-            else if (actionType === "kan") comboTiles = [mainPai, mainPai, mainPai];
-            else comboTiles = [mainPai];
-          }
-          comboTiles.sort((a, b) => tileSortOrder(a) - tileSortOrder(b));
-          if (comboTiles.length > 0) {
-            tileDisplay = `<div class="kd-cand-tile-combo">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="kd-cand-tile-img" title="${tileCn(t)}">`).join("")}</div>`;
-          } else {
-            tileDisplay = `<span class="kd-cand-pass-text">${escapeHtml(actionLabel)}</span>`;
-          }
-        } else if (actionType === "pass") {
-          tileDisplay = `<span class="kd-cand-pass-text">--</span>`;
-        } else if (actionType === "riichi") {
-          let reachTile = mainPai || dec.actual?.pai;
-          if (!reachTile && dec.actual?.type === "reach") {
-            const startIdx = dec.step_idx;
-            for (let s = startIdx; s < Math.min(startIdx + 5, currentKyoku?.steps?.length || 0); s++) {
-              const ev = currentKyoku?.steps?.[s]?.event;
-              if (ev?.actor === targetActor && ev?.type === "dahai") {
-                reachTile = ev.pai;
-                break;
-              }
-            }
-          }
-          if (!reachTile && dec.candidates?.[0]?.pai) {
-            reachTile = dec.candidates[0].pai;
-          }
-          if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
-            tileDisplay = `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="kd-cand-tile-img" title="立直: ${tileCn(reachTile)}">`;
-          } else {
-            tileDisplay = `<span class="kd-cand-pass-text" style="color:#ff453a; font-weight:700;">立直</span>`;
-          }
-        } else if (actionType === "ron" || actionType === "tsumo") {
-          const agariTile = mainPai || dec.context_tile || dec.actual?.pai || dec.expected?.pai;
-          if (agariTile && agariTile !== "none" && agariTile !== "pass") {
-            tileDisplay = `<img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="kd-cand-tile-img agari-tile" title="${actionType === "ron" ? "Ron" : "自摸"}: ${tileCn(agariTile)}">`;
-          } else {
-            tileDisplay = `<span class="kd-cand-pass-text" style="color:#30d158; font-weight:700;">${actionType === "ron" ? "Ron" : "自摸"}</span>`;
-          }
-        } else {
-          if (mainPai && mainPai !== "none" && mainPai !== "pass" && !mainPai.startsWith("none")) {
-            tileDisplay = `<img src="/tiles/${encodeURIComponent(mainPai)}.svg" class="kd-cand-tile-img" title="${tileCn(mainPai)}">`;
-          } else {
-            tileDisplay = `<span class="kd-cand-pass-text">--</span>`;
-          }
-        }
-
-        // 判定是否是实际出牌/动作
-        let isAct = false;
-        if (dec.actual) {
-          if (actionType === "pass" && (dec.actual.type === "none" || dec.actual.type === "pass")) {
-            isAct = true;
-          } else if (act.type && dec.actual.type === act.type) {
-            if (mainPai && dec.actual.pai) {
-              isAct = mainPai === dec.actual.pai;
-            } else {
-              isAct = true;
-            }
-          } else if (mainPai && dec.actual.pai && mainPai === dec.actual.pai) {
-            isAct = true;
-          }
-          if (!isAct && c.action_cn && dec.actual_cn) {
-            isAct = c.action_cn === dec.actual_cn;
-          }
-        }
-
-        const prob = fmtPct(c.prob);
-        const isAi = c.rank === 1;
-        const rowBg = isAct
-          ? "background:rgba(255, 69, 58, 0.16);"
-          : isAi
-          ? "background:rgba(48, 209, 88, 0.14);"
-          : "";
-        const sVal = c.shanten_after ?? c.shanten ?? dec.shanten;
-        const uVal = c.ukeire !== undefined && c.ukeire !== null ? `${c.ukeire} 张` : "-";
-        const ukeireList = c.ukeire_tiles || [];
-        const hasUkeireTiles = ukeireList.length > 0;
-        const isExpanded = false;
-        const uCell = hasUkeireTiles
-          ? `<div class="kd-ukeire-cell" title="点击展开/收起具体进张有效牌"><span>${uVal}</span><span class="kd-ukeire-arrow">▾</span></div>`
-          : `<span>${uVal}</span>`;
-
-        const detailRow = hasUkeireTiles
-          ? `
-          <tr class="kd-cand-detail-row ${isExpanded ? '' : 'hidden'}" id="candDetail_${i}">
-            <td colspan="5" style="box-sizing:border-box; width:100%; padding:4px 8px 8px; border-bottom:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.22);" onclick="event.stopPropagation()">
-              <div class="kd-ukeire-container">
-                <div class="kd-ukeire-grid">
-                  ${ukeireList.map(u => `
-                    <div class="kd-ukeire-item">
-                      <img src="/tiles/${encodeURIComponent(u.pai)}.svg" class="kd-ukeire-img" alt="${u.pai}">
-                      <span class="kd-ukeire-mul">×${u.count}</span>
-                    </div>
-                  `).join("")}
-                </div>
-              </div>
-            </td>
-          </tr>
-          `
-          : "";
-
-        return `
-          <tr class="kd-cand-row ${isExpanded ? 'is-expanded' : ''}" style="${rowBg}" onclick="toggleCandUkeire(event, ${i})">
-            <td><span class="kd-cand-action ${badgeClass}">${escapeHtml(actionLabel)}</span></td>
-            <td style="text-align:center;">${tileDisplay}</td>
-            <td style="font-weight:bold; color:${isAi ? "#30d158" : "var(--color-text-bright)"}">${prob}</td>
-            <td><span class="kd-tag-shanten" style="padding:1px 5px;">${shantenText(sVal, actionType === "ron" ? "Ron" : "自摸")}</span></td>
-            <td>${uCell}</td>
-          </tr>
-          ${detailRow}
-        `;
-      })
-      .join("");
-
+    const rowsHtml = (dec.candidates || []).map((cand) => {
+      const qVal = Number(cand.q_value ?? cand.raw_q ?? 0).toFixed(2);
+      const probVal = Number(cand.prob ?? 0).toFixed(2);
+      return `<tr>
+        <td>${getKillerActionSpan(cand)}</td>
+        <td>${qVal}</td>
+        <td>${probVal}</td>
+      </tr>`;
+    }).join("");
     tableBody.innerHTML = rowsHtml;
   }
 }
+
 
 window.toggleCandUkeire = function(e, idx) {
   if (e) e.stopPropagation();
@@ -2565,8 +2148,10 @@ function jumpNextDecision() {
     }
   }
   // If there are no more decisions for Hero, advance to final round settlement step
-  if (state.stepIdx < kyoku.steps.length - 1) {
-    setStep(kyoku.steps.length - 1);
+  const terminalIdx = kyoku.steps.findIndex((s) => s.event?.type === "hora" || s.event?.type === "ryukyoku" || s.event?.type === "ryuukyoku");
+  const targetEndStep = terminalIdx !== -1 ? terminalIdx : kyoku.steps.length - 1;
+  if (state.stepIdx < targetEndStep) {
+    setStep(targetEndStep);
     return;
   }
   // Already at settlement or end of kyoku: Automatically jump to next kyoku!
@@ -2683,17 +2268,18 @@ function renderKyokuTable() {
   // Subtitle info & Quick Pov switcher
   const subEl = $("roundModalSub");
   if (subEl) {
-    subEl.innerHTML = `当前检讨视角：<strong style="color:var(--color-text-bright);">${escapeHtml(names[targetActor])}</strong> (起${WIND_CN[targetActor]} / P${targetActor}) · 点击任意局可直接跳转该局检讨`;
+    subEl.innerHTML = `当前检讨视角：<strong style="color:var(--color-text-bright);">${WIND_CN[targetActor]}家 (自家)</strong> · 点击任意局可直接跳转该局检讨`;
   }
 
   const povTabs = $("roundModalPovTabs");
   if (povTabs) {
     povTabs.innerHTML = `
       <span style="font-size:12px; color:var(--color-text-secondary); margin-right:4px;">切换视角:</span>
-      ${names.map((name, s) => {
+      ${[0, 1, 2, 3].map((s) => {
         const active = s === targetActor ? "active" : "";
+        const label = s === targetActor ? `${WIND_CN[s]}家 (自家)` : `${WIND_CN[s]}家`;
         return `<button class="round-modal-pov-btn ${active}" data-seat="${s}">
-          <b>P${s}</b> ${escapeHtml(name)} ${s === targetActor ? "(自家)" : ""}
+          ${label}
         </button>`;
       }).join("")}
     `;
@@ -2708,36 +2294,31 @@ function renderKyokuTable() {
     });
   }
 
-  // 1. Table Header
+  // 1. Table Header (Pure Match Points History)
   if (thead) {
     thead.innerHTML = `
       <tr>
-        <th style="width:68px;">局名</th>
-        <th style="width:64px;">本场</th>
-        <th style="width:110px;">庄家</th>
-        <th style="text-align:left; min-width:180px;">自摸 / 荣和 / 结算</th>
-        ${names.map((name, s) => {
+        <th style="width:70px;">局名</th>
+        <th style="width:65px;">本场</th>
+        <th style="width:80px;">庄家</th>
+        <th style="text-align:left; min-width:200px;">自摸 / 荣和 / 结算详情</th>
+        ${[0, 1, 2, 3].map((s) => {
           const isTarget = s === targetActor;
           const thClass = isTarget ? "active-pov-th" : "";
-          const povBadge = isTarget ? " <span style='font-size:10px; color:#ffcc00;'>(我)</span>" : "";
-          return `<th class="${thClass}" style="text-align:right;">P${s} ${escapeHtml(name)} (起${WIND_CN[s]})${povBadge}</th>`;
+          const povBadge = isTarget ? " <span style='font-size:10px; color:#ffcc00;'>(自家)</span>" : "";
+          return `<th class="${thClass}" style="text-align:right;">${WIND_CN[s]}家${povBadge}</th>`;
         }).join("")}
-        <th style="width:85px; text-align:right;">当前增减</th>
-        <th style="width:96px; text-align:center;" title="分子为与模型一致决策数，分母为有效决策总数">模型一致率</th>
-        <th style="width:60px; text-align:center;">恶手</th>
+        <th style="width:90px; text-align:right;">自家增减</th>
       </tr>
     `;
   }
 
-  // 2. Table Body (12 Kyokus)
+  // 2. Table Body (Score Deltas per Kyoku)
   const cumDeltas = [0, 0, 0, 0];
-  let totDecs = 0;
-  let totMatches = 0;
-  let totBlunders = 0;
 
   tbody.innerHTML = res.kyokus
     .map((k, idx) => {
-      const oyaName = names[k.oya] ? `${names[k.oya]} (P${k.oya})` : `P${k.oya}家`;
+      const oyaName = `${WIND_CN[k.oya]}家`;
       const isOya = k.oya === targetActor;
       const oyaDisplay = `<span style="${isOya ? 'color:#ffcc00; font-weight:700;' : ''}">${escapeHtml(oyaName)}</span>`;
 
@@ -2753,28 +2334,11 @@ function renderKyokuTable() {
         cumDeltas[s] += deltas[s];
       }
 
-      // 统计与一致率 (当前视角玩家)
-      const stats = k.stats || {};
-      const decCount = k.decision_count ?? stats.total ?? (k.decisions ? k.decisions.length : 0);
-      const matchCount = k.match_count ?? stats.matches ?? (k.decisions ? k.decisions.filter((d) => d.is_equal).length : 0);
-      const matchPct = decCount > 0 ? ((matchCount / decCount) * 100).toFixed(1) + "%" : "--";
-      const matchText = decCount > 0 ? `${matchPct} <span style="font-size:11px; color:rgba(235,235,245,0.6);">(${matchCount}/${decCount})</span>` : "--";
-
-      const blunders = k.blunder_count ?? stats.blunders ?? (k.decisions ? k.decisions.filter((d) => d.verdict === "blunder").length : 0);
-
-      totDecs += decCount;
-      totMatches += matchCount;
-      totBlunders += blunders;
-
       // 结算文本
       const rawSummaries = k.end_summaries && k.end_summaries.length
         ? k.end_summaries.join("<br>")
         : (k.result || "流局");
       const resultText = escapeHtml(sanitizeSummaryText(rawSummaries)).replace(/&lt;br&gt;/g, "<br>");
-
-      // 一致率颜色阶
-      const matchNum = decCount > 0 ? (matchCount / decCount) * 100 : 0;
-      const matchColor = decCount === 0 ? "rgba(235,235,245,0.4)" : matchNum >= 80 ? "#30d158" : matchNum >= 65 ? "#0a84ff" : "#ff9f0a";
 
       const currentDelta = deltas[targetActor] ?? 0;
 
@@ -2801,10 +2365,6 @@ function renderKyokuTable() {
           <td style="text-align:left; font-size:12px; line-height:1.4;">${resultText}</td>
           ${playersColsHtml}
           <td style="text-align:right; font-weight:700;">${fmtDeltaHtml(currentDelta)}</td>
-          <td style="color:${matchColor}; font-weight:700; text-align:center;" title="${stats.discard_total !== undefined ? `切牌: ${stats.discard_matches}/${stats.discard_total}, 鸣牌: ${stats.call_matches}/${stats.call_total}` : `${matchCount}/${decCount}`}">${matchText}</td>
-          <td style="text-align:center;">
-            <span class="blunder-badge-num ${blunders > 0 ? 'has-blunder' : 'zero'}">${blunders}</span>
-          </td>
         </tr>
       `;
     })
@@ -2818,12 +2378,10 @@ function renderKyokuTable() {
     });
   });
 
-  // 3. Table Footer (全庄终局汇总)
+  // 3. Table Footer (全庄各家结算总分)
   if (tfoot && res.kyokus.length > 0) {
     const lastKyoku = res.kyokus[res.kyokus.length - 1];
     const finalScores = lastKyoku.end_scores || [25000, 25000, 25000, 25000];
-    const totalMatchPct = totDecs > 0 ? ((totMatches / totDecs) * 100).toFixed(1) + "%" : "--";
-    const totalMatchText = `${totalMatchPct} <span style="font-size:11px; color:rgba(235,235,245,0.6);">(${totMatches}/${totDecs})</span>`;
     const targetCumDelta = cumDeltas[targetActor] ?? 0;
 
     // Calculate ranking 1位..4位
@@ -2850,10 +2408,6 @@ function renderKyokuTable() {
           `;
         }).join("")}
         <td style="text-align:right; font-weight:700;">${fmtDeltaHtml(targetCumDelta)}</td>
-        <td style="text-align:center; font-weight:700; color:#30d158;">${totalMatchText}</td>
-        <td style="text-align:center;">
-          <span class="blunder-badge-num ${totBlunders > 0 ? 'has-blunder' : 'zero'}">${totBlunders}</span>
-        </td>
       </tr>
     `;
   }
@@ -2867,25 +2421,141 @@ function openRoundScoresModal() {
 }
 
 // ============================================================================
+// Local Paipu Cache & Drag/Drop Import
+// ============================================================================
+async function loadLocalCachedRecords() {
+  const container = $("localRecordsList");
+  const countEl = $("localRecordsCount");
+  if (!container) return;
+
+  try {
+    const data = await apiFetch("/api/records/local");
+    const records = data.records || [];
+    if (countEl) countEl.textContent = `共 ${records.length} 场`;
+
+    if (records.length === 0) {
+      container.innerHTML = `<div class="kd-local-empty">暂无本地缓存牌谱，可选择或拖入本地文件进行检讨</div>`;
+      return;
+    }
+
+    container.innerHTML = records.map((rec) => {
+      let dateStr = "未知时间";
+      if (rec.start_time) {
+        try {
+          const d = new Date(rec.start_time * 1000);
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, "0");
+          const day = String(d.getDate()).padStart(2, "0");
+          const hh = String(d.getHours()).padStart(2, "0");
+          const mm = String(d.getMinutes()).padStart(2, "0");
+          dateStr = `${y}-${m}-${day} ${hh}:${mm}`;
+        } catch (_) {}
+      }
+      const sizeKb = rec.file_size ? `${Math.round(rec.file_size / 1024)} KB` : "";
+      const namesStr = (rec.names && rec.names.length) ? rec.names.join(" · ") : "四人对局";
+      const modeLabel = rec.mode === 1 ? "四人东" : "四人南";
+
+      return `
+        <div class="kd-local-item" data-uuid="${escapeHtml(rec.uuid)}">
+          <div class="kd-local-item-top">
+            <div class="kd-local-meta-left">
+              <span class="kd-local-badge">${escapeHtml(modeLabel)}</span>
+              <span class="kd-local-time">${escapeHtml(dateStr)}</span>
+            </div>
+            <span class="kd-local-size">${sizeKb}</span>
+          </div>
+          <div class="kd-local-item-mid">
+            <div class="kd-local-names" title="${escapeHtml(namesStr)}">${escapeHtml(namesStr)}</div>
+            <button type="button" class="kd-local-btn">立即分析</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    container.querySelectorAll(".kd-local-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        const uuid = el.getAttribute("data-uuid");
+        if (uuid) {
+          startAnalysisFromInput(uuid, state.selectedModel);
+        }
+      });
+    });
+  } catch (err) {
+    if (container) {
+      container.innerHTML = `<div class="kd-local-empty">加载本地牌谱失败: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+}
+
+function initLocalFileDropzone() {
+  const dropzone = $("fileDropzone");
+  const fileInput = $("localFileInput");
+  if (!dropzone || !fileInput) return;
+
+  dropzone.addEventListener("click", () => {
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    readAndAnalyzeFile(file);
+    fileInput.value = "";
+  });
+
+  dropzone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.add("is-dragover");
+  });
+
+  dropzone.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.remove("is-dragover");
+  });
+
+  dropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.remove("is-dragover");
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    readAndAnalyzeFile(file);
+  });
+}
+
+function readAndAnalyzeFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const content = e.target?.result;
+    if (!content || typeof content !== "string") {
+      showToast("文件内容为空或无法读取", "error");
+      return;
+    }
+    showToast(`正在载入本地牌谱文件: ${file.name}`, "info");
+    startAnalysisFromInput(content.trim(), state.selectedModel);
+  };
+  reader.onerror = () => {
+    showToast(`读取文件失败: ${file.name}`, "error");
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+// ============================================================================
 // Event Bindings
 // ============================================================================
 function bindEvents() {
-  // Tier 1 Model Selector Buttons
-  const btnAkagi = $("btnModelAkagi");
-  const btnMortal = $("btnModelMortal");
-  btnAkagi?.addEventListener("click", () => {
+  // Local File Dropzone & File Input
+  initLocalFileDropzone();
+
+  // Tier 1 Model: Mortal-V4-582500 (Single, Dedicated Model)
+  state.selectedModel = "akagi";
+  const landingModel = $("landingModelCard");
+  landingModel?.addEventListener("click", () => {
     state.selectedModel = "akagi";
-    btnAkagi.classList.add("active");
-    btnMortal.classList.remove("active");
     if ($("engineSelect")) $("engineSelect").value = "akagi";
     updateEngineStatusDisplay("akagi");
-  });
-  btnMortal?.addEventListener("click", () => {
-    state.selectedModel = "mortal";
-    btnMortal.classList.add("active");
-    btnAkagi.classList.remove("active");
-    if ($("engineSelect")) $("engineSelect").value = "mortal";
-    updateEngineStatusDisplay("mortal");
   });
 
   // Tier 1 Submit
@@ -2939,9 +2609,6 @@ function bindEvents() {
   // Toggle Hands Visibility
   $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
 
-  // Toggle Hide/Show Player ID
-  $("btnToggleHideId")?.addEventListener("click", toggleHidePlayerId);
-
   // Toggle Audio Sound
   $("btnToggleAudio")?.addEventListener("click", toggleSound);
 
@@ -2977,9 +2644,21 @@ function bindEvents() {
       e.target.blur();
     });
     sliderEl.addEventListener("keydown", (e) => {
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Space"].includes(e.key)) {
+      if (e.key === "ArrowLeft") {
         e.preventDefault();
-        sliderEl.blur();
+        stepDeltaFast(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        stepDeltaFast(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        jumpPrevDecision();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        jumpNextDecision();
+      } else if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
       }
     });
   }
@@ -3018,31 +2697,55 @@ function bindEvents() {
   bindNavClick(["btnPrevStep", "btnPrevStepTop"], () => stepDelta(-1));
   bindNavClick(["btnNextStep", "btnNextStepTop"], () => stepDelta(1));
 
-  // Round modal
+  // Round score history modal (Dedicated button, strictly independent from rating badge)
+    $("btnOpenScoreModal")?.addEventListener("click", openRoundScoresModal);
+  $("btnControlsScores")?.addEventListener("click", openRoundScoresModal);
+  $("infoThisRoundClose")?.addEventListener("click", () => {
+    $("infoThisRoundModal")?.close();
+  });
+  $("infoThisRoundModal")?.addEventListener("click", (e) => {
+    if (e.target === $("infoThisRoundModal")) $("infoThisRoundModal")?.close();
+  });
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);
-  $("gameSummaryPill")?.addEventListener("click", openRoundScoresModal);
   $("roundModalClose")?.addEventListener("click", () => closeModal("roundModal"));
 
   // Engine modal
-  $("btnOpenEngineModal")?.addEventListener("click", () => openModal("engineModal"));
+  $("btnOpenEngineModal")?.addEventListener("click", () => {
+    const statusMsg = $("engineModalStatusMsg");
+    if (statusMsg) statusMsg.textContent = "";
+    openModal("engineModal");
+  });
   $("engineModalClose")?.addEventListener("click", () => closeModal("engineModal"));
+  $("btnCancelEngineModal")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnSaveEngineConfig")?.addEventListener("click", async () => {
     const model = $("engineSelect")?.value || "akagi";
     state.selectedModel = model;
     updateEngineStatusDisplay(model);
+    const statusMsg = $("engineModalStatusMsg");
+    if (statusMsg) {
+      statusMsg.style.color = "#30d158";
+      statusMsg.textContent = "正在同步配置并重新检讨...";
+    }
     try {
       await apiFetch("/api/engine/config", {
         method: "POST",
         body: JSON.stringify({ selected_model: model }),
       });
+      closeModal("engineModal");
+      if (state.reviewData && state.gameId) {
+        await startAnalysisFromInput(state.gameId, model, state.targetActor);
+      }
     } catch (e) {
-      console.warn("Failed to sync engine config with backend:", e);
-    }
-    closeModal("engineModal");
-    if (state.reviewData && state.gameId) {
-      await startAnalysisFromInput(state.gameId, model, state.targetActor);
+      if (statusMsg) {
+        statusMsg.style.color = "#ff453a";
+        statusMsg.textContent = `切换失败: ${e.message || "请求异常"}`;
+      }
     }
   });
+
+  // Shortcuts Modal bindings
+  $("btnOpenShortcutsModal")?.addEventListener("click", () => openModal("shortcutsModal"));
+  $("shortcutsModalClose")?.addEventListener("click", () => closeModal("shortcutsModal"));
 
   // Backdrop click closes any modal
   document.querySelectorAll(".modal-backdrop").forEach((bd) => {
@@ -3052,18 +2755,45 @@ function bindEvents() {
     });
   });
 
-  // Keyboard shortcuts
+  // Global Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
+    // Dismiss settlement modal or dialog on keyboard shortcuts
+    const roundDialog = $("infoThisRoundModal");
+    if (roundDialog && roundDialog.open) {
+      if (e.key === "Escape" || e.key === "Enter" || e.key === " " || e.key.startsWith("Arrow") || e.key === "[" || e.key === "]" || e.key === "," || e.key === ".") {
+        if (typeof roundDialog.close === "function") roundDialog.close();
+        else roundDialog.removeAttribute("open");
+        if (e.key === "Escape" || e.key === "Enter") {
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+
     if (e.key === "Escape") {
       document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
       document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach((b) => b.classList.add("hidden"));
       return;
     }
+
     const activeEl = document.activeElement;
-    if (activeEl && (activeEl.tagName === "TEXTAREA" || (activeEl.tagName === "INPUT" && activeEl.type !== "range" && activeEl.type !== "button"))) {
+    if (activeEl && (activeEl.tagName === "TEXTAREA" || (activeEl.tagName === "INPUT" && (activeEl.type === "text" || activeEl.type === "search" || activeEl.type === "password")))) {
       return;
     }
-    if (document.querySelector(".modal:not(.hidden)")) return;
+
+    // Toggle shortcuts help modal with '?'
+    if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+      e.preventDefault();
+      const shortcutsModal = $("shortcutsModal");
+      if (shortcutsModal?.classList.contains("hidden")) openModal("shortcutsModal");
+      else closeModal("shortcutsModal");
+      return;
+    }
+
+    // If modal is open, don't execute board navigation shortcuts
+    const isModalOpen = Array.from(document.querySelectorAll(".modal")).some(m => !m.classList.contains("hidden") && (m.tagName !== "DIALOG" || m.open)) || !!document.querySelector("dialog[open]");
+    if (isModalOpen) return;
+
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (e.key === " " || e.code === "Space") {
@@ -3080,7 +2810,9 @@ function bindEvents() {
       PageUp: () => jumpPrevBlunderFast(),
       PageDown: () => jumpNextBlunderFast(),
       ",": () => jumpPrevBlunderFast(),
+      "<": () => jumpPrevBlunderFast(),
       ".": () => jumpNextBlunderFast(),
+      ">": () => jumpNextBlunderFast(),
       Home: () => {
         cancelScheduledStep();
         setStep(0);
@@ -3100,8 +2832,17 @@ function bindEvents() {
       },
       h: toggleHandsVisibility,
       H: toggleHandsVisibility,
-      m: toggleSound,
-      M: toggleSound,
+      s: () => {
+        const modal = $("roundModal");
+        if (modal?.classList.contains("hidden")) openModal("roundModal");
+        else closeModal("roundModal");
+      },
+      S: () => {
+        const modal = $("roundModal");
+        if (modal?.classList.contains("hidden")) openModal("roundModal");
+        else closeModal("roundModal");
+      },
+
       " ": togglePlay,
     };
 
@@ -3111,9 +2852,22 @@ function bindEvents() {
     }
   });
 
-  // Mouse wheel over table steps forward/backward
-  $("gridMain")?.addEventListener("wheel", (e) => {
+  // Global mouse wheel steps forward/backward across entire screen (green and black areas alike)
+  window.addEventListener("wheel", (e) => {
     if (!state.reviewData) return;
+    if (e.target.closest("#roundModal, #shortcutsModal, #engineModal")) return;
+
+    const roundDialog = $("infoThisRoundModal");
+    if (roundDialog && roundDialog.open) {
+      const openedAt = Number(roundDialog.dataset.openedAt || 0);
+      if (Date.now() - openedAt < 300) {
+        e.preventDefault();
+        return;
+      }
+      if (typeof roundDialog.close === "function") roundDialog.close();
+      else roundDialog.removeAttribute("open");
+    }
+
     e.preventDefault();
     if (e.deltaY > 0) stepDelta(1);
     else if (e.deltaY < 0) stepDelta(-1);
@@ -3121,9 +2875,7 @@ function bindEvents() {
 }
 
 function updateResponsiveZoom() {
-  const w = window.innerWidth;
-  const zoom = Math.min(1.0, Math.max(0.46, (w - 24) / 655));
-  document.documentElement.style.setProperty("--zoom", zoom.toFixed(3));
+  document.documentElement.style.setProperty("--zoom", "1.0");
 }
 window.addEventListener("resize", updateResponsiveZoom);
 
@@ -3141,7 +2893,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   updateSoundButton();
   const initSpeedSel = $("playSpeedSelect");
   if (initSpeedSel) initSpeedSel.value = String(state.playSpeed || "1");
-  document.addEventListener("pointerdown", () => SoundFX.init(), { once: true });
   bindEvents();
   await refreshServerStatus();
 

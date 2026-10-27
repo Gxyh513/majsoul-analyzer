@@ -1,12 +1,7 @@
 """Core review + replay builder for Mahjong Soul 4-player logs.
 
-Supports two backends out of the box:
-1. **Mortal Neural Network** (`mortal.pth` via PyTorch + `libriichi` Rust state/obs encoder)
-2. **Built-in SP+Defense Engine** (`libriichi` Rust `SPCalculator` exact multi-turn EV /
-   win-prob / tenpai-prob + shanten/ukeire + push/fold defense & meld evaluator)
-
-Both backends produce the exact same NAGA / Mortal style output schema, plus
-full step-by-step 4-player board replay snapshots for the interactive web UI.
+Uses only Mortal-V4-582500 for action Q values. Supplemental statistics
+(shanten, ukeire, danger and EV) are separate from model recommendations.
 """
 from __future__ import annotations
 
@@ -25,6 +20,7 @@ if str(_ENGINE_DIR) not in sys.path:
 import libriichi.state as lstate  # noqa: E402
 
 from .mortal_model import LoadedMortal  # noqa: E402
+from .model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file  # noqa: E402
 from .shanten import shanten as py_shanten  # noqa: E402
 from .shanten import ukeire as py_ukeire  # noqa: E402
 from .tiles import (  # noqa: E402
@@ -55,77 +51,81 @@ class EngineManager:
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.custom_pth: Path | None = None
         self.selected_model: str = "auto"
-        self._loaded: LoadedMortal | None = None
-        self._loaded_mtime: float | None = None
+        self._loaded_models: dict[str, tuple[LoadedMortal, tuple[int, int, int]]] = {}
         self._load_error: str | None = None
 
     def list_available_models(self) -> list[dict[str, str]]:
-        models = []
-        akagi = self.models_dir / "akagi.pth"
-        if akagi.is_file():
-            models.append({"id": "akagi", "name": "Mortal-V4-582500 (进攻强化)", "path": str(akagi)})
-        mortal = self.models_dir / "mortal.pth"
-        if mortal.is_file():
-            models.append({"id": "mortal", "name": "Mortal 官方核心 (v3 天凤十段)", "path": str(mortal)})
-        for p in sorted(self.models_dir.glob("*.pth")):
-            if p.name not in ("akagi.pth", "mortal.pth") and "grp" not in p.name.lower():
-                models.append({"id": p.stem, "name": f"自定义模型 ({p.name})", "path": str(p)})
-        return models
+        p = self.models_dir / MODEL_FILE
+        return [{"id": MODEL_ID, "name": "Mortal-V4-582500", "path": str(p)}] if p.is_file() else []
 
-    def find_pth(self) -> Path | None:
-        if self.custom_pth and self.custom_pth.is_file():
-            return self.custom_pth
-        if self.selected_model == "akagi":
-            p = self.models_dir / "akagi.pth"
-            if p.is_file():
-                return p
-        elif self.selected_model == "mortal":
-            p = self.models_dir / "mortal.pth"
-            if p.is_file():
-                return p
-        akagi = self.models_dir / "akagi.pth"
-        if akagi.is_file():
-            return akagi
-        mortal = self.models_dir / "mortal.pth"
-        if mortal.is_file():
-            return mortal
-        pths = sorted(self.models_dir.glob("*.pth"))
-        for p in pths:
-            if "grp" not in p.name.lower():
-                return p
-        return None
+    def resolve_model_path(self, model_id: str | None = None) -> tuple[Path | None, str]:
+        normalize_model_id(model_id)
+        p = self.models_dir / MODEL_FILE
+        return (p if p.is_file() else None), MODEL_ID
 
-    def get_mortal(self) -> LoadedMortal | None:
-        pth = self.find_pth()
+    def find_pth(self, model_id: str | None = None) -> Path | None:
+        return self.resolve_model_path(model_id)[0]
+
+    def get_mortal(self, model_id: str | None = None) -> tuple[LoadedMortal, str, Path]:
+        pth, resolved_id = self.resolve_model_path(model_id)
         if pth is None:
-            self._loaded = None
-            return None
-        mtime = pth.stat().st_mtime
-        if self._loaded is not None and self._loaded.pth_path == pth and self._loaded_mtime == mtime:
-            return self._loaded
+            self._loaded_models.clear()
+            self._load_error = f"Mortal-V4-582500 真实模型权重文件缺失: {self.models_dir / MODEL_FILE}；严禁自动降级到其他引擎。"
+            raise FileNotFoundError(self._load_error)
+        key = str(pth.resolve())
+        stat = pth.stat()
+        identity = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        if key in self._loaded_models:
+            loaded, cached_identity = self._loaded_models[key]
+            if cached_identity == identity:
+                return loaded, resolved_id, pth
         try:
-            self._loaded = LoadedMortal(pth)
-            self._loaded_mtime = mtime
+            digest = sha256_file(pth)
+            if digest != MODEL_SHA256:
+                raise ValueError("权重 SHA-256 与已发布的 mortal_582500.pth 不一致")
+            loaded = LoadedMortal(pth, enforce_v4_582500=True)
+            stat_after = pth.stat()
+            if identity != (stat_after.st_size, stat_after.st_mtime_ns, stat_after.st_ctime_ns):
+                raise RuntimeError("模型权重在加载时发生变化，请重试")
+            loaded.weight_sha256 = digest
+            self._loaded_models = {key: (loaded, identity)}
             self._load_error = None
-            return self._loaded
-        except Exception as e:  # noqa: BLE001
-            log.warning("Failed to load Mortal model %s: %s", pth, e)
+            return loaded, resolved_id, pth
+        except Exception as e:
+            self._loaded_models.clear()
             self._load_error = str(e)
-            self._loaded = None
-            return None
+            raise RuntimeError(f"载入或校验 Mortal-V4-582500 权重 {MODEL_FILE} 失败: {e}") from e
 
     def status(self) -> dict[str, Any]:
-        pth = self.find_pth()
-        mortal = self.get_mortal()
-        model_name = "Mortal-V4-582500" if (pth and "akagi" in pth.name.lower()) else ("Mortal" if mortal is not None else "内置引擎")
+        """Returns real-time status of the model manager, purging any stale cache."""
+        # Purge deleted files from cache
+        stale_keys = [k for k in self._loaded_models if not Path(k).is_file()]
+        for k in stale_keys:
+            self._loaded_models.pop(k, None)
+
+        pth, resolved_id = self.resolve_model_path(MODEL_ID)
+        mortal = None
+        if pth is not None and pth.is_file():
+            try:
+                mortal, _, _ = self.get_mortal(MODEL_ID)
+                self._load_error = None
+            except Exception as e:
+                self._load_error = str(e)
+        else:
+            expected_pth = self.models_dir / "mortal_582500.pth"
+            self._load_error = f"权重文件缺失: {expected_pth}"
+
         return {
             "has_mortal_weights": mortal is not None,
-            "active_engine": "mortal" if mortal is not None else "builtin",
-            "model_name": model_name,
-            "model_tag": mortal.tag if mortal is not None else "Built-in SP+Defense (libriichi Rust)",
-            "model_path": str(pth) if pth else str(self.models_dir / "mortal.pth"),
+            "active_engine": "mortal" if mortal is not None else "unavailable",
+            "model_name": "Mortal-V4-582500" if mortal is not None else "Mortal-V4-582500 (不可用)",
+            "model_id": resolved_id,
+            "model_tag": mortal.tag if mortal is not None else "Mortal-V4-582500 (未加载)",
+            "weight_sha256": mortal.weight_sha256 if mortal is not None else None,
+            "review_schema": REVIEW_SCHEMA,
+            "model_path": str(pth) if pth else str(self.models_dir / "mortal_582500.pth"),
             "models_dir": str(self.models_dir),
-            "device": str(mortal.device).upper() if mortal is not None else "CPU",
+            "device": str(mortal.device).upper() if mortal is not None else "N/A",
             "selected_model": self.selected_model,
             "available_models": self.list_available_models(),
             "load_error": self._load_error,
@@ -140,7 +140,7 @@ def softmax(q: np.ndarray, temperature: float = 0.1) -> np.ndarray:
         return q
     t = max(float(temperature), 1e-4)
     x = (q.astype(np.float64) - float(np.max(q))) / t
-    x = np.clip(x, -60.0, 0.0)
+    x = np.clip(x, -500.0, 0.0)
     e = np.exp(x)
     s = float(e.sum())
     return (e / s).astype(np.float32) if s > 0 else np.full_like(q, 1.0 / len(q))
@@ -227,7 +227,6 @@ def label_to_action_dict(
             "type": "dahai",
             "actor": actor,
             "pai": pai,
-            "tsumogiri": last_tile == pai,
         }
     if label == 37:
         return {"type": "reach", "actor": actor}
@@ -444,7 +443,7 @@ def compute_tile_danger(
     return round(float(max_danger), 3), dedup[:2]
 
 
-def analyze_candidates_and_heuristic_q(
+def analyze_candidate_metadata(
     ps: Any,
     obs: np.ndarray,
     mask: np.ndarray,
@@ -456,12 +455,9 @@ def analyze_candidates_and_heuristic_q(
     melds: list[list[dict]],
     dora_markers: list[str],
     tiles_left: int,
-) -> tuple[np.ndarray, dict[int, dict[str, Any]]]:
-    """Compute per-action metadata (shanten, ukeire, EV, win_prob, danger, tags)
-    AND calibrated heuristic Q-values for all legal actions in `mask`.
-    """
+) -> dict[int, dict[str, Any]]:
+    """Compute supplemental action metadata, never action weights."""
     legal = np.nonzero(mask)[0].tolist()
-    q = np.full(46, -np.inf, dtype=np.float32)
     meta_by_action: dict[int, dict[str, Any]] = {}
 
     cans = ps.last_cans
@@ -540,40 +536,6 @@ def analyze_candidates_and_heuristic_q(
             tags.append("听牌")
         tags.extend(def_tags)
 
-        # Calibrated heuristic Q-value for discard `a`
-        dora_loss = sum(1 for d in dora_t34s if d == t34) + (1.2 if is_red else 0.0)
-        if ev > 0:
-            attack_q = (ev / 2400.0) + (win_prob * 2.8) + (tenpai_prob * 0.7) + (uk_count * 0.035)
-            # Red 5 vs normal 5 tie-breaker (SP table is indexed by 34-tile, so penalize discarding red 5)
-            if is_red:
-                attack_q -= 0.45
-        else:
-            shanten_diff = real_shanten - shanten_after
-            attack_q = shanten_diff * 1.9 + uk_count * 0.065 - dora_loss * 0.28
-            # Positional value tie-breaker for isolated tiles
-            if t34 >= 27:
-                if t34 not in yakuhai_set and tehai[t34] == 1:
-                    attack_q += 0.12  # prefer discarding guest winds first
-                elif t34 in yakuhai_set and tehai[t34] == 1:
-                    attack_q += 0.04
-            else:
-                r = t34 % 9
-                if r in (0, 8) and tehai[t34] == 1:
-                    attack_q += 0.05
-
-        # Push / fold adjustment
-        if any_opp_threat:
-            if shanten_after >= 2:
-                fold_w = 4.2 * max(1, num_opp_riichi)
-            elif shanten_after == 1:
-                fold_w = (2.2 if ev >= 6000 else 3.4) * max(1, num_opp_riichi)
-            else:
-                fold_w = (1.1 if ev >= 5000 else 1.8) * max(1, num_opp_riichi)
-            score_q = attack_q - fold_w * danger
-        else:
-            score_q = attack_q - 0.15 * danger
-
-        q[a] = score_q
         meta_by_action[a] = {
             "shanten_after": shanten_after,
             "ukeire": uk_count,
@@ -597,22 +559,12 @@ def analyze_candidates_and_heuristic_q(
             if max_ev_cand >= 1000 and m["ev"] == max_ev_cand and "打点最优" not in m["tags"]:
                 m["tags"].append("打点最优")
 
-    best_discard_q = float(np.max(q[discard_actions])) if discard_actions else 0.0
-
-    # --- 2. Evaluate Riichi (37) ---
+    # --- 2. Supplemental riichi metadata (not a recommendation) ---
     if 37 in legal:
         tenpai_discards = [a for a in discard_actions if meta_by_action[a]["shanten_after"] == 0]
         best_uk = max((meta_by_action[a]["ukeire"] for a in tenpai_discards), default=0)
         min_danger = min((meta_by_action[a]["danger"] for a in tenpai_discards), default=0.0)
-        if best_uk >= 2 and tiles_left >= 8 and not (num_opp_riichi >= 2 and min_danger > 25):
-            q[37] = best_discard_q + 0.55
-            r_tags = ["推荐立直"]
-        elif best_uk >= 1 and tiles_left >= 4:
-            q[37] = best_discard_q + 0.15
-            r_tags = ["可立直"]
-        else:
-            q[37] = best_discard_q - 0.35
-            r_tags = ["建议默听"]
+        r_tags = ["立直"]
         meta_by_action[37] = {
             "shanten_after": 0,
             "ukeire": best_uk,
@@ -626,7 +578,6 @@ def analyze_candidates_and_heuristic_q(
 
     # --- 3. Evaluate Kan (42), Agari (43), Ryukyoku (44) ---
     if 43 in legal:
-        q[43] = max(best_discard_q, 0.0) + 4.0
         meta_by_action[43] = {
             "shanten_after": -1,
             "ukeire": 0,
@@ -639,8 +590,6 @@ def analyze_candidates_and_heuristic_q(
         }
 
     if 44 in legal:
-        yaochu_cnt = sum(1 for i in range(34) if is_yaochu(i) and tehai[i] > 0)
-        q[44] = best_discard_q + (0.6 if real_shanten >= 3 and yaochu_cnt < 10 else -0.8)
         meta_by_action[44] = {
             "shanten_after": real_shanten,
             "ukeire": 0,
@@ -653,10 +602,6 @@ def analyze_candidates_and_heuristic_q(
         }
 
     if 42 in legal:
-        if cans.can_ankan or cans.can_kakan:
-            q[42] = best_discard_q + (0.25 if (real_shanten <= 1 and num_opp_riichi == 0) else -0.9)
-        else:
-            q[42] = -0.8
         meta_by_action[42] = {
             "shanten_after": real_shanten,
             "ukeire": 0,
@@ -675,8 +620,6 @@ def analyze_candidates_and_heuristic_q(
         uk_pass = sum(rem[u] for u in uk_pass_idx) if uk_pass_idx else py_ukeire(list(tehai), n_melds, tiles_seen, cur_shanten)[0]
         pass_ev = float(obs[995, 0]) * max_ev
         pass_wp = float(obs[978, 0])
-        base_pass_q = (pass_ev / 2500.0) + pass_wp * 2.5 + uk_pass * 0.03
-        q[45] = base_pass_q
         meta_by_action[45] = {
             "shanten_after": cur_shanten,
             "ukeire": uk_pass,
@@ -741,18 +684,6 @@ def analyze_candidates_and_heuristic_q(
                 if not has_yaku:
                     call_tags.append("注意无役")
 
-                if not has_yaku:
-                    call_q = base_pass_q - 1.4
-                elif best_s_after == 0 and shanten_gain >= 1:
-                    call_q = base_pass_q + 0.75 + dora_owned * 0.15 - num_opp_riichi * 0.4
-                elif is_yakuhai_call and shanten_gain >= 1:
-                    call_q = base_pass_q + 0.55 + dora_owned * 0.12 - num_opp_riichi * 0.5
-                elif shanten_gain >= 1 and best_s_after <= 1 and (dora_owned >= 2 or n_melds >= 1):
-                    call_q = base_pass_q + 0.30 - num_opp_riichi * 0.6
-                else:
-                    call_q = base_pass_q - 0.35 - num_opp_riichi * 0.6
-
-                q[call_act] = call_q
                 meta_by_action[call_act] = {
                     "shanten_after": best_s_after,
                     "ukeire": best_uk_after,
@@ -764,7 +695,7 @@ def analyze_candidates_and_heuristic_q(
                     "tags": call_tags,
                 }
 
-    return q, meta_by_action
+    return meta_by_action
 
 
 # ---------------------------------------------------------------------------
@@ -780,9 +711,7 @@ def review_game(
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
     assert 0 <= target_actor <= 3
-    mortal = engine_mgr.get_mortal()
-    if mortal is None:
-        raise ValueError("未检测到可用的神经网络模型，请确认 data/models/ 中存在 akagi.pth 或 mortal.pth")
+    mortal, resolved_id, resolved_pth = engine_mgr.get_mortal(force_engine)
     obs_version = mortal.version
 
     names = (meta or {}).get("names") or ["东家", "南家", "西家", "北家"]
@@ -943,10 +872,13 @@ def review_game(
                     actual_ev = next_player_action(mjai_events[i + 1 :], target_actor, False, False, False)
                     if actual_ev is not None and actual_ev.get("type") == "dahai":
                         obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
-                        q_h, meta_a = analyze_candidates_and_heuristic_q(
+                        meta_a = analyze_candidate_metadata(
                             ps, obs_4, mask_4, target_actor, bakaze, oya, rivers, riichi_step, melds, dora_markers, tiles_left
                         )
-                        step_ref = len(cur_kyoku["steps"]) - 1
+                        # Separate the riichi declaration from its discard choice,
+                        # so both decisions have an independently navigable step.
+                        step_ref = len(cur_kyoku["steps"])
+                        cur_kyoku["steps"].append(snapshot_board(ev, step_ref))
                         pending_decisions.append(
                             {
                                 "kyoku_idx": cur_kyoku["kyoku_idx"],
@@ -960,7 +892,6 @@ def review_game(
                                 "last_actor": last_actor,
                                 "actual_ev": actual_ev,
                                 "mask": mask_4,
-                                "q_heuristic": q_h,
                                 "meta_by_action": meta_a,
                                 "akas_in_hand": list(ps.akas_in_hand),
                                 "ankan_cands": ps.ankan_candidates(),
@@ -1033,6 +964,7 @@ def review_game(
             for m in melds[seat]:
                 if m["type"] == "pon" and deaka(m["pai"]) == base:
                     m["type"] = "kakan"
+                    m["added"] = pai
                     m["tiles"].append(pai)
                     break
             last_actor = seat
@@ -1099,7 +1031,7 @@ def review_game(
                 continue
 
         obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
-        q_h, meta_a = analyze_candidates_and_heuristic_q(
+        meta_a = analyze_candidate_metadata(
             ps, obs_4, mask_4, target_actor, bakaze, oya, rivers, riichi_step, melds, dora_markers, tiles_left
         )
 
@@ -1126,7 +1058,6 @@ def review_game(
                 "actual_ev": actual_ev,
                 "actual_label": actual_label,
                 "mask": mask_4,
-                "q_heuristic": q_h,
                 "meta_by_action": meta_a,
                 "akas_in_hand": list(ps.akas_in_hand),
                 "ankan_cands": ps.ankan_candidates(),
@@ -1142,10 +1073,17 @@ def review_game(
         cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
         kyokus.append(cur_kyoku)
 
-    # Run Mortal neural network batch inference if loaded
-    if progress_callback:
-        progress_callback(82.0, f"正在运行神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
-    mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch) if mortal is not None else None
+    # Run Mortal neural network batch inference if mortal is active
+    if mortal is not None:
+        if progress_callback:
+            progress_callback(82.0, f"正在运行 Mortal-V4-582500 神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
+        mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
+        if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
+            raise RuntimeError("Mortal-V4-582500 神经网络推理输出与待评决策数不匹配，已终止分析。")
+        if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):
+            raise RuntimeError("Mortal 神经网络输出包含无效的合法动作权重，已终止分析。")
+    else:
+        mortal_q_batch = None
 
     # Finalize all decisions & compute summary statistics
     total_reviewed = 0
@@ -1160,7 +1098,7 @@ def review_game(
             progress_callback(pct, f"正在生成决策建议 ({d_idx + 1}/{len(pending_decisions)})...")
         mask = item["mask"]
         legal_labels = np.nonzero(mask)[0].tolist()
-        q_full = mortal_q_batch[d_idx] if mortal_q_batch is not None else item["q_heuristic"]
+        q_full = mortal_q_batch[d_idx]
 
         q_legal = np.array([float(q_full[l]) for l in legal_labels], dtype=np.float32)
         probs = softmax(q_legal, temperature=temperature)
@@ -1177,6 +1115,7 @@ def review_game(
                 item["kakan_cands"],
             )
             m_info = item["meta_by_action"].get(label, {})
+            raw_q = float(q_legal[idx_in_legal])
             candidates.append(
                 {
                     "label": int(label),
@@ -1184,7 +1123,8 @@ def review_game(
                     "action_cn": format_action_cn(act_dict),
                     "short_cn": short_action_cn(act_dict),
                     "pai": act_dict.get("pai"),
-                    "q_value": round(float(q_legal[idx_in_legal]), 3),
+                    "raw_q": raw_q,
+                    "q_value": round(raw_q, 3),
                     "prob": round(float(probs[idx_in_legal]) * 100.0, 2),
                     "shanten_after": m_info.get("shanten_after", item["shanten"]),
                     "ukeire": m_info.get("ukeire", 0),
@@ -1197,7 +1137,8 @@ def review_game(
                 }
             )
 
-        candidates.sort(key=lambda c: c["q_value"], reverse=True)
+        # Primary sort strictly determined by raw unrounded Q-value descending
+        candidates.sort(key=lambda c: c["raw_q"], reverse=True)
         for rank_i, c in enumerate(candidates):
             c["rank"] = rank_i + 1
 
@@ -1206,10 +1147,10 @@ def review_game(
         best_cand = candidates[0]
 
         is_equal = actual_cand["label"] == best_cand["label"]
-        q_min = min(c["q_value"] for c in candidates)
-        q_max = max(c["q_value"] for c in candidates)
-        rel_score = 1.0 if is_equal else (actual_cand["q_value"] - q_min) / max(q_max - q_min, 1e-6)
-        q_loss = max(0.0, best_cand["q_value"] - actual_cand["q_value"])
+        q_min = min(c["raw_q"] for c in candidates)
+        q_max = max(c["raw_q"] for c in candidates)
+        rel_score = 1.0 if is_equal else (actual_cand["raw_q"] - q_min) / max(q_max - q_min, 1e-6)
+        q_loss = max(0.0, best_cand["raw_q"] - actual_cand["raw_q"])
         actual_prob = actual_cand["prob"]
 
         # Verdict classification (NAGA style)
@@ -1288,21 +1229,21 @@ def review_game(
                 kyoku_obj["steps"][step_idx]["decision_idx"] = dec_idx_in_kyoku
 
     # Compute overall rating & per-kyoku stats
-    rating = ((raw_rating_sum / total_reviewed) ** 2) * 100.0 if total_reviewed > 0 else 100.0
-    match_rate = (total_matches / total_reviewed) * 100.0 if total_reviewed > 0 else 100.0
+    overall_rating = ((raw_rating_sum / total_reviewed) ** 2) * 100.0 if total_reviewed > 0 else 100.0
+    overall_match_rate = (total_matches / total_reviewed) * 100.0 if total_reviewed > 0 else 100.0
     blunder_rate = (blunders / total_reviewed) * 100.0 if total_reviewed > 0 else 0.0
 
-    if rating >= 92:
+    if overall_rating >= 92:
         grade = "S+"
-    elif rating >= 87:
+    elif overall_rating >= 87:
         grade = "S"
-    elif rating >= 82:
+    elif overall_rating >= 82:
         grade = "A+"
-    elif rating >= 76:
+    elif overall_rating >= 76:
         grade = "A"
-    elif rating >= 70:
+    elif overall_rating >= 70:
         grade = "B+"
-    elif rating >= 62:
+    elif overall_rating >= 62:
         grade = "B"
     else:
         grade = "C"
@@ -1355,20 +1296,29 @@ def review_game(
         "player_names": names,
         "meta": meta or {},
         "engine": {
-            "type": "mortal" if mortal is not None else "builtin",
-            "tag": mortal.tag if mortal is not None else "Built-in SP+Defense (libriichi Rust)",
+            "type": "mortal",
+            "id": resolved_id,
+            "tag": mortal.tag,
+            "model_path": str(resolved_pth) if resolved_pth else None,
+            "weight_file": resolved_pth.name,
+            "weight_sha256": mortal.weight_sha256,
+            "version": mortal.version,
+            "steps": mortal.steps,
+            "q_source": "neural_network",
+            "review_schema": REVIEW_SCHEMA,
+            "device": str(mortal.device).upper() if mortal is not None else "CPU",
         },
         "summary": {
             "total_reviewed": total_reviewed,
             "total_matches": total_matches,
-            "match_rate": round(match_rate, 1),
-            "rating": round(rating, 1),
+            "match_rate": round(overall_match_rate, 1),
+            "rating": round(overall_rating, 1),
             "grade": grade,
             "blunders": blunders,
             "blunder_rate": round(blunder_rate, 1),
             "inaccuracies": inaccuracies,
         },
-        "match_rate": round(match_rate, 1),
+        "match_rate": round(overall_match_rate, 1),
         "blunders": blunders,
         "decisions": [d for k in kyokus for d in k.get("decisions", [])],
         "kyokus": kyokus,

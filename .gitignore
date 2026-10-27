@@ -3,6 +3,8 @@ __pycache__/
 backups/
 
 data/models/*.pth
+data/models/*.tmp
+.pytest_cache/
 data/records/
 data/config.local.json
 
@@ -11,3 +13,4 @@ data/config.local.json
 cloudflared.exe
 
 data/reviews/
+data/config.json
