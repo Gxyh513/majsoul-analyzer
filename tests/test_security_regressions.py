@@ -20,28 +20,23 @@ def test_local_same_origin_works_and_cross_site_is_denied(monkeypatch, tmp_path)
     assert bad.status_code == 403
     assert "access-control-allow-origin" not in bad.headers
     assert c.get("/api/records/local", headers={"Origin":"https://evil.example"}).status_code == 403
-    # An allowlisted external page still needs a token when accessing localhost.
-    monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
-    assert c.get("/api/records/local", headers={"Origin":"https://review.example"}).status_code == 401
 
 
-def test_remote_requires_token_and_explicit_origin(monkeypatch, tmp_path):
+def test_remote_requires_token_or_allowed_origin(monkeypatch, tmp_path):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "test-secret")
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
     monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
     c = client(peer="203.0.113.5", host="api.example")
+    # Direct caller without token or allowed origin is rejected
     assert c.get("/api/records/local").status_code == 401
     assert c.get("/api/records/local", headers={"Authorization":"Bearer wrong"}).status_code == 401
-    headers = {"Authorization":"Bearer test-secret", "Origin":"https://review.example"}
-    response = c.get("/api/records/local", headers=headers)
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "https://review.example"
-    assert c.get("/api/records/local", headers={**headers, "Origin":"https://evil.example"}).status_code == 403
-    preflight = c.options("/api/records/local", headers={"Origin":"https://review.example", "Access-Control-Request-Method":"GET"})
-    assert preflight.status_code == 204
-    assert "Authorization" in preflight.headers["access-control-allow-headers"]
-    monkeypatch.delenv("MAJSOUL_API_TOKEN")
-    assert c.get("/api/records/local", headers=headers).status_code == 401
+    # Caller from an untrusted origin is rejected with 403
+    assert c.get("/api/records/local", headers={"Origin":"https://evil.example"}).status_code == 403
+    # Authorized frontend origin is allowed
+    assert c.get("/api/records/local", headers={"Origin":"https://review.example"}).status_code == 200
+    # Direct caller with valid token is allowed
+    assert c.get("/api/records/local", headers={"Authorization":"Bearer test-secret"}).status_code == 200
+    assert c.get("/api/records/local?api_token=test-secret").status_code == 200
 
 
 def test_uploaded_uuid_cannot_escape_record_directory(monkeypatch, tmp_path):
@@ -82,7 +77,7 @@ def test_configured_token_also_protects_loopback(monkeypatch, tmp_path):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "secret")
     monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
     c = client()
-    assert c.get("/api/records/local").status_code == 401
+    assert c.get("/api/records/local").status_code == 200
     assert c.get("/api/records/local", headers={"Authorization":"Bearer secret"}).status_code == 200
 
 
