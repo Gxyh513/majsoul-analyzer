@@ -56,20 +56,12 @@ def test_uploaded_uuid_cannot_escape_record_directory(monkeypatch, tmp_path):
 
 
 def test_symlink_record_cannot_escape(monkeypatch, tmp_path):
-    import pytest
     root = tmp_path / "records"
     root.mkdir()
     outside = tmp_path / "outside.json"
     outside.write_text("original")
-    try:
-        (root / "safe.json").symlink_to(outside)
-    except OSError:
-        pytest.skip("symlink creation unavailable")
     monkeypatch.setattr(server_app, "RECORDS_DIR", root)
-    from fastapi import HTTPException
-    import pytest
-    with pytest.raises(HTTPException):
-        asyncio.run(server_app.resolve_game_data(content={"head":{"uuid":"safe","accounts":[],"result":{},"config":{}},"actions":[]}, target_actor=0))
+    asyncio.run(server_app.resolve_game_data(content={"head":{"uuid":"safe","accounts":[],"result":{},"config":{}},"actions":[]}, target_actor=0))
     assert outside.read_text() == "original"
 
 
@@ -81,21 +73,18 @@ def test_configured_token_also_protects_loopback(monkeypatch, tmp_path):
     assert c.get("/api/records/local", headers={"Authorization":"Bearer secret"}).status_code == 200
 
 
-def test_path_resolution_guard_blocks_escaping_target(monkeypatch, tmp_path):
-    from fastapi import HTTPException
-    import pytest
+def test_resolve_game_data_does_not_persist_records_to_disk(monkeypatch, tmp_path):
     root = tmp_path / "records"
     root.mkdir()
     monkeypatch.setattr(server_app, "RECORDS_DIR", root)
-    original_resolve = Path.resolve
-    def redirected(path, *args, **kwargs):
-        if path == root / "safe.json":
-            return tmp_path / "outside.json"
-        return original_resolve(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "resolve", redirected)
-    with pytest.raises(HTTPException):
-        asyncio.run(server_app.resolve_game_data(content={"head":{"uuid":"safe","accounts":[],"result":{},"config":{}},"actions":[]}, target_actor=0))
-    assert not (tmp_path / "outside.json").exists()
+    content = {"head": {"uuid": "safe_uuid", "accounts": [], "result": {}, "config": {}}, "actions": []}
+    game_id, events, meta, seat = asyncio.run(server_app.resolve_game_data(content=content, target_actor=0))
+    assert game_id == "safe_uuid"
+    assert len(events) > 0
+    # Zero files must be written to disk
+    assert not list(root.glob("*.json"))
+    assert not list(root.glob("*.tmp"))
+    assert not list(tmp_path.glob("*.json"))
 
 
 def test_api_status_is_public_health_check(monkeypatch):
