@@ -368,7 +368,6 @@ function apiAuthHeaders() {
   const token = getApiToken();
   return token ? {
     Authorization: `Bearer ${token}`,
-    "X-Api-Token": token,
   } : {};
 }
 
