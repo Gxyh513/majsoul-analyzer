@@ -59,3 +59,17 @@ def test_empty_pool_does_not_fall_back_to_old_account(monkeypatch):
     app.LOCAL_CONFIG_PATH.write_text(json.dumps({"account":"stale", "password":"old"}))
     monkeypatch.setenv("MAJSOUL_ACCOUNTS_JSON", "[]")
     assert app.get_all_configured_accounts() == []
+
+
+def test_saving_settings_does_not_persist_environment_credentials(monkeypatch):
+    app.LOCAL_CONFIG_PATH.write_text(json.dumps({"account":"local", "password":"local-pw", "custom":"keep"}))
+    monkeypatch.setenv("MAJSOUL_ACCOUNTS_JSON", json.dumps([{"account":"remote", "password":"secret-remote"}, {"account":"backup", "password":"secret-backup"}]))
+    cfg = app.load_config()
+    cfg["selected_model"] = "akagi"
+    app.save_config(cfg)
+    saved = json.loads(app.LOCAL_CONFIG_PATH.read_text(encoding="utf8"))
+    assert saved["account"] == "local" and saved["password"] == "local-pw"
+    assert saved["custom"] == "keep" and saved["selected_model"] == "akagi"
+    assert "backup_accounts" not in saved
+    assert "secret-remote" not in app.LOCAL_CONFIG_PATH.read_text(encoding="utf8")
+    assert "secret-backup" not in app.LOCAL_CONFIG_PATH.read_text(encoding="utf8")
