@@ -366,9 +366,13 @@ function setApiToken(token) {
 
 function apiAuthHeaders() {
   const token = getApiToken();
-  return token ? {
-    Authorization: `Bearer ${token}`,
-  } : {};
+  if (!token) return {};
+  const backend = getBackendUrl();
+  // ModelScope *.ms.show gateway intercepts standard Authorization header for its own SDK tokens
+  if (backend.includes("ms.show") || window.location.hostname.includes("ms.show")) {
+    return {};
+  }
+  return { Authorization: `Bearer ${token}` };
 }
 
 async function fetchReviewStream(postBody, onProgress) {
@@ -497,15 +501,19 @@ async function apiFetch(path, options = {}) {
   const backend = getBackendUrl();
   const url = isAbs ? path : buildApiUrl(backend, path);
 
+  const headers = {
+    Accept: "application/json",
+    ...apiAuthHeaders(),
+    ...(options.headers || {}),
+  };
+  if (options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
   const resp = await fetch(url, {
     mode: "cors",
     ...options,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...apiAuthHeaders(),
-      ...(options.headers || {}),
-    },
+    headers,
   });
 
   if (!resp.ok) {
