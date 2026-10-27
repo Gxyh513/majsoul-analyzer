@@ -16,8 +16,8 @@
    id="svg2"
    version="1.1"
    inkscape:version="0.91 r13725"
-   sodipodi:docname="Front.svg"
-   inkscape:export-filename="C:\Users\Fluffy\Documents\Projects\ExtraRiichi\Tiles\Export\Regular\Front.png"
+   sodipodi:docname="Haku.svg"
+   inkscape:export-filename="C:\Users\Fluffy\Documents\Projects\ExtraRiichi\Haku.png"
    inkscape:export-xdpi="180"
    inkscape:export-ydpi="180">
   <defs
@@ -149,101 +149,6 @@
        width="6"
        patternUnits="userSpaceOnUse"
        id="EMFhbasepattern" />
-    <filter
-       style="color-interpolation-filters:sRGB;"
-       inkscape:label="Blur"
-       id="filter4198">
-      <feGaussianBlur
-         stdDeviation="2.51 2.51"
-         result="blur"
-         id="feGaussianBlur4200" />
-    </filter>
-    <mask
-       maskUnits="userSpaceOnUse"
-       id="mask4222">
-      <rect
-         ry="40"
-         y="652.28351"
-         x="0"
-         height="400.77808"
-         width="300.05896"
-         id="rect4224"
-         style="opacity:1;fill:#ff3737;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:10;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1" />
-    </mask>
-    <filter
-       style="color-interpolation-filters:sRGB"
-       inkscape:label="Blur"
-       id="filter4198-0">
-      <feGaussianBlur
-         stdDeviation="2.51 2.51"
-         result="blur"
-         id="feGaussianBlur4200-5" />
-    </filter>
-    <mask
-       maskUnits="userSpaceOnUse"
-       id="mask4216">
-      <rect
-         ry="40"
-         y="-1325.6035"
-         x="-451.93805"
-         height="400.77808"
-         width="300.05896"
-         id="rect4218"
-         style="opacity:1;fill:#ff3737;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:10;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
-         transform="scale(-1,-1)" />
-    </mask>
-    <filter
-       style="color-interpolation-filters:sRGB"
-       inkscape:label="Blur"
-       id="filter4242">
-      <feGaussianBlur
-         stdDeviation="2.51 2.51"
-         result="blur"
-         id="feGaussianBlur4244" />
-    </filter>
-    <mask
-       maskUnits="userSpaceOnUse"
-       id="mask4222-0">
-      <rect
-         ry="40"
-         y="652.28351"
-         x="0"
-         height="400.77808"
-         width="300.05896"
-         id="rect4224-8"
-         style="opacity:1;fill:#ff3737;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:10;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1" />
-    </mask>
-    <filter
-       style="color-interpolation-filters:sRGB"
-       inkscape:label="Blur"
-       id="filter4198-8">
-      <feGaussianBlur
-         stdDeviation="2.51 2.51"
-         result="blur"
-         id="feGaussianBlur4200-3" />
-    </filter>
-    <mask
-       maskUnits="userSpaceOnUse"
-       id="mask4216-0">
-      <rect
-         ry="40"
-         y="-1325.6035"
-         x="-451.93805"
-         height="400.77808"
-         width="300.05896"
-         id="rect4218-5"
-         style="opacity:1;fill:#ff3737;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:10;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
-         transform="scale(-1,-1)" />
-    </mask>
-    <filter
-       style="color-interpolation-filters:sRGB"
-       inkscape:label="Blur"
-       id="filter4242-2">
-      <feGaussianBlur
-         stdDeviation="2.51 2.51"
-         result="blur"
-         id="feGaussianBlur4244-2" />
-    </filter>
   </defs>
   <sodipodi:namedview
      id="base"
@@ -252,9 +157,9 @@
      borderopacity="1"
      inkscape:pageopacity="0"
      inkscape:pageshadow="2"
-     inkscape:zoom="0.50548195"
-     inkscape:cx="314.366"
-     inkscape:cy="374.8318"
+     inkscape:zoom="1.4297189"
+     inkscape:cx="28.942359"
+     inkscape:cy="260.89845"
      inkscape:document-units="px"
      inkscape:current-layer="layer1"
      showgrid="true"
@@ -305,30 +210,5 @@
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
-     transform="translate(0,-652.36216)">
-    <rect
-       style="opacity:1;fill:#f5f0eb;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-width:10;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
-       id="rect4164"
-       width="300.05896"
-       height="400.77808"
-       x="0"
-       y="652.28351"
-       ry="40" />
-    <path
-       transform="translate(-1.3432789e-7,-1.3368765e-6)"
-       style="fill:#ffffff;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;filter:url(#filter4198-8)"
-       d="M -4.7687833,775.07096 C -9.6501835,741.99485 -16.84552,674.23676 -1.2788716,652.0641 18.998297,625.94378 233.50094,631.63117 263.31435,653.90999 276.21398,662.64856 70.349579,663.12124 47.099353,691.74479 24.390958,719.11242 0.65060847,818.18718 -4.7687833,775.07096 Z"
-       id="path4166"
-       inkscape:connector-curvature="0"
-       sodipodi:nodetypes="ccccc"
-       mask="url(#mask4222-0)" />
-    <path
-       sodipodi:nodetypes="ccccc"
-       inkscape:connector-curvature="0"
-       id="path4221"
-       d="m 151.73588,1025.0177 c -3.32683,-9.3138 -10.24843,-68.45389 5.31821,-90.62655 20.27717,-26.12032 219.43558,-16.45796 231.55506,-9.93184 11.07433,5.31702 -178.60366,0.0589 -204.85126,34.86646 -21.59349,30.0006 -26.50086,82.17843 -32.02201,65.69193 z"
-       style="fill:#000000;fill-opacity:0.19607843;fill-rule:evenodd;stroke:none;stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;filter:url(#filter4198-8)"
-       transform="matrix(-1,0,0,-1,451.93806,1977.887)"
-       mask="url(#mask4216-0)" />
-  </g>
+     transform="translate(0,-652.36216)" />
 </svg>
