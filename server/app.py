@@ -205,6 +205,26 @@ def load_config() -> dict[str, Any]:
         cfg["password"] = os.environ["MAJSOUL_PASSWORD"]
     if os.environ.get("MAJSOUL_ACCESS_TOKEN"):
         cfg["access_token"] = os.environ["MAJSOUL_ACCESS_TOKEN"]
+
+    # A secret-managed pool is authoritative, so editing it can add or remove
+    # accounts without stale local or individual environment entries returning.
+    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
+        try:
+            pool = json.loads(os.environ["MAJSOUL_ACCOUNTS_JSON"])
+        except (TypeError, ValueError):
+            raise ValueError("MAJSOUL_ACCOUNTS_JSON 必须是账号对象组成的 JSON 数组") from None
+        if not isinstance(pool, list) or any(not isinstance(item, dict) for item in pool):
+            raise ValueError("MAJSOUL_ACCOUNTS_JSON 必须是账号对象组成的 JSON 数组")
+        for item in pool:
+            if any(item.get(k) is not None and not isinstance(item[k], str) for k in ("account", "password", "access_token", "nickname")):
+                raise ValueError("MAJSOUL_ACCOUNTS_JSON 中的账号、密码和令牌必须为字符串")
+            if not (item.get("access_token") or (item.get("account") and item.get("password"))):
+                raise ValueError("账号池每一项须提供访问令牌，或账号和密码")
+        for key in ("account", "password", "access_token", "nickname", "account_id", "backup_accounts", "accounts", "account_pool"):
+            cfg.pop(key, None)
+        if pool:
+            cfg.update({k: pool[0][k] for k in ("account", "password", "access_token", "nickname", "account_id") if k in pool[0]})
+            cfg["backup_accounts"] = pool[1:]
     return cfg
 
 
@@ -581,6 +601,16 @@ class EngineConfigReq(BaseModel):
 # Multi-Account Pool & Helper functions
 # ---------------------------------------------------------------------------
 _ms_client_lock = asyncio.Lock()
+# Refreshed credentials for environment-managed pools remain in memory only.
+_env_pool_token_overrides: dict[str, tuple[str | None, str]] = {}
+
+
+def _account_pool_key(acc: dict) -> str:
+    name = str(acc.get("account") or "").strip().lower()
+    if name:
+        return "account:" + name
+    account_id = str(acc.get("account_id") or "").strip()
+    return "id:" + account_id if account_id and account_id != "0" else "token:" + str(acc.get("access_token") or "")
 
 
 def _mask_account(name_or_acc: str | None) -> str:
@@ -696,6 +726,10 @@ def get_all_configured_accounts(cfg: dict | None = None) -> list[dict]:
         if token:
             seen_tokens.add(token)
 
+        if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
+            override = _env_pool_token_overrides.get(_account_pool_key(acc_entry))
+            if override and acc_entry.get("access_token") == override[0]:
+                acc_entry["access_token"] = override[1]
         deduped.append(acc_entry)
 
     return deduped
@@ -735,7 +769,13 @@ def _persist_updated_token(
     nickname: str | None = None,
     account_id: int | None = None,
 ):
-    """Safely updates refreshed access_token/nickname/account_id in local config without losing other fields."""
+    """Keep managed-pool token refreshes in memory; persist local accounts normally."""
+    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
+        key = _account_pool_key(acc)
+        old = _env_pool_token_overrides.get(key)
+        source_token = old[0] if old and old[1] == acc.get("access_token") else acc.get("access_token")
+        _env_pool_token_overrides[key] = (source_token, new_token)
+        return
     try:
         cfg = load_config()
         updated = False
