@@ -1286,10 +1286,6 @@ async def resolve_game_data(
                 game_id = meta.get("uuid") or ("ms-" + hashlib.md5(json.dumps(content).encode()).hexdigest()[:10])
                 if not isinstance(game_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_id):
                     raise HTTPException(status_code=400, detail="牌谱 UUID 格式无效")
-                record_path = RECORDS_DIR / f"{game_id}.json"
-                if record_path.resolve().parent != RECORDS_DIR.resolve():
-                    raise HTTPException(status_code=400, detail="牌谱保存路径无效")
-                record_path.write_text(json.dumps(content, ensure_ascii=False), encoding="utf8")
             except ConvertError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
         elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
@@ -1335,12 +1331,9 @@ async def resolve_game_data(
         record = json.loads(record_file.read_text(encoding="utf8"))
         log.info("[牌谱读取] 命中服务器磁盘已存牌谱: data/records/%s.json (无需重新请求雀魂服务器)", game_uuid)
     else:
-        log.info("[牌谱抓取] 本地无此牌谱，正在连接雀魂服务器请求数据 (UUID: %s)...", game_uuid)
+        log.info("[牌谱抓取] 正在连接雀魂服务器请求数据 (UUID: %s)...", game_uuid)
         record = await fetch_record_with_failover(game_uuid)
-        tmp_file = record_file.with_suffix(".tmp")
-        tmp_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf8")
-        tmp_file.replace(record_file)
-        log.info("[牌谱抓取] 雀魂官方牌谱抓取成功并已持久化保存 (大小: %.1f KB)", len(record_file.read_bytes()) / 1024)
+        log.info("[牌谱抓取] 雀魂官方牌谱抓取成功 | UUID: %s", game_uuid)
 
     try:
         mjai_events = to_mjai(record)
