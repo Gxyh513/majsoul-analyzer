@@ -229,6 +229,18 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(cfg: dict[str, Any]):
+    cfg = dict(cfg)
+    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
+        # Do not persist secret-managed credentials when saving unrelated
+        # settings. Preserve any pre-existing local-only account configuration.
+        try:
+            local = json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf8")) if LOCAL_CONFIG_PATH.is_file() else {}
+        except (ValueError, OSError):
+            raise RuntimeError("本地配置无法读取，已取消保存") from None
+        for key in ("account", "password", "access_token", "nickname", "account_id", "backup_accounts", "accounts", "account_pool"):
+            cfg.pop(key, None)
+            if key in local:
+                cfg[key] = local[key]
     LOCAL_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf8")
 
 
@@ -1089,6 +1101,7 @@ async def api_status():
         "ok": True,
         "majsoul": {
             "logged_in": ms_client.logged_in,
+            "account_pool_count": len(get_all_configured_accounts()),
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
