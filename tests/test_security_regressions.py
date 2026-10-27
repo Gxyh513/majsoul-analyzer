@@ -101,3 +101,15 @@ def test_path_resolution_guard_blocks_escaping_target(monkeypatch, tmp_path):
     with pytest.raises(HTTPException):
         asyncio.run(server_app.resolve_game_data(content={"head":{"uuid":"safe","accounts":[],"result":{},"config":{}},"actions":[]}, target_actor=0))
     assert not (tmp_path / "outside.json").exists()
+
+
+def test_api_status_is_public_health_check(monkeypatch):
+    monkeypatch.setenv("MAJSOUL_API_TOKEN", "test-secret")
+    c = client(peer="203.0.113.5", host="api.example")
+    # /api/status is exempt from token requirement
+    assert c.get("/api/status").status_code == 200
+    # but other endpoints require token
+    assert c.get("/api/records/local").status_code == 401
+    # and support X-Api-Token header or api_token query param
+    assert c.get("/api/records/local", headers={"X-Api-Token": "test-secret"}).status_code == 200
+    assert c.get("/api/records/local?api_token=test-secret").status_code == 200

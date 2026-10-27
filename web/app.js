@@ -314,7 +314,10 @@ function getApiToken() {
 
 function apiAuthHeaders() {
   const token = getApiToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token ? {
+    Authorization: `Bearer ${token}`,
+    "X-Api-Token": token,
+  } : {};
 }
 
 async function fetchReviewStream(postBody, onProgress) {
@@ -427,6 +430,10 @@ function buildApiUrl(backend, path) {
     }
     if (studioToken && !full.searchParams.has("studio_token")) {
       full.searchParams.set("studio_token", studioToken);
+    }
+    const apiToken = getApiToken();
+    if (apiToken && !full.searchParams.has("api_token") && path.startsWith("/api/") && path !== "/api/status") {
+      full.searchParams.set("api_token", apiToken);
     }
     return full.toString();
   } catch (e) {
