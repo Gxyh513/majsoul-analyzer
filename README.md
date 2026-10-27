@@ -2,6 +2,11 @@
 
 Majsoul Analyzer 将雀魂四人麻将牌谱转换为 MJAI 事件，使用 Mortal 神经网络分析决策，并提供四家视角的逐步回放。
 
+- 在线前端：[majsoul.ccwu.cc](https://majsoul.ccwu.cc)
+- 后端创空间：[ModelScope / majsoul-analyzer](https://modelscope.cn/studios/Gxyh513/majsoul-analyzer)
+
+线上使用情况以实际部署状态为准；受保护的远程服务需要访问令牌。
+
 ## 功能
 
 - 导入雀魂牌谱链接、雀魂原始 JSON 或 MJAI JSON/JSONL；可使用内置示例牌谱。
@@ -70,10 +75,10 @@ docker build -t majsoul-analyzer:latest .
 ```
 
 ```bash
-docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN=<自定义强随机令牌> -e MAJSOUL_ALLOWED_ORIGINS=https://example.com majsoul-analyzer:latest
+docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_ALLOWED_ORIGINS majsoul-analyzer:latest
 ```
 
-将示例域名和令牌替换为自己的值；不要把真实令牌写入仓库或公开日志。Docker/ModelScope 发布前应配置好环境变量并验证实际启动情况。需要雀魂账号时，使用部署平台的私密环境变量 `MAJSOUL_ACCOUNT`、`MAJSOUL_PASSWORD` 或 `MAJSOUL_ACCESS_TOKEN`，不要将配置文件打包进镜像。
+运行前在当前 shell 中设置 `MAJSOUL_API_TOKEN` 和 `MAJSOUL_ALLOWED_ORIGINS`；不要把真实令牌写入仓库或公开日志。Docker/ModelScope 发布前应配置好环境变量并验证实际启动情况。需要雀魂账号时，使用部署平台的私密环境变量 `MAJSOUL_ACCOUNT`、`MAJSOUL_PASSWORD` 或 `MAJSOUL_ACCESS_TOKEN`，不要将配置文件打包进镜像。
 
 ### 访问控制
 
