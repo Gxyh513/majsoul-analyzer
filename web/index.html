@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>牌谱检讨 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20261026M" />
+  <link rel="stylesheet" href="/styles.css?v=20261027X" />
 </head>
 <body>
   <!-- ========================================================================
@@ -26,15 +26,41 @@
           placeholder="粘贴雀魂牌谱链接或牌谱号，回车即可开始..."
           autocomplete="off" spellcheck="false" aria-label="牌谱链接" />
 
-        <div class="kd-model-group">
-          <button type="button" class="kd-model-btn active" data-model="akagi" id="btnModelAkagi">
-            <span>Mortal-V4-582500</span>
-            <span style="font-size:11px; opacity:0.75;">582k步 进攻强化</span>
-          </button>
-          <button type="button" class="kd-model-btn" data-model="mortal" id="btnModelMortal">
-            <span>Mortal 核心 (v3)</span>
-            <span style="font-size:11px; opacity:0.75;">天凤十段 平衡型</span>
-          </button>
+        <!-- 本地文件拖拽与点击导入入口 -->
+        <div class="kd-dropzone" id="fileDropzone" title="点击选择或拖拽本地牌谱文件">
+          <input type="file" id="localFileInput" accept=".json,.jsonl" style="display:none;" />
+          <div class="kd-dropzone-icon">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <div class="kd-dropzone-text">
+            <span class="kd-dropzone-primary">本地文件导入 (点击选择 / 拖拽文件到此处)</span>
+            <span class="kd-dropzone-sub">支持雀魂原始 JSON / mjai 格式 (.json / .jsonl)</span>
+          </div>
+        </div>
+
+        <div class="kd-single-model-card" id="landingModelCard" data-model="akagi" title="唯一启用模型：Mortal-V4-582500 深度强化学习引擎">
+          <div class="kd-single-model-left">
+            <div class="kd-single-model-icon">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <div class="kd-single-model-text">
+              <div class="kd-single-model-title-line">
+                <span class="kd-single-model-name">Mortal-V4-582500</span>
+                <span class="kd-single-model-subtag">582k步 进攻强化</span>
+              </div>
+              <div class="kd-single-model-desc">本地权重已加载 · 唯一启用分析引擎</div>
+            </div>
+          </div>
+          <div class="kd-single-model-badge">
+            <span class="kd-single-model-dot"></span>
+            <span id="landingModelDevice">CUDA 就绪</span>
+          </div>
         </div>
 
         <button id="btnHomeAnalyze" class="kd-landing-submit">开始分析</button>
@@ -54,234 +80,149 @@
        Tier 2: Review Screen (KillerDucky Mahjong Board)
        ======================================================================== -->
   <section id="tier2Screen" class="kd-tier2 hidden">
-    <!-- Top Header -->
-    <header class="kd-header">
-      <!-- Tier 1: Global Toolbar (Brand, Seats & Preferences) -->
-      <div class="kd-header-row kd-header-top">
-        <div class="kd-header-left">
-          <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
-          <div id="seatTabs" class="kd-seat-tabs"></div>
-        </div>
 
-        <div class="kd-header-right">
-          <button id="btnToggleHideId" class="kd-chip-btn" title="切换是否隐藏玩家ID与昵称">隐藏ID</button>
-          <button id="btnToggleHands" class="kd-chip-btn" title="切换别家明牌/暗牌 (快捷键 H)">
-            <span id="toggleHandsText">明牌</span>
-          </button>
-          <button id="btnToggleAudio" class="kd-chip-btn" title="切换出牌音效开关 (快捷键 M)">
-            <span id="toggleAudioText">音效: 开</span>
-          </button>
-          <button id="btnOpenEngineModal" class="kd-chip-btn" title="点击切换分析模型">
-            <span id="engineStatusText">Mortal-V4-582500 · CPU</span>
-          </button>
-          <div id="gameSummaryPill" class="kd-match-badge" title="点击查看全庄得点表"><span class="kd-badge-match">模型一致率: --%</span></div>
-        </div>
-      </div>
-
-      <!-- Tier 2: Step Controller & Timeline Scrubber Bar -->
-      <div class="kd-header-row kd-header-bottom">
-        <div class="kd-step-left">
-          <select id="kyokuSelect" class="kd-kyoku-select" title="直接切换局数"></select>
-        </div>
-
-        <div class="kd-step-mid">
-          <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
-          <select id="playSpeedSelect" class="kd-speed-select" title="调节播放速度">
-            <option value="0.5">0.5x</option>
-            <option value="0.75">0.75x</option>
-            <option value="1" selected>1.0x</option>
-            <option value="1.25">1.25x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2">2.0x</option>
-            <option value="3">3.0x</option>
-          </select>
-          <span id="stepCounterText" class="kd-step-counter">0 / 0</span>
-          <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
-        </div>
-      </div>
-    </header>
 
     <!-- Main Board & Sidebar -->
     <main>
       <div class="outer">
-        <!-- 655x735 Mahjong Board Grid -->
-        <div class="grid-main" id="gridMain">
-          <!-- P0 (Bottom / Hero) Hand Container with Discard Probability Bars -->
-          <span class="grid-hand-p0-container">
-            <span id="discard-bars" class="discard-bars">
-              <svg id="discardBarsSvg" class="discard-bars-svg"></svg>
+        <!-- Left Panel: Back to Home, Game Summary & Vertical Perspective Selector -->
+        <div class="left-panel">
+          <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
+          <div id="gameSummaryPill" class="kd-match-badge" title="模型一致率与综合评分">
+            <span class="kd-badge-match">模型一致率: --%</span>
+          </div>
+          <!-- 切换视角按钮放在左侧下方，竖着显示 -->
+          <div id="seatTabs" class="kd-seat-tabs"></div>
+        </div>
+
+        <!-- Center Column: Board & Scrubber Bar -->
+        <div class="board-column">
+          <!-- 655x735 Mahjong Board Grid -->
+          <div class="grid-main" id="gridMain">
+            <!-- P0 (Bottom / Hero) Hand Container with Discard Probability Bars -->
+            <span class="grid-hand-p0-container">
+              <span id="discard-bars" class="discard-bars">
+                <svg id="discardBarsSvg" class="discard-bars-svg"></svg>
+              </span>
+              <span class="grid-hand pov-p0 grid-hand-p0">
+                <span class="pov-p0 hand-closed-p0" id="handBottomClosed"></span>
+                <span class="pov-p0 hand-calls-p0" id="handBottomCalls"></span>
+              </span>
             </span>
-            <span class="grid-hand pov-p0 grid-hand-p0">
-              <span class="pov-p0 hand-closed-p0" id="handBottomClosed"></span>
-              <span class="pov-p0 hand-calls-p0" id="handBottomCalls"></span>
+
+            <!-- P3 (Left / Kami) Hand -->
+            <span class="grid-hand pov-p3 grid-hand-p3" title="点击切换明牌/暗牌">
+              <span class="pov-p3 hand-closed-p3" id="handLeftClosed"></span>
+              <span class="pov-p3 hand-calls-p3" id="handLeftCalls"></span>
             </span>
-          </span>
 
-          <!-- P3 (Left / Kami) Hand -->
-          <span class="grid-hand pov-p3 grid-hand-p3" title="点击切换明牌/暗牌">
-            <span class="pov-p3 hand-closed-p3" id="handLeftClosed"></span>
-            <span class="pov-p3 hand-calls-p3" id="handLeftCalls"></span>
-          </span>
+            <!-- P2 (Top / Toimen) Hand -->
+            <span class="grid-hand pov-p2 grid-hand-p2" title="点击切换明牌/暗牌">
+              <span class="pov-p2 hand-closed-p2" id="handTopClosed"></span>
+              <span class="pov-p2 hand-calls-p2" id="handTopCalls"></span>
+            </span>
 
-          <!-- P2 (Top / Toimen) Hand -->
-          <span class="grid-hand pov-p2 grid-hand-p2" title="点击切换明牌/暗牌">
-            <span class="pov-p2 hand-closed-p2" id="handTopClosed"></span>
-            <span class="pov-p2 hand-calls-p2" id="handTopCalls"></span>
-          </span>
+            <!-- P1 (Right / Shimo) Hand -->
+            <span class="grid-hand pov-p1 grid-hand-p1" title="点击切换明牌/暗牌">
+              <span class="pov-p1 hand-closed-p1" id="handRightClosed"></span>
+              <span class="pov-p1 hand-calls-p1" id="handRightCalls"></span>
+            </span>
 
-          <!-- P1 (Right / Shimo) Hand -->
-          <span class="grid-hand pov-p1 grid-hand-p1" title="点击切换明牌/暗牌">
-            <span class="pov-p1 hand-closed-p1" id="handRightClosed"></span>
-            <span class="pov-p1 hand-calls-p1" id="handRightCalls"></span>
-          </span>
+            <!-- 4 Discard Rivers -->
+            <span class="grid-discard pov-p0 grid-discard-p0" id="riverBottom"></span>
+            <span class="grid-discard pov-p1 grid-discard-p1" id="riverRight"></span>
+            <span class="grid-discard pov-p2 grid-discard-p2" id="riverTop"></span>
+            <span class="grid-discard pov-p3 grid-discard-p3" id="riverLeft"></span>
 
-          <!-- 4 Discard Rivers -->
-          <span class="grid-discard pov-p0 grid-discard-p0" id="riverBottom"></span>
-          <span class="grid-discard pov-p1 grid-discard-p1" id="riverRight"></span>
-          <span class="grid-discard pov-p2 grid-discard-p2" id="riverTop"></span>
-          <span class="grid-discard pov-p3 grid-discard-p3" id="riverLeft"></span>
+            <!-- Center 200x200 Info Square -->
+            <div class="grid-info" id="gridInfo">
+              <button class="info-round" id="btnRoundScore" title="点击查看局数得点表">东1</button>
+              <span class="info-tiles-left" id="centerTilesLeft">x69</span>
+              <span class="info-honbas" id="centerHonba"></span>
+              <span class="info-doras" id="centerDoras"></span>
+              <span class="gi-p0-outer"><span class="gi-p0" id="giP0">西 25000</span></span>
+              <span class="gi-p1-outer"><span class="gi-p1" id="giP1">北 25000</span></span>
+              <span class="gi-p2-outer"><span class="gi-p2" id="giP2">东 25000</span></span>
+              <span class="gi-p3-outer"><span class="gi-p3" id="giP3">南 25000</span></span>
+            </div>
+          </div>
 
-          <!-- Center 200x200 Info Square -->
-          <div class="grid-info" id="gridInfo">
-            <button class="info-round" id="btnRoundScore" title="点击查看局数得点表">东1</button>
-            <span class="info-tiles-left" id="centerTilesLeft">x69</span>
-            <span class="info-honbas" id="centerHonba"></span>
-            <span class="info-doras" id="centerDoras"></span>
-            <span class="gi-p0-outer"><span class="gi-p0" id="giP0">西 25000</span></span>
-            <span class="gi-p1-outer"><span class="gi-p1" id="giP1">北 25000</span></span>
-            <span class="gi-p2-outer"><span class="gi-p2" id="giP2">东 25000</span></span>
-            <span class="gi-p3-outer"><span class="gi-p3" id="giP3">南 25000</span></span>
+          <!-- Timeline Scrubber Bar Directly Under Board -->
+          <div class="board-scrubber">
+            <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
+            <select id="playSpeedSelect" class="kd-speed-select" title="调节播放速度">
+              <option value="0.5">0.5x</option>
+              <option value="0.75">0.75x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+              <option value="3">3.0x</option>
+            </select>
+            <span id="stepCounterText" class="kd-step-counter"><b id="stepCurrentNum">0</b><span class="kd-step-slash"> / </span><span id="stepTotalNum">0</span></span>
+            <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
           </div>
         </div>
 
-        <!-- Right Sidebar (Controls, Decision Details, Shortcuts) -->
+        <!-- Right Column 1: Sidebar (8 Control Buttons + Perspective Selector) -->
         <div class="sidebar">
-
-          <!-- 8 Navigation Buttons -->
           <div class="controls">
             <button id="btnPrevKyoku">&lt; 上一局</button>
             <button id="btnNextKyoku">下一局 &gt;</button>
-            <button id="btnPrevDec">&lt; 上一切牌</button>
-            <button id="btnNextDec">下一切牌 &gt;</button>
             <button id="btnPrevBlunder">&lt; 上一错误</button>
             <button id="btnNextBlunder">下一错误 &gt;</button>
+            <button id="btnPrevDec">&lt; 上一切牌</button>
+            <button id="btnNextDec">下一切牌 &gt;</button>
             <button id="btnPrevStep">&lt; 后退</button>
             <button id="btnNextStep">前进 &gt;</button>
           </div>
 
-          <!-- Active Decision Details Card -->
-          <div class="kd-decision-card" id="decisionCard">
-            <div class="kd-dec-header">
-              <span id="decVerdictBadge" class="kd-dec-verdict best">模型一致</span>
-              <span id="decTurnText" class="kd-dec-turn-title" style="display:none;"></span>
+
+
+          <div class="killer-call-div" id="killerCallDiv" style="display:none;">
+            <div class="killer-call-bars">
+              <svg id="callBarsSvg" style="transform-origin: top left; transform: scale(1); position:absolute"></svg>
             </div>
-
-            <!-- Vertical Large Decision Comparison Cards: Player Choice on Top, AI on Bottom -->
-            <div class="kd-hero-compare-vertical" id="decComparisonWrap">
-              <!-- 1. Actual Player Choice (On Top) -->
-              <div class="kd-choice-block kd-choice-actual">
-                <div class="kd-choice-badge-label">玩家</div>
-                <div class="kd-choice-content">
-                  <div id="decActualTileWrap" class="kd-choice-tile-wrap"></div>
-                </div>
-              </div>
-
-              <!-- 2. AI Recommended Choice (On Bottom) -->
-              <div class="kd-choice-block kd-choice-ai">
-                <div class="kd-choice-badge-label">模型</div>
-                <div class="kd-choice-content">
-                  <div id="decAiTileWrap" class="kd-choice-tile-wrap"></div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Standalone Round Settlement Container for Hora & Ryuukyoku -->
-            <div class="kd-settlement-container" id="decSettlementWrap" style="display:none;"></div>
-
-            <!-- Candidates Table with Legible Sized Tiles -->
-            <table class="kd-cand-table" id="decCandTable">
-              <colgroup>
-                <col style="width: 48px;" />
-                <col style="width: 64px;" />
-                <col style="width: 80px;" />
-                <col style="width: 66px;" />
-                <col style="width: 72px;" />
-              </colgroup>
-              <thead id="decCandTableHead">
-                <tr>
-                  <th style="width:48px; text-align:center;">动作</th>
-                  <th style="width:64px; text-align:center;">牌面</th>
-                  <th style="width:80px; text-align:center;">模型权重</th>
-                  <th style="width:66px; text-align:center;">向听</th>
-                  <th style="width:72px; text-align:center;">进张</th>
-                </tr>
-              </thead>
-              <tbody id="decCandTableBody"></tbody>
-            </table>
           </div>
         </div>
 
-        <!-- Right Column 2: Secondary Sidebar (Shortcuts Card on the Right) -->
-        <div class="sidebar-secondary">
-          <!-- Standalone Prominent Keyboard Shortcuts Card on the Right -->
-          <div class="kd-shortcuts-card" id="shortcutsCard">
-            <div class="kd-shortcuts-title">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.85;"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M6 12h.001M10 12h.001M14 12h.001M18 12h.001M7 16h10"/></svg>
-              <span>快捷操作速查</span>
-            </div>
-            <table class="kd-shortcuts-table">
-              <tbody>
-                <tr>
-                  <td class="kd-shortcuts-keys"><kbd class="kd-kbd kd-kbd-wide">空格</kbd></td>
-                  <td class="kd-shortcuts-desc">自动播放 / 暂停</td>
-                </tr>
-                <tr>
-                  <td class="kd-shortcuts-keys">
-                    <kbd class="kd-kbd" title="后退一步"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></kbd>
-                    <kbd class="kd-kbd" title="前进一步"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M5 12h14M12 5l7 7-7 7"/></svg></kbd>
-                  </td>
-                  <td class="kd-shortcuts-desc">后退 / 前进一步</td>
-                </tr>
-                <tr>
-                  <td class="kd-shortcuts-keys">
-                    <kbd class="kd-kbd" title="上一决策"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M12 19V5M5 12l7-7 7 7"/></svg></kbd>
-                    <kbd class="kd-kbd" title="下一决策"><svg viewBox="0 0 24 24" class="kd-kbd-icon"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></kbd>
-                  </td>
-                  <td class="kd-shortcuts-desc">上 / 下一切牌决策</td>
-                </tr>
-                <tr>
-                  <td class="kd-shortcuts-keys">
-                    <kbd class="kd-kbd">,</kbd>
-                    <kbd class="kd-kbd">.</kbd>
-                  </td>
-                  <td class="kd-shortcuts-desc">上 / 下一错误手</td>
-                </tr>
-                <tr>
-                  <td class="kd-shortcuts-keys">
-                    <kbd class="kd-kbd">[</kbd>
-                    <kbd class="kd-kbd">]</kbd>
-                  </td>
-                  <td class="kd-shortcuts-desc">上一局 / 下一局</td>
-                </tr>
-                <tr>
-                  <td class="kd-shortcuts-keys"><kbd class="kd-kbd">H</kbd></td>
-                  <td class="kd-shortcuts-desc">开关别家明牌/暗牌</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <!-- Right Column 2: Opt Info (Player vs Mortal + Candidates Table) -->
+        <div class="opt-info" id="optInfo">
+          <!-- 玩家切 vs Mortal (放回操作表上方) -->
+          <table class="hover-rows actual-vs-ai-table" id="actualVsAiTable">
+            <tbody>
+              <tr><td>玩家</td><td id="optActualCell"></td></tr>
+              <tr><td>Mortal</td><td id="optAiCell"></td></tr>
+            </tbody>
+          </table>
+
+          <!-- 操作候选表 (Q, P) -->
+          <table class="wider-table hover-rows" id="candTable">
+            <thead>
+              <tr><th>操作</th><th>Q</th><th>P</th></tr>
+            </thead>
+            <tbody id="candTableBody"></tbody>
+          </table>
         </div>
       </div>
     </main>
   </section>
 
-  <!-- Modal: Round Scores Table -->
+  <!-- Round Settlement Dialog (KillerDucky layout) -->
+  <dialog class="modal info-this-round-modal" id="infoThisRoundModal">
+    <div>
+      <button class="close info-this-round-close" id="infoThisRoundClose">×</button>
+      <div class="info-this-round-table" id="infoThisRoundContent"></div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Round Scores Table (Independent Match Points History) -->
   <div id="roundModalBackdrop" class="modal-backdrop hidden"></div>
   <div id="roundModal" class="modal hidden">
     <button id="roundModalClose" class="close">×</button>
     <div class="round-modal-header" style="margin-bottom:12px;">
       <h3 style="margin-bottom:4px; font-size:17px; font-weight:700; display:flex; align-items:center; gap:8px;">
-        <span>全庄得点变动与模型一致率表</span>
+        <span>📊 全庄各局得点变动表</span>
       </h3>
       <div id="roundModalSub" style="font-size:12px; color:var(--color-text-secondary); margin-bottom:10px;"></div>
       <div id="roundModalPovTabs" class="round-modal-pov-tabs"></div>
@@ -297,18 +238,51 @@
 
   <!-- Modal: Engine Switcher -->
   <div id="engineModalBackdrop" class="modal-backdrop hidden"></div>
-  <div id="engineModal" class="modal hidden">
-    <button id="engineModalClose" class="close">×</button>
-    <h3 style="margin-bottom:12px; font-size:16px;">切换 AI 推理模型</h3>
-    <div id="engineModalDetail" style="font-size:12px; line-height:1.8; margin-bottom:14px; background:var(--color-main); padding:10px; border-radius:4px;"></div>
-    <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
+  <div id="engineModal" class="modal hidden" style="max-width:480px;">
+    <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">
+      <h3 style="font-size:16px; font-weight:700; display:flex; align-items:center; gap:8px; margin:0;">
+        <span>🤖 AI 推理引擎与模型管理</span>
+      </h3>
+      <button id="engineModalClose" class="close" style="background:none; border:none; color:rgba(235,235,245,0.6); font-size:22px; cursor:pointer; line-height:1;">&times;</button>
+    </div>
+    <div id="engineModalDetail" style="font-size:12.5px; line-height:1.7; margin-bottom:16px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.08); padding:12px 14px; border-radius:10px;"></div>
+    <div style="display:flex; flex-direction:column; gap:12px; font-size:13px;">
       <label>
-        <div>选择分析模型：</div>
-        <select id="engineSelect" style="width:100%; margin-top:4px; padding:6px;"><option value="akagi">Mortal-V4-582500 (进攻强化)</option></select>
+        <div style="font-weight:600; margin-bottom:6px; color:#ffffff;">选择切换模型：</div>
+        <select id="engineSelect" style="width:100%; padding:8px 10px; background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.18); border-radius:8px; color:#ffffff; font-size:13px; outline:none;"></select>
       </label>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
-        <button id="btnSaveEngineConfig" class="kd-back-btn" style="background:var(--color-bar-mortal);">保存并重新检讨</button>
+      <div id="engineModalStatusMsg" style="font-size:12px; color:#30d158; min-height:18px;"></div>
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:4px;">
+        <button id="btnCancelEngineModal" class="kd-chip-btn" style="padding:6px 14px;">取消</button>
+        <button id="btnSaveEngineConfig" class="kd-back-btn" style="background:#0a84ff; padding:6px 16px; font-weight:600;">保存并重新检讨</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Modal: Keyboard Shortcuts Help -->
+  <div id="shortcutsModalBackdrop" class="modal-backdrop hidden"></div>
+  <div id="shortcutsModal" class="modal hidden" style="max-width:500px;">
+    <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">
+      <h3 style="font-size:16px; font-weight:700; display:flex; align-items:center; gap:8px; margin:0; color:#fff;">
+        <span>⌨️ 键盘快捷键指南</span>
+      </h3>
+      <button id="shortcutsModalClose" class="close" style="background:none; border:none; color:rgba(235,235,245,0.6); font-size:22px; cursor:pointer; line-height:1;">&times;</button>
+    </div>
+    <div style="font-size:13px; line-height:1.6;">
+      <table class="kd-shortcuts-table" style="width:100%; border-collapse:collapse; color:#ddd;">
+        <tbody>
+          <tr><td style="padding:6px 0; width:170px;"><kbd>→</kbd> <kbd>←</kbd></td><td style="color:#eee;">单步前进 / 后退</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>↓</kbd> <kbd>↑</kbd></td><td style="color:#eee;">下一个决策点 / 上一个决策点</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>PgDn</kbd> <kbd>PgUp</kbd> 或 <kbd>.</kbd> <kbd>,</kbd></td><td style="color:#eee;">下一个恶手 / 上一个恶手（不一致）</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>]</kbd> <kbd>[</kbd></td><td style="color:#eee;">下一局 / 上一局</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>End</kbd> <kbd>Home</kbd></td><td style="color:#eee;">跳转至本局终了 / 本局开局</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>空格</kbd> (Space)</td><td style="color:#eee;">自动播放 / 暂停</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>H</kbd></td><td style="color:#eee;">开关他家手牌（明牌 / 暗牌模式）</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>S</kbd></td><td style="color:#eee;">查看全庄各局得点变动</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>?</kbd></td><td style="color:#eee;">打开 / 关闭此快捷键窗口</td></tr>
+          <tr><td style="padding:6px 0;"><kbd>Esc</kbd></td><td style="color:#eee;">关闭当前弹窗</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -346,6 +320,6 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <script src="/app.js?v=20261026M"></script>
+  <script src="/app.js?v=20261028-audit-v2"></script>
 </body>
 </html>

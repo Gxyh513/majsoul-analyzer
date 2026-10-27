@@ -32,7 +32,7 @@ def main():
     print("=" * 68)
     print(" [Majsoul Analyzer] 雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格) 已启动")
     print(f" [Web UI] 浏览器访问地址: {url}")
-    print(" [Engine] Mortal 权重目录: data/models/mortal.pth (放入即可自动启用神经网络)")
+    print(" [Engine] Mortal 权重文件: data/models/mortal_582500.pth（需要通过 SHA-256 校验）")
     print("=" * 68)
 
     if not args.no_browser:

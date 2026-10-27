@@ -63,7 +63,9 @@ def _build_route_request_connection(route_id: str) -> bytes:
 
 
 class MajsoulError(Exception):
-    pass
+    def __init__(self, message: str, code: int | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 # --------------------------------------------------------------------------
@@ -128,6 +130,7 @@ class MajsoulClient:
         self.account_id: int | None = None
         self.nickname: str | None = None
         self.access_token: str | None = None
+        self.current_account: str | None = None
         self._lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- setup
@@ -246,6 +249,7 @@ class MajsoulClient:
 
     async def close(self):
         self.logged_in = False
+        self.current_account = None
         if self._reader:
             self._reader.cancel()
         if self._ws:
@@ -298,7 +302,8 @@ class MajsoulClient:
         _, data = self.proto.unwrap(raw)
         res = self.proto.decode(res_t, data)
         if res.HasField("error") and res.error.code:
-            raise MajsoulError(f"雀魂接口 {method} 返回错误码 {res.error.code}" + _err_hint(res.error.code))
+            code = int(res.error.code)
+            raise MajsoulError(f"雀魂接口 {method} 返回错误码 {code}" + _err_hint(code), code=code)
         return res
 
     # ---------------------------------------------------------------- auth
@@ -352,6 +357,7 @@ class MajsoulClient:
             raise last_err or MajsoulError("登录失败")
         self._after_login(res)
         self.access_token = res.access_token or self.access_token
+        self.current_account = account
         return res
 
     async def login_token(self, token: str):

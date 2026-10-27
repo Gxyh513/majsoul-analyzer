@@ -3,6 +3,8 @@
 !curl -sSL https://raw.githubusercontent.com/Gxyh513/majsoul-analyzer/main/colab_launcher.py | python
 """
 import os
+import hashlib
+import secrets
 import re
 import shutil
 import subprocess
@@ -77,15 +79,33 @@ except Exception:
 # 4. Download AI weights if missing
 models_dir = os.path.join("data", "models")
 os.makedirs(models_dir, exist_ok=True)
-mortal_path = os.path.join(models_dir, "mortal.pth")
-if not os.path.isfile(mortal_path):
-    print("🧠 下载 Mortal (v3) 神经网络权重...")
-    subprocess.run(["curl", "-sSL", "-o", mortal_path, "https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth"], check=True)
+model_path = os.path.join(models_dir, "mortal_582500.pth")
+expected_sha = "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20"
+def model_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
-akagi_path = os.path.join(models_dir, "akagi.pth")
-if not os.path.isfile(akagi_path):
-    print("🔥 下载 赤木 Akagi (v4 582k) 强化模型权重...")
-    subprocess.run(["curl", "-sSL", "-o", akagi_path, "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth"], check=True)
+if not os.path.isfile(model_path) or model_sha256(model_path) != expected_sha:
+    print("🧠 下载并校验 Mortal-V4-582500 权重...")
+    temp_path = model_path + ".tmp"
+    try:
+        subprocess.run(["curl", "-fSL", "--retry", "3", "-o", temp_path,
+                        "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth"], check=True)
+        if model_sha256(temp_path) != expected_sha:
+            raise RuntimeError("模型权重 SHA-256 校验失败")
+        os.replace(temp_path, model_path)
+    finally:
+        if os.path.isfile(temp_path):
+            os.unlink(temp_path)
+
+# Remote access is authenticated; the token stays in the URL fragment, not
+# the backend URL query or HTTP request logs.
+api_token = os.environ.get("MAJSOUL_API_TOKEN") or secrets.token_urlsafe(32)
+os.environ["MAJSOUL_API_TOKEN"] = api_token
+os.environ.setdefault("MAJSOUL_ALLOWED_ORIGINS", "https://majsoul-analyzer.pages.dev")
 
 # 5. Download cloudflared for public tunneling
 if not os.path.isfile("cloudflared"):
@@ -109,7 +129,7 @@ while time.time() - start_t < 30:
         break
 
 if tunnel_url:
-    web_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}"
+    web_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}#api_token={api_token}"
     print("\n" + "=" * 65)
     print(" 🎉 云端 GPU AI 引擎已成功启动！")
     print(f" 👉 您的云端 API 服务地址为:  {tunnel_url}")
