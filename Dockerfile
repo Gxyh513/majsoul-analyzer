@@ -54,15 +54,8 @@ COPY --from=builder /build/vendor/Mortal/target/release/libriichi.so /app/server
 # Ensure data directories exist
 RUN mkdir -p data/models data/records data/cache
 
-# Download Akagi (v4 582k) weights and Mortal (v3) weights
-RUN if [ ! -f data/models/akagi.pth ]; then \
-      curl -L -o data/models/akagi.pth https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth || \
-      curl -L -o data/models/akagi.pth https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth; \
-    fi && \
-    if [ ! -f data/models/mortal.pth ]; then \
-      curl -L -o data/models/mortal.pth https://hf-mirror.com/VoidShine/mortal-298k/resolve/main/mortal_298k.pth || \
-      curl -L -o data/models/mortal.pth https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth; \
-    fi
+# Download and verify the only supported checkpoint.
+RUN curl -fSL --retry 3 -o data/models/mortal_582500.pth       https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth &&     echo "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20  data/models/mortal_582500.pth" | sha256sum -c -
 
 ENV HOST=0.0.0.0
 ENV PORT=7860
