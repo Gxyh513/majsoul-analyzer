@@ -511,11 +511,13 @@ async def protect_api_and_log(request: Request, call_next):
     if is_api and path != "/api/status":
         peer = request.client.host if request.client else None
         local = _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
+        is_trusted_origin = bool(origin and origin in allowed_origins)
         same_origin = not origin or origin == own_origin
-        token = os.environ.get("MAJSOUL_API_TOKEN", "").strip()
-        # If a token is configured, require it even on loopback: a reverse
-        # proxy can itself connect from loopback and supply an arbitrary Host.
-        if token or not (local and same_origin):
+        token = os.environ.get("MAJSOUL_API_TOKEN", "").strip().strip('"').strip("'")
+
+        # Allow if local same-origin, or from explicitly allowed frontend origins.
+        # Direct remote callers without an allowed origin header require MAJSOUL_API_TOKEN.
+        if not (local and same_origin) and not is_trusted_origin:
             auth_header = request.headers.get("authorization", "").strip()
             x_token = request.headers.get("x-api-token", "").strip()
             q_token = request.query_params.get("api_token", "").strip()
