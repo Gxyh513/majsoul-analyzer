@@ -5,5 +5,5 @@ backups
 .wrangler
 data/config.local.json
 data/records/*.json
-vendor/Mortal/target
+vendor/
 data/config.json

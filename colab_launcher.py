@@ -16,7 +16,7 @@ print(" 🚀 正在初始化 雀魂牌谱 AI 检讨系统 (云端 GPU 加速环�
 print("=" * 65)
 
 # 1. Determine project directory
-if os.path.isfile("run.py") and os.path.isdir("vendor/Mortal"):
+if os.path.isfile("run.py"):
     root_dir = os.path.abspath(os.getcwd())
 elif os.path.isdir("majsoul-analyzer") and os.path.isfile("majsoul-analyzer/run.py"):
     root_dir = os.path.abspath("majsoul-analyzer")
