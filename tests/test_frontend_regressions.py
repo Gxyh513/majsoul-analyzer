@@ -48,7 +48,7 @@ assert((html.match(/5m(?:r)?.svg/g)||[]).length===4);
 
 
 def test_remote_tokens_are_bound_to_backend_origin():
-    code = source_between("function tokenStorageKey(", "async function fetchReviewStream(")
+    code = source_between("function isPagesProxyMode()", "async function fetchReviewStream(")
     script = """const assert = require('assert');
 let backend='https://api-a.example';
 const getBackendUrl=()=>backend, saved=new Map();
@@ -67,7 +67,7 @@ assert.strictEqual(getApiToken(),'secret');
 
 
 def test_token_not_in_urls_and_cross_origin_requests_do_not_receive_it():
-    token_code = source_between("function tokenStorageKey(", "async function fetchReviewStream(")
+    token_code = source_between("function isPagesProxyMode()", "async function fetchReviewStream(")
     api_code = source_between("function buildApiUrl(", "function isBackendOnline(")
     script = """const assert = require('assert');
 const saved = new Map(), legacy = new Map([['majsoul_api_token:https://api.example','stale']]);
@@ -93,7 +93,7 @@ let calls=[]; const fetch=async (url,options)=>{calls.push({url,options});return
 
 
 def test_stream_sends_token_only_in_header():
-    token_code = source_between("function tokenStorageKey(", "async function fetchReviewStream(")
+    token_code = source_between("function isPagesProxyMode()", "async function fetchReviewStream(")
     stream_code = source_between("async function fetchReviewStream(", "const DEFAULT_MODELSCOPE_BACKEND")
     script = """const assert = require('assert');
 const saved = new Map(), sessionStorage = {setItem:(k,v)=>saved.set(k,v),getItem:k=>saved.get(k)||null};

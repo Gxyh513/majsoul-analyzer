@@ -289,7 +289,7 @@ function showAnalysisError(errMsg, retryCallback = null) {
   if (!overlay || !errorBox) return;
 
   if (normalState) normalState.classList.add("hidden");
-  if (errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
+  if (!isPagesProxyMode() && errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
     if (errorDetail) {
       errorDetail.innerHTML = `
         <div style="margin-bottom: 10px; font-weight: 500; color: #ffffff;">本服务器已启用远程访问口令保护，请输入口令：</div>
@@ -323,7 +323,37 @@ function showAnalysisError(errMsg, retryCallback = null) {
   overlay.classList.remove("hidden");
 }
 
-// API tokens are scoped to the selected backend and retained only in this tab.
+// The public Cloudflare deployment uses a same-origin Pages Function proxy.
+// Never let public Pages URLs override the fixed server-side upstream.
+function isPagesProxyMode() {
+  const host = (window.location.hostname || "").toLowerCase();
+  return host === "majsoul.ccwu.cc" || host === "majsoul-analyzer.pages.dev" || host.endsWith(".majsoul-analyzer.pages.dev");
+}
+
+// Remove legacy client credentials from public Pages sessions without reading
+// or exposing their values. The proxy injects its Secret on the server side.
+function clearPagesProxyCredentials() {
+  clearLegacyApiTokens();
+  try {
+    const keys = [];
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith("majsoul_api_token:")) keys.push(key);
+    }
+    for (const key of keys) sessionStorage.removeItem(key);
+  } catch (_) {}
+  try {
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    if (fragment.has("api_token")) {
+      fragment.delete("api_token");
+      const url = new URL(window.location.href);
+      url.hash = fragment.toString();
+      window.history.replaceState(null, "", url.toString());
+    }
+  } catch (_) {}
+}
+
+// API tokens are scoped to the selected direct backend and retained only in this tab.
 function tokenStorageKey() {
   const backend = getBackendUrl();
   const origin = backend ? new URL(backend.startsWith("http") ? backend : `http://${backend}`).origin : window.location.origin;
@@ -340,6 +370,10 @@ function clearLegacyApiTokens() {
 }
 
 function getApiToken() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return "";
+  }
   clearLegacyApiTokens();
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const token = fragment.get("api_token");
@@ -355,6 +389,10 @@ function getApiToken() {
 }
 
 function setApiToken(token) {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return;
+  }
   clearLegacyApiTokens();
   const key = tokenStorageKey();
   if (token && token.trim()) sessionStorage.setItem(key, token.trim());
@@ -362,6 +400,10 @@ function setApiToken(token) {
 }
 
 function apiAuthHeaders() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return {};
+  }
   const token = getApiToken();
   // ModelScope may consume Authorization for its own gateway credentials.
   return token ? { "X-Api-Token": token } : {};
@@ -371,6 +413,7 @@ async function fetchReviewStream(postBody, onProgress) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const resp = await fetch(url, {
     method: "POST",
+    credentials: isPagesProxyMode() ? "omit" : "same-origin",
     redirect: "error",
     headers: {
       "Content-Type": "application/json",
@@ -443,6 +486,10 @@ async function fetchReviewStream(postBody, onProgress) {
 const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";
 
 function getBackendUrl() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return "";
+  }
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has("backend")) {
     const b = urlParams.get("backend").trim().replace(/\/+$/, "");
@@ -459,6 +506,10 @@ function getBackendUrl() {
 }
 
 function buildApiUrl(backend, path) {
+  if (isPagesProxyMode()) {
+    if (/^https?:\/\//i.test(path)) throw new Error("公开 Pages 只能使用同源 API 代理。");
+    return path.startsWith("/") ? path : `/${path}`;
+  }
   if (!backend && !window.location.search.includes("studio_token")) return path;
   try {
     const currentSearch = new URLSearchParams(window.location.search);
@@ -490,25 +541,45 @@ function buildApiUrl(backend, path) {
 }
 
 async function apiFetch(path, options = {}) {
+  const proxyMode = isPagesProxyMode();
   const isAbs = /^https?:\/\//i.test(path);
   const backend = getBackendUrl();
   const url = isAbs ? path : buildApiUrl(backend, path);
+  if (proxyMode && isAbs && new URL(url).origin !== window.location.origin) {
+    throw new Error("公开 Pages 只能使用同源 API 代理。");
+  }
+
+  const optionHeaders = {};
+  if (options.headers instanceof Headers) {
+    options.headers.forEach((value, key) => { optionHeaders[key] = value; });
+  } else {
+    Object.assign(optionHeaders, options.headers || {});
+  }
+  if (proxyMode) {
+    for (const key of Object.keys(optionHeaders)) {
+      if (["authorization", "x-api-token", "cookie", "x-studio-token"].includes(key.toLowerCase())) {
+        delete optionHeaders[key];
+      }
+    }
+  }
 
   const headers = {
     Accept: "application/json",
-    ...(new URL(url, window.location.origin).origin === new URL(backend ? (backend.startsWith("http") ? backend : `http://${backend}`) : window.location.origin).origin ? apiAuthHeaders() : {}),
-    ...(options.headers || {}),
+    ...(!proxyMode && new URL(url, window.location.origin).origin === new URL(backend ? (backend.startsWith("http") ? backend : `http://${backend}`) : window.location.origin).origin ? apiAuthHeaders() : {}),
+    ...optionHeaders,
   };
-  if (options.body && !headers["Content-Type"]) {
+  if (options.body && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
     headers["Content-Type"] = "application/json";
   }
 
-  const resp = await fetch(url, {
+  const fetchOptions = {
     mode: "cors",
     ...options,
     redirect: "error",
     headers,
-  });
+  };
+  if (proxyMode) fetchOptions.credentials = "omit";
+  const resp = await fetch(url, fetchOptions);
 
   if (!resp.ok) {
     let detail = `HTTP ${resp.status} ${resp.statusText}`;
@@ -2504,6 +2575,11 @@ async function loadLocalCachedRecords() {
   const container = $("localRecordsList");
   const countEl = $("localRecordsCount");
   if (!container) return;
+  if (isPagesProxyMode()) {
+    if (countEl) countEl.textContent = "";
+    container.innerHTML = `<div class="kd-local-empty">公开页面不展示服务器本地缓存；请导入本地牌谱文件进行检讨</div>`;
+    return;
+  }
 
   try {
     const data = await apiFetch("/api/records/local");
@@ -2795,6 +2871,14 @@ function bindEvents() {
   $("engineModalClose")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnCancelEngineModal")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnSaveEngineConfig")?.addEventListener("click", async () => {
+    if (isPagesProxyMode()) {
+      const statusMsg = $("engineModalStatusMsg");
+      if (statusMsg) {
+        statusMsg.style.color = "#ff9f0a";
+        statusMsg.textContent = "公开页面使用固定的 Mortal-V4-582500 引擎，不支持修改共享服务配置。";
+      }
+      return;
+    }
     const model = $("engineSelect")?.value || "akagi";
     state.selectedModel = model;
     updateEngineStatusDisplay(model);
