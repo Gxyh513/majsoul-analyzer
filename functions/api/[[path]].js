@@ -1,4 +1,5 @@
 const UPSTREAM_ORIGIN = "https://gxyh513-majsoul-analyzer.ms.show";
+const UPSTREAM_USER_AGENT = "majsoul-analyzer-pages/1.0";
 const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024;
 
 const ROUTES = new Map([
@@ -144,6 +145,8 @@ export async function onRequest({ request, env }) {
 
   const headers = new Headers({
     Accept: route.stream ? "text/event-stream" : "application/json",
+    // Identify this proxy explicitly; do not forward a caller-controlled agent.
+    "User-Agent": UPSTREAM_USER_AGENT,
     // Use only the configured public site origin expected by the backend allowlist.
     // Never reflect the caller-provided Origin or Referer.
     Origin: "https://majsoul.ccwu.cc",
