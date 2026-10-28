@@ -302,16 +302,33 @@ class LoadedMortal:
         )
 
     @torch.inference_mode()
-    def eval_batch(self, obs_list: list[np.ndarray], mask_list: list[np.ndarray]) -> np.ndarray:
+    def eval_batch(
+        self,
+        obs_list: list[np.ndarray],
+        mask_list: list[np.ndarray],
+        chunk_size: int = 128,
+    ) -> np.ndarray:
         if not obs_list:
             return np.zeros((0, ACTION_SPACE), dtype=np.float32)
         try:
-            obs_t = torch.as_tensor(np.stack(obs_list, axis=0), dtype=torch.float32, device=self.device)
-            mask_t = torch.as_tensor(np.stack(mask_list, axis=0), dtype=torch.bool, device=self.device)
-            phi = self.brain(obs_t)
-            q = self.dqn(phi, mask_t)
-            res = q.cpu().numpy()
-            return res
+            n = len(obs_list)
+            if n <= chunk_size:
+                obs_t = torch.as_tensor(np.stack(obs_list, axis=0), dtype=torch.float32, device=self.device)
+                mask_t = torch.as_tensor(np.stack(mask_list, axis=0), dtype=torch.bool, device=self.device)
+                phi = self.brain(obs_t)
+                q = self.dqn(phi, mask_t)
+                return q.cpu().numpy()
+
+            outputs: list[np.ndarray] = []
+            for i in range(0, n, chunk_size):
+                chunk_obs = obs_list[i : i + chunk_size]
+                chunk_mask = mask_list[i : i + chunk_size]
+                obs_t = torch.as_tensor(np.stack(chunk_obs, axis=0), dtype=torch.float32, device=self.device)
+                mask_t = torch.as_tensor(np.stack(chunk_mask, axis=0), dtype=torch.bool, device=self.device)
+                phi = self.brain(obs_t)
+                q = self.dqn(phi, mask_t)
+                outputs.append(q.cpu().numpy())
+            return np.concatenate(outputs, axis=0)
         except Exception as e:
             log.error("Mortal 神经网络批次推理执行异常: %s", e, exc_info=True)
             raise RuntimeError(f"Mortal 神经网络批次推理执行失败: {e}") from e

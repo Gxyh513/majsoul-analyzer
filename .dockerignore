@@ -7,3 +7,5 @@ data/config.local.json
 data/records/*.json
 vendor/
 data/config.json
+data/cache/*.js
+web/demo_review*.json

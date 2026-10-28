@@ -2637,15 +2637,6 @@ function bindEvents() {
   });
 
   // Tier 2 Back to Home
-    $("btnLandingToken")?.addEventListener("click", () => {
-    const current = getApiToken();
-    const entered = window.prompt("请输入远程服务访问口令 (MAJSOUL_API_TOKEN)：", current);
-    if (entered !== null) {
-      setApiToken(entered);
-      showToast(entered.trim() ? "访问口令已配置" : "访问口令已清空", "success");
-    }
-  });
-
   $("btnBackToHome")?.addEventListener("click", () => {
     if (state.isPlaying) togglePlay(false);
     showTier(1);
