@@ -289,17 +289,42 @@ function showAnalysisError(errMsg, retryCallback = null) {
   if (!overlay || !errorBox) return;
 
   if (normalState) normalState.classList.add("hidden");
-  if (errorDetail) errorDetail.textContent = errMsg || "检讨服务暂时不可用，请检查网络或重试。";
+  if (errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
+    if (errorDetail) {
+      errorDetail.innerHTML = `
+        <div style="margin-bottom: 10px; font-weight: 500; color: #ffffff;">本服务器已启用远程访问口令保护，请输入口令：</div>
+        <div style="display: flex; gap: 8px; justify-content: center; max-width: 400px; margin: 0 auto 10px;">
+          <input id="promptApiTokenInput" type="password" placeholder="请输入 MAJSOUL_API_TOKEN" class="kd-landing-input" style="padding: 8px 12px; font-size: 13px; text-align: center; border-radius: 8px;" value="${escapeHtml(getApiToken())}" />
+          <button id="btnSavePromptToken" type="button" class="kd-retry-btn" style="white-space: nowrap; padding: 8px 14px; border-radius: 8px;">保存并继续</button>
+        </div>
+        <div style="font-size: 11.5px; color: rgba(235, 235, 245, 0.45);">口令安全保存在当前浏览器本地，后续分析将自动携带。</div>
+      `;
+      setTimeout(() => {
+        $("btnSavePromptToken")?.addEventListener("click", () => {
+          const val = $("promptApiTokenInput")?.value || "";
+          setApiToken(val);
+          showToast("访问口令已保存", "success");
+          if (currentAnalysisRetryCb) {
+            errorBox.classList.add("hidden");
+            currentAnalysisRetryCb();
+          }
+        });
+        $("promptApiTokenInput")?.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            $("btnSavePromptToken")?.click();
+          }
+        });
+      }, 50);
+    }
+  } else {
+    if (errorDetail) errorDetail.textContent = errMsg || "检讨服务暂时不可用，请检查网络或重试。";
+  }
   errorBox.classList.remove("hidden");
   overlay.classList.remove("hidden");
 }
 
-// Built-in API token for authenticated remote access
-const BUILTIN_API_TOKEN = (typeof window !== "undefined" && window.__MAJSOUL_API_TOKEN__) || "REDACTED_API_TOKEN";
-
 // A remote API token is kept only for this browser tab. It can be supplied
-// as #api_token=... by a private launcher, then removed from the address bar,
-// or fallback to the built-in default token.
+// as #api_token=... by a private launcher, then removed from the address bar.
 function getApiToken() {
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const token = fragment.get("api_token");
@@ -318,8 +343,7 @@ function getApiToken() {
   }
   const sessionVal = sessionStorage.getItem(key);
   const localVal = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
-  const builtin = typeof BUILTIN_API_TOKEN !== "undefined" ? BUILTIN_API_TOKEN : "";
-  return sessionVal || localVal || builtin || "";
+  return sessionVal || localVal || "";
 }
 
 function setApiToken(token) {
@@ -422,7 +446,7 @@ async function fetchReviewStream(postBody, onProgress) {
   return finalResult;
 }
 
-const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show?studio_token=REDACTED_STUDIO_TOKEN";
+const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";
 
 function getBackendUrl() {
   const urlParams = new URLSearchParams(window.location.search);
