@@ -22,11 +22,14 @@ test("status is public but sanitized and pinned to the upstream", async () => {
     }), { status: 200, headers: { "Content-Type": "application/json", "Set-Cookie": "secret=hidden" } });
   };
   try {
-    const req = new Request("https://pages.example/api/status?api_token=query-secret&studio_token=studio-secret");
+    const req = new Request("https://pages.example/api/status?api_token=query-secret&studio_token=studio-secret", {
+      headers: { "User-Agent": "untrusted-client-agent" },
+    });
     const res = await onRequest({ request: req, env: {} });
     assert.equal(res.status, 200);
     assert.equal(observed.url, `${UPSTREAM}/api/status`);
     assert.equal(new Headers(observed.init.headers).has("X-Api-Token"), false);
+    assert.equal(new Headers(observed.init.headers).get("User-Agent"), "majsoul-analyzer-pages/1.0");
     const body = await res.json();
     assert.equal(body.engine.review_schema, "mortal-582500-only-v3");
     assert.deepEqual(body.engine.available_models, [{ id: "akagi", name: "Mortal" }]);
@@ -72,6 +75,7 @@ test("analysis injects only the server token and streams SSE without buffering",
         Authorization: "Bearer client",
         Cookie: "session=private",
         Origin: "https://evil.example",
+        "User-Agent": "untrusted-client-agent",
         "X-Forwarded-For": "203.0.113.9",
       },
       body: JSON.stringify({ paipu: "demo" }),
@@ -88,6 +92,7 @@ test("analysis injects only the server token and streams SSE without buffering",
     }
     assert.equal(headers.get("Origin"), "https://majsoul.ccwu.cc");
     assert.equal(headers.get("Referer"), "https://majsoul.ccwu.cc/");
+    assert.equal(headers.get("User-Agent"), "majsoul-analyzer-pages/1.0");
     assert.notEqual(headers.get("Origin"), "https://evil.example");
     assert.equal(new TextDecoder().decode(observed.init.body), JSON.stringify({ paipu: "demo" }));
     assert.equal(await res.text(), chunks.join(""));
