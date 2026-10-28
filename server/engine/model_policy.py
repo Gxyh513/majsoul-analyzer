@@ -8,7 +8,7 @@ MODEL_FILE = "mortal_582500.pth"
 # SHA-256 (Git LFS OID) of the published Yuchen1457/mortal-582500 checkpoint.
 MODEL_SHA256 = "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20"
 MODEL_ID = "akagi"  # Existing frontend/API identifier for this checkpoint.
-REVIEW_SCHEMA = "mortal-582500-only-v2"
+REVIEW_SCHEMA = "mortal-582500-only-v3"
 
 
 def normalize_model_id(model_id: str | None) -> str:

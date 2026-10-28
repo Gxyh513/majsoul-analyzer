@@ -7,6 +7,7 @@ and in-memory token refreshes for environment-managed pools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -32,6 +33,14 @@ def _account_pool_key(acc: dict) -> str:
         return "account:" + name
     account_id = str(acc.get("account_id") or "").strip()
     return "id:" + account_id if account_id and account_id != "0" else "token:" + str(acc.get("access_token") or "")
+
+
+def _managed_token_key(acc: dict) -> str:
+    key = _account_pool_key(acc)
+    if "MAJSOUL_ACCOUNTS_JSON" not in os.environ and acc.get("is_primary"):
+        values = [os.environ.get(name, "") for name in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")]
+        key += ":" + hashlib.sha256(json.dumps(values).encode("utf8")).hexdigest()
+    return key
 
 
 def _mask_account(name_or_acc: str | None) -> str:
@@ -154,8 +163,10 @@ def get_all_configured_accounts(
         if token:
             seen_tokens.add(token)
 
-        if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
-            override = _env_pool_token_overrides.get(_account_pool_key(acc_entry))
+        if "MAJSOUL_ACCOUNTS_JSON" in os.environ or (is_primary and any(
+            os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
+        )):
+            override = _env_pool_token_overrides.get(_managed_token_key(acc_entry))
             if override and acc_entry.get("access_token") == override[0]:
                 acc_entry["access_token"] = override[1]
         deduped.append(acc_entry)
@@ -204,8 +215,10 @@ def _persist_updated_token(
     save_config_fn: Callable[[dict[str, Any]], None] | None = None,
 ):
     """Keep managed-pool token refreshes in memory; persist local accounts normally."""
-    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
-        key = _account_pool_key(acc)
+    if "MAJSOUL_ACCOUNTS_JSON" in os.environ or (acc.get("is_primary") and any(
+        os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
+    )):
+        key = _managed_token_key(acc)
         old = _env_pool_token_overrides.get(key)
         source_token = old[0] if old and old[1] == acc.get("access_token") else acc.get("access_token")
         _env_pool_token_overrides[key] = (source_token, new_token)

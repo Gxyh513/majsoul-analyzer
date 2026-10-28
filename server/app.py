@@ -61,6 +61,14 @@ def make_cache_key(prefix: str, seat: int, engine: str, temperature: float, weig
     return key
 
 
+def review_cache_key(game_id: str, events: list[dict], meta: dict, seat: int, engine: str, temperature: float, weight_sig: str | None) -> str:
+    # Bind a review to the actual input, not just an upload-provided UUID.
+    payload = json.dumps([game_id, events, meta, seat, engine, temperature, weight_sig], sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf8")).hexdigest()
+    # Keep the filename short enough for Windows paths as well as Unix filesystems.
+    return f"review-{digest}"
+
+
 def resolve_engine_cache_info(requested_engine: str | None) -> tuple[str, str | None]:
     """
     Resolves canonical engine ID and weight signature (stem + mtime) to ensure cache isolation.
@@ -235,18 +243,23 @@ def load_config() -> dict[str, Any]:
     return cfg
 
 
-def save_config(cfg: dict[str, Any]):
+def save_config(cfg: dict[str, Any], *, clear_local_credentials: bool = False):
     cfg = dict(cfg)
-    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
-        # Do not persist secret-managed credentials when saving unrelated
-        # settings. Preserve any pre-existing local-only account configuration.
+    if "MAJSOUL_ACCOUNTS_JSON" in os.environ or any(
+        os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
+    ):
+        # Preserve existing local credentials rather than persisting environment
+        # values or tokens derived from an environment-managed primary account.
         try:
             local = json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf8")) if LOCAL_CONFIG_PATH.is_file() else {}
         except (ValueError, OSError):
             raise RuntimeError("本地配置无法读取，已取消保存") from None
-        for key in ("account", "password", "access_token", "nickname", "account_id", "backup_accounts", "accounts", "account_pool"):
+        keys = ["account", "password", "access_token", "nickname", "account_id"]
+        if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
+            keys += ["backup_accounts", "accounts", "account_pool"]
+        for key in keys:
             cfg.pop(key, None)
-            if key in local:
+            if key in local and not (clear_local_credentials and key in ("password", "access_token")):
                 cfg[key] = local[key]
     LOCAL_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf8")
 
@@ -560,29 +573,21 @@ async def protect_api_and_log(request: Request, call_next):
     if is_api and path != "/api/status":
         peer = request.client.host if request.client else None
         local = _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
-        is_trusted_origin = bool(origin and origin in allowed_origins)
         same_origin = not origin or origin == own_origin
         token = os.environ.get("MAJSOUL_API_TOKEN", "").strip().strip('"').strip("'")
 
-        # Allow if local same-origin, or from explicitly allowed frontend origins.
-        # Direct remote callers without an allowed origin header require MAJSOUL_API_TOKEN.
-        if not (local and same_origin) and not is_trusted_origin:
+        # CORS origins are not identities. A configured token protects even
+        # loopback traffic, including traffic arriving through a local proxy.
+        if token:
             auth_header = request.headers.get("authorization", "").strip()
             x_token = request.headers.get("x-api-token", "").strip()
-            q_token = request.query_params.get("api_token", "").strip()
-            supplied = ""
-            if auth_header.startswith("Bearer "):
-                supplied = auth_header[7:].strip()
-            elif auth_header:
-                supplied = auth_header
-            elif x_token:
-                supplied = x_token
-            elif q_token:
-                supplied = q_token
-
-            if not token or not hmac.compare_digest(supplied, token):
-                headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin else None
-                return JSONResponse({"detail": "远程访问需要有效的 MAJSOUL_API_TOKEN"}, status_code=401, headers=headers)
+            supplied = x_token or (auth_header[7:].strip() if auth_header.startswith("Bearer ") else "")
+            authorized = hmac.compare_digest(supplied.encode("utf8"), token.encode("utf8"))
+        else:
+            authorized = local and same_origin
+        if not authorized:
+            headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin else None
+            return JSONResponse({"detail": "远程访问需要有效的 MAJSOUL_API_TOKEN"}, status_code=401, headers=headers)
 
     is_biz = is_api and path != "/api/status"
     t0 = time.time()
@@ -677,6 +682,10 @@ async def api_status():
 
 @app.post("/api/login")
 async def api_login(req: LoginReq):
+    if req.remember and ("MAJSOUL_ACCOUNTS_JSON" in os.environ or any(
+        os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
+    )):
+        raise HTTPException(status_code=400, detail="账号由环境变量管理，无法记住登录；请修改部署密文或选择临时登录")
     async with _ms_client_lock:
         try:
             await ms_client.close()
@@ -717,7 +726,7 @@ async def api_logout():
         cfg = load_config()
         cfg.pop("access_token", None)
         cfg.pop("password", None)
-        save_config(cfg)
+        save_config(cfg, clear_local_credentials=True)
         return await api_status()
 
 
@@ -782,6 +791,23 @@ async def api_records_local():
     return {"records": records, "total": len(records)}
 
 
+def select_game_seat(meta: dict, target_actor: int | None, url_acc_id: int | None = None) -> int:
+    if target_actor is not None:
+        return target_actor if 0 <= target_actor <= 3 else 0
+    acc_ids = meta.get("account_ids", [])
+    for account_id in (url_acc_id, ms_client.account_id):
+        if account_id and account_id in acc_ids:
+            seat = acc_ids.index(account_id)
+            if 0 <= seat <= 3:
+                return seat
+    account_id = load_config().get("account_id")
+    if account_id and account_id in acc_ids:
+        seat = acc_ids.index(account_id)
+        if 0 <= seat <= 3:
+            return seat
+    return 0
+
+
 async def resolve_game_data(
     paipu: str | None = None,
     content: Any | None = None,
@@ -835,9 +861,11 @@ async def resolve_game_data(
             try:
                 mjai_events = to_mjai(content)
                 meta = game_meta(content)
-                game_id = meta.get("uuid") or ("ms-" + hashlib.md5(json.dumps(content).encode()).hexdigest()[:10])
-                if not isinstance(game_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_id):
+                source_uuid = meta.get("uuid")
+                if source_uuid and (not isinstance(source_uuid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", source_uuid)):
                     raise HTTPException(status_code=400, detail="牌谱 UUID 格式无效")
+                canonical = json.dumps(content, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+                game_id = "upload-" + hashlib.sha256(canonical.encode("utf8")).hexdigest()
             except ConvertError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
         elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
@@ -847,7 +875,8 @@ async def resolve_game_data(
                 if ev.get("type") == "start_game" and ev.get("names"):
                     names = list(ev["names"])
                     break
-            game_id = "mjai-" + hashlib.md5(json.dumps(mjai_events).encode()).hexdigest()[:10]
+            canonical = json.dumps(mjai_events, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+            game_id = "mjai-" + hashlib.sha256(canonical.encode("utf8")).hexdigest()
             meta = {"uuid": game_id, "names": names, "start_time": int(time.time())}
         else:
             raise HTTPException(
@@ -863,7 +892,7 @@ async def resolve_game_data(
     # 3. Majsoul Paipu URL / UUID
     if raw_input in _MEMORY_LOGS:
         mjai_events, meta = _MEMORY_LOGS[raw_input]
-        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
+        seat = select_game_seat(meta, target_actor)
         log.info("[牌谱处理] 命中当前内存热数据: %s | 视角: P%d", raw_input, seat)
         return raw_input, mjai_events, meta, seat
 
@@ -895,22 +924,7 @@ async def resolve_game_data(
         log.warning("[牌谱转换失败] 数据转换异常: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    seat = target_actor
-    acc_ids = meta.get("account_ids", [])
-    if seat is None and url_acc_id and url_acc_id in acc_ids:
-        seat = acc_ids.index(url_acc_id)
-        log.info("[视角选定] 匹配牌谱链接中附带的特定玩家视角: P%d", seat)
-    if seat is None and ms_client.account_id and ms_client.account_id in acc_ids:
-        seat = acc_ids.index(ms_client.account_id)
-        log.info("[视角选定] 匹配当前已登录雀魂账号视角: P%d", seat)
-    if seat is None:
-        cfg_acc_id = load_config().get("account_id")
-        if cfg_acc_id and cfg_acc_id in acc_ids:
-            seat = acc_ids.index(cfg_acc_id)
-            log.info("[视角选定] 匹配配置文件默认账号视角: P%d", seat)
-    if seat is None or not (0 <= seat <= 3):
-        seat = 0
-        log.info("[视角选定] 未指定特定玩家，默认检讨起手东家视角: P0")
+    seat = select_game_seat(meta, target_actor, url_acc_id)
 
     set_memory_log(game_uuid, mjai_events, meta)
     log.info("[牌谱准备就绪] 牌谱: %s | 目标视角: P%d (%s) | 准备启动 AI 推理", game_uuid, seat, meta.get("names", ["?"]*4)[seat] if seat < len(meta.get("names", [])) else f"P{seat}")
@@ -926,7 +940,7 @@ async def _run_review_with_cache(
     temperature: float,
 ) -> dict[str, Any]:
     resolved_id, weight_sig = resolve_engine_cache_info(engine)
-    cache_key = make_cache_key(game_id, seat, resolved_id, temperature, weight_sig)
+    cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, temperature, weight_sig)
     cached = get_cached_review(cache_key)
     if cached:
         cached_eng = cached.get("engine", {})
@@ -962,7 +976,7 @@ async def _run_review_with_cache(
             elapsed,
             rate_str,
             sum_stats.get("blunders", 0),
-            sum_stats.get("rating", 0.0),
+            sum_stats.get("rating") if sum_stats.get("rating") is not None else 0.0,
         )
         return res
 
@@ -1043,7 +1057,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 return
 
             resolved_id, weight_sig = resolve_engine_cache_info(req.engine)
-            cache_key = make_cache_key(game_id, seat, resolved_id, req.temperature, weight_sig)
+            cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, req.temperature, weight_sig)
             cached = get_cached_review(cache_key)
             if cached:
                 cached_eng = cached.get("engine", {})
@@ -1125,7 +1139,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                         elapsed,
                         rate_str,
                         sum_stats.get("blunders", 0),
-                        sum_stats.get("rating", 0.0),
+                        sum_stats.get("rating") if sum_stats.get("rating") is not None else 0.0,
                         cache_key,
                     )
 
