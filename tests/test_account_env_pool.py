@@ -73,3 +73,51 @@ def test_saving_settings_does_not_persist_environment_credentials(monkeypatch):
     assert "backup_accounts" not in saved
     assert "secret-remote" not in app.LOCAL_CONFIG_PATH.read_text(encoding="utf8")
     assert "secret-backup" not in app.LOCAL_CONFIG_PATH.read_text(encoding="utf8")
+
+
+@pytest.mark.parametrize("env_key", ["MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN"])
+def test_single_environment_credential_is_not_saved(monkeypatch, env_key):
+    original = {"account": "local", "password": "local-pw", "access_token": "local-token", "custom": "keep"}
+    app.LOCAL_CONFIG_PATH.write_text(json.dumps(original))
+    monkeypatch.setenv(env_key, "environment-secret")
+    cfg = app.load_config()
+    cfg["selected_model"] = "akagi"
+    app.save_config(cfg)
+    saved = json.loads(app.LOCAL_CONFIG_PATH.read_text(encoding="utf8"))
+    assert all(saved[key] == original[key] for key in ("account", "password", "access_token"))
+    assert saved["selected_model"] == "akagi"
+    assert "environment-secret" not in app.LOCAL_CONFIG_PATH.read_text(encoding="utf8")
+
+
+def test_single_env_primary_refresh_stays_in_memory(monkeypatch):
+    monkeypatch.setenv("MAJSOUL_ACCOUNT", "env-primary")
+    monkeypatch.setenv("MAJSOUL_PASSWORD", "env-password")
+    monkeypatch.setenv("MAJSOUL_ACCESS_TOKEN", "old")
+    account = app.get_all_configured_accounts()[0]
+    app._persist_updated_token(account, "fresh")
+    assert not app.LOCAL_CONFIG_PATH.exists()
+    assert app.get_all_configured_accounts()[0]["access_token"] == "fresh"
+    monkeypatch.setenv("MAJSOUL_ACCESS_TOKEN", "rotated")
+    assert app.get_all_configured_accounts()[0]["access_token"] == "rotated"
+
+
+def test_env_password_rotation_invalidates_refreshed_token(monkeypatch):
+    monkeypatch.setenv("MAJSOUL_ACCOUNT", "primary")
+    monkeypatch.setenv("MAJSOUL_PASSWORD", "old-password")
+    account = app.get_all_configured_accounts()[0]
+    app._persist_updated_token(account, "fresh-token")
+    assert app.get_all_configured_accounts()[0]["access_token"] == "fresh-token"
+    monkeypatch.setenv("MAJSOUL_PASSWORD", "new-password")
+    assert not app.get_all_configured_accounts()[0].get("access_token")
+
+
+@pytest.mark.parametrize("env_key", ["MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN", "MAJSOUL_ACCOUNTS_JSON"])
+def test_env_managed_remember_login_is_rejected_before_connect(monkeypatch, env_key):
+    import asyncio
+    from fastapi import HTTPException
+    monkeypatch.setenv(env_key, "[]" if env_key == "MAJSOUL_ACCOUNTS_JSON" else "managed")
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(app.api_login(app.LoginReq(account="another", password="pw", remember=True)))
+    assert error.value.status_code == 400
+    assert "环境变量管理" in error.value.detail
+    assert not app.LOCAL_CONFIG_PATH.exists()

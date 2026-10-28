@@ -231,6 +231,11 @@ def to_mjai(record: dict) -> list[dict]:
                         for f in h.get("fans", [])
                     ],
                 }
+                if target is not None and target != seat:
+                    # A robbing-kan win uses the added tile, not the last river tile.
+                    winning_action = next((x for x in reversed(events) if x.get("actor") == target and x.get("type") in ("dahai", "kakan")), None)
+                    if winning_action and winning_action.get("pai"):
+                        ev["pai"] = winning_action["pai"]
                 if i == 0 and len(deltas) == 4:
                     ev["deltas"] = deltas
                 ura = [ms_to_mjai(x) for x in h.get("li_doras", [])]
@@ -246,7 +251,17 @@ def to_mjai(record: dict) -> list[dict]:
                 for i, x in enumerate(s.get("delta_scores", [])):
                     if i < 4:
                         deltas[i] += int(x)
-            events.append({"type": "ryukyoku", "deltas": deltas})
+            events.append({
+                "type": "ryukyoku",
+                "deltas": deltas,
+                "majsoul": {
+                    "record_type": name,
+                    "reason": "nagashi_mangan" if d.get("liujumanguan") else "exhaustive",
+                    "liujumanguan": bool(d.get("liujumanguan")),
+                    "players": d.get("players", []),
+                    "scores": d.get("scores", []),
+                },
+            })
             end_kyoku()
 
         elif name == "RecordLiuJu":
@@ -254,7 +269,19 @@ def to_mjai(record: dict) -> list[dict]:
                 accept_reach()
             else:
                 pending_reach = None
-            events.append({"type": "ryukyoku", "deltas": [0, 0, 0, 0]})
+            raw_type = int(d.get("type", 0))
+            reasons = {1: "kyushu_kyuhai", 2: "suufon_renda", 3: "suukan_sanra", 4: "suucha_riichi"}
+            events.append({
+                "type": "ryukyoku",
+                "deltas": [0, 0, 0, 0],
+                "majsoul": {
+                    "record_type": name,
+                    "reason": reasons.get(raw_type, "unknown"),
+                    "original_type": raw_type,
+                    "seat": d.get("seat"),
+                    "tiles": d.get("tiles", []),
+                },
+            })
             end_kyoku()
 
         else:

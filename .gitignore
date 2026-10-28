@@ -15,3 +15,6 @@ cloudflared.exe
 data/reviews/
 data/config.json
 .claude/
+vendor/
+data/cache/*.js
+web/demo_review*.json

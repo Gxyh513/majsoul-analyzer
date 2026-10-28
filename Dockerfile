@@ -16,12 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-COPY vendor/Mortal ./vendor/Mortal
-
-RUN if [ ! -f ./vendor/Mortal/Cargo.toml ]; then \
-      rm -rf ./vendor/Mortal && \
-      git clone --depth 1 https://github.com/Equim-chan/Mortal.git ./vendor/Mortal; \
-    fi
+RUN git clone --depth 1 https://github.com/Equim-chan/Mortal.git ./vendor/Mortal
 
 WORKDIR /build/vendor/Mortal
 RUN cargo build -p libriichi --lib --release

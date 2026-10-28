@@ -289,7 +289,6 @@ function showAnalysisError(errMsg, retryCallback = null) {
   if (!overlay || !errorBox) return;
 
   if (normalState) normalState.classList.add("hidden");
-
   if (errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
     if (errorDetail) {
       errorDetail.innerHTML = `
@@ -298,7 +297,7 @@ function showAnalysisError(errMsg, retryCallback = null) {
           <input id="promptApiTokenInput" type="password" placeholder="请输入 MAJSOUL_API_TOKEN" class="kd-landing-input" style="padding: 8px 12px; font-size: 13px; text-align: center; border-radius: 8px;" value="${escapeHtml(getApiToken())}" />
           <button id="btnSavePromptToken" type="button" class="kd-retry-btn" style="white-space: nowrap; padding: 8px 14px; border-radius: 8px;">保存并继续</button>
         </div>
-        <div style="font-size: 11.5px; color: rgba(235, 235, 245, 0.45);">口令安全保存在当前浏览器本地，后续分析将自动携带。</div>
+        <div style="font-size: 11.5px; color: rgba(235, 235, 245, 0.45);">口令仅保存在当前浏览器标签页，关闭标签页后需要重新输入。</div>
       `;
       setTimeout(() => {
         $("btnSavePromptToken")?.addEventListener("click", () => {
@@ -324,61 +323,55 @@ function showAnalysisError(errMsg, retryCallback = null) {
   overlay.classList.remove("hidden");
 }
 
-// A remote API token is kept only for this browser tab. It can be supplied
-// as #api_token=... by a private launcher, then removed from the address bar.
-function getApiToken() {
-  const fragment = new URLSearchParams(window.location.hash.slice(1));
-  const token = fragment.get("api_token");
+// API tokens are scoped to the selected backend and retained only in this tab.
+function tokenStorageKey() {
   const backend = getBackendUrl();
   const origin = backend ? new URL(backend.startsWith("http") ? backend : `http://${backend}`).origin : window.location.origin;
-  const key = `majsoul_api_token:${origin}`;
-  if (token) {
-    sessionStorage.setItem(key, token.trim());
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(key, token.trim());
+  return `majsoul_api_token:${origin}`;
+}
+
+function clearLegacyApiTokens() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("majsoul_api_token:")) localStorage.removeItem(key);
     }
+  } catch (_) {}
+}
+
+function getApiToken() {
+  clearLegacyApiTokens();
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const token = fragment.get("api_token");
+  const key = tokenStorageKey();
+  if (token) {
     fragment.delete("api_token");
     const url = new URL(window.location.href);
     url.hash = fragment.toString();
     window.history.replaceState(null, "", url.toString());
+    sessionStorage.setItem(key, token.trim());
   }
-  const sessionVal = sessionStorage.getItem(key);
-  const localVal = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
-  return sessionVal || localVal || "";
+  return sessionStorage.getItem(key) || "";
 }
 
 function setApiToken(token) {
-  const backend = getBackendUrl();
-  const origin = backend ? new URL(backend.startsWith("http") ? backend : `http://${backend}`).origin : window.location.origin;
-  const key = `majsoul_api_token:${origin}`;
-  if (token && token.trim()) {
-    sessionStorage.setItem(key, token.trim());
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(key, token.trim());
-    }
-  } else {
-    sessionStorage.removeItem(key);
-    if (typeof localStorage !== "undefined") {
-      localStorage.removeItem(key);
-    }
-  }
+  clearLegacyApiTokens();
+  const key = tokenStorageKey();
+  if (token && token.trim()) sessionStorage.setItem(key, token.trim());
+  else sessionStorage.removeItem(key);
 }
 
 function apiAuthHeaders() {
   const token = getApiToken();
-  if (!token) return {};
-  const backend = getBackendUrl();
-  // ModelScope *.ms.show gateway intercepts standard Authorization header for its own SDK tokens
-  if (backend.includes("ms.show") || window.location.hostname.includes("ms.show")) {
-    return {};
-  }
-  return { Authorization: `Bearer ${token}` };
+  // ModelScope may consume Authorization for its own gateway credentials.
+  return token ? { "X-Api-Token": token } : {};
 }
 
 async function fetchReviewStream(postBody, onProgress) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const resp = await fetch(url, {
     method: "POST",
+    redirect: "error",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
@@ -447,7 +440,7 @@ async function fetchReviewStream(postBody, onProgress) {
   return finalResult;
 }
 
-const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show?studio_token=REDACTED_STUDIO_TOKEN";
+const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";
 
 function getBackendUrl() {
   const urlParams = new URLSearchParams(window.location.search);
@@ -479,20 +472,20 @@ function buildApiUrl(backend, path) {
     }
 
     const base = new URL(backend.startsWith("http") ? backend : `http://${backend}`);
+    const baseParams = new URLSearchParams(base.search);
+    base.search = "";
+    base.hash = "";
     const full = new URL(path.replace(/^\//, ""), base.href.endsWith("/") ? base.href : base.href + "/");
-    for (const [k, v] of base.searchParams.entries()) {
-      if (!full.searchParams.has(k)) full.searchParams.set(k, v);
+    for (const [k, v] of baseParams.entries()) {
+      if (k !== "api_token" && !full.searchParams.has(k)) full.searchParams.set(k, v);
     }
     if (studioToken && !full.searchParams.has("studio_token")) {
       full.searchParams.set("studio_token", studioToken);
     }
-    const apiToken = getApiToken();
-    if (apiToken && !full.searchParams.has("api_token") && path.startsWith("/api/") && path !== "/api/status") {
-      full.searchParams.set("api_token", apiToken);
-    }
+    full.searchParams.delete("api_token");
     return full.toString();
   } catch (e) {
-    return backend ? `${backend.replace(/\/+$/, "")}/${path.replace(/^\//, "")}` : path;
+    throw new Error("后端地址无效，请检查配置。");
   }
 }
 
@@ -503,7 +496,7 @@ async function apiFetch(path, options = {}) {
 
   const headers = {
     Accept: "application/json",
-    ...apiAuthHeaders(),
+    ...(new URL(url, window.location.origin).origin === new URL(backend ? (backend.startsWith("http") ? backend : `http://${backend}`) : window.location.origin).origin ? apiAuthHeaders() : {}),
     ...(options.headers || {}),
   };
   if (options.body && !headers["Content-Type"]) {
@@ -513,6 +506,7 @@ async function apiFetch(path, options = {}) {
   const resp = await fetch(url, {
     mode: "cors",
     ...options,
+    redirect: "error",
     headers,
   });
 
@@ -663,7 +657,7 @@ function showTier(tierNum) {
   }
 }
 
-const REVIEW_SCHEMA = "mortal-582500-only-v2";
+const REVIEW_SCHEMA = "mortal-582500-only-v3";
 
 function isTrustedReview(result) {
   const status = state.serverStatus?.engine;
@@ -778,7 +772,9 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   // 2. 检查 IndexedDB 离线持久缓存（0ms 秒开）
   if (!isJsonInput) {
     try {
-      const idbCached = await idbReviewCache.findByGame(paipuId, model, seat);
+      // A bare game ID does not determine the user's seat. Let the server
+      // resolve it rather than opening an arbitrary cached perspective.
+      const idbCached = seat == null ? null : await idbReviewCache.findByGame(paipuId, model, seat);
       if (isTrustedReview(idbCached)) {
         state.reviewData = idbCached;
         state.gameId = idbCached.game_id || paipuId;
@@ -858,7 +854,7 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     showTier(2);
 
     const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("paipu", paipuId);
+    newUrl.searchParams.set("paipu", isJsonInput ? state.gameId : paipuId);
     window.history.pushState(null, "", newUrl.toString());
 
     renderSummaryDashboard();
@@ -989,7 +985,8 @@ function renderSummaryDashboard() {
     pill.innerHTML = `
       <div class="kd-badge-item">一致率: <strong>${fmtPct(sum.match_rate)}</strong></div>
       <div class="kd-badge-item">恶手: <strong style="color:#ff453a;">${sum.blunders || 0}</strong></div>
-      <div class="kd-badge-item">Rating: <strong style="color:#ffcc00;">${(sum.rating ?? 0).toFixed(1)}</strong></div>
+      <div class="kd-badge-item">Rating: <strong style="color:#ffcc00;">${sum.rating == null ? "--" : Number(sum.rating).toFixed(1)}</strong></div>
+      ${sum.unscored_kan ? `<div class="kd-badge-item">未判定杠: <strong>${Number(sum.unscored_kan)}</strong></div>` : ""}
     `;
   }
 }
@@ -1081,11 +1078,11 @@ function stepDeltaFast(delta) {
 
 function jumpPrevBlunderFast() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
+  if (!kyoku) return;
   const current = pendingTargetStep !== null ? pendingTargetStep : state.stepIdx;
-  const decs = kyoku.decisions;
+  const decs = kyoku.decisions || [];
   for (let i = decs.length - 1; i >= 0; i--) {
-    if (decs[i].step_idx < current && !decs[i].is_equal) {
+    if (decs[i].step_idx < current && decs[i].is_equal === false) {
       scheduleStep(decs[i].step_idx);
       return;
     }
@@ -1096,10 +1093,10 @@ function jumpPrevBlunderFast() {
 
 function jumpNextBlunderFast() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
+  if (!kyoku) return;
   const current = pendingTargetStep !== null ? pendingTargetStep : state.stepIdx;
-  for (const d of kyoku.decisions) {
-    if (d.step_idx > current && !d.is_equal) {
+  for (const d of kyoku.decisions || []) {
+    if (d.step_idx > current && d.is_equal === false) {
       scheduleStep(d.step_idx);
       return;
     }
@@ -1120,7 +1117,7 @@ function stepDelta(delta) {
     }
   } else if (target >= kyoku.steps.length) {
     if (state.kyokuIdx < state.reviewData.kyokus.length - 1) {
-      selectKyoku(state.kyokuIdx + 1, true);
+      selectKyoku(state.kyokuIdx + 1);
     } else {
       if (state.isPlaying) togglePlay(false);
     }
@@ -1369,7 +1366,7 @@ function renderBoard(kyoku, snap, activeDecision) {
   if (isHora) {
     if (isRon && targetActor !== null && targetActor !== undefined) {
       const river = snap.rivers[targetActor] || [];
-      if (river.length > 0) agariTile = river[river.length - 1].pai;
+      agariTile = snap.event.pai || (river.length > 0 ? river[river.length - 1].pai : null);
     } else if (winActor !== null) {
       agariTile = snap.drawn[winActor];
     }
@@ -1380,7 +1377,7 @@ function renderBoard(kyoku, snap, activeDecision) {
   const p2 = (hero + 2) % 4; // Top
   const p3 = (hero + 3) % 4; // Left
 
-  const roundScores = kyoku.init_scores || kyoku.steps?.[0]?.scores || [25000, 25000, 25000, 25000];
+  const roundScores = snap.scores || kyoku.init_scores || kyoku.steps?.[0]?.scores || [25000, 25000, 25000, 25000];
   const giP0 = $("giP0");
   if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`;
   const giP1 = $("giP1");
@@ -1541,6 +1538,9 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     handHtml += `<div class="tileDiv is-drawn ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
   }
 
+  if (isRon && seat === winActor && agariTile) {
+    handHtml += `<div class="tileDiv is-drawn agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${escapeHtml(tileCn(agariTile))}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
+  }
   closedWrap.innerHTML = handHtml;
 
   // 2. Render Green Discard Recommendation Bars (SVG) — Absolutely Centered on Actual DOM Tiles
@@ -1628,6 +1628,11 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
     const isDrawnDiscard = highlightedIdx === 999;
     const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
     html += `<div class="tileDiv is-drawn ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""} ${isDrawnDiscard ? "tileImgHighlight" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
+  }
+
+  if (isRon && isWinner && agariTile) {
+    const src = `/tiles/${encodeURIComponent(agariTile)}.svg`;
+    html += `<div class="tileDiv is-drawn agari-tile"><img src="${src}" class="tileImg agari-tile" title="荣和: ${escapeHtml(tileCn(agariTile))}"></div>`;
   }
 
   closedWrap.innerHTML = html;
@@ -1902,6 +1907,7 @@ function getKillerActionSpan(item) {
     daiminkan: "杠",
     kakan: "杠",
     ankan: "暗杠",
+    kan: "杠（具体牌未判定）",
     reach: "立直",
     hora: act.actor !== act.target && act.target !== undefined && act.target !== null ? "荣和" : "自摸",
     ron: "荣和",
@@ -2031,8 +2037,13 @@ function renderThisRoundModalContent(snap, currentKyoku) {
     }
     html += `</tbody></table>`;
   } else if (isRyuukyoku) {
+    const reason = snap?.event?.majsoul?.reason;
+    const drawTitle = {
+      exhaustive: "荒牌流局", nagashi_mangan: "流局满贯", kyushu_kyuhai: "九种九牌",
+      suufon_renda: "四风连打", suukan_sanra: "四杠散了", suucha_riichi: "四家立直",
+    }[reason] || "流局";
     html += `<div class="kd-settle-header" style="text-align:center; margin-bottom:12px; padding-top:4px;">
-      <div style="font-size:16px; font-weight:700; color:#ff9f0a; margin-bottom:4px; letter-spacing:0.3px;">荒牌流局</div>`;
+      <div style="font-size:16px; font-weight:700; color:#ff9f0a; margin-bottom:4px; letter-spacing:0.3px;">${drawTitle}</div>`;
 
     const pureDeltas = [0, 1, 2, 3].map((seat) => {
       let d = snap?.event?.deltas?.[seat];
@@ -2043,7 +2054,7 @@ function renderThisRoundModalContent(snap, currentKyoku) {
       return d;
     });
     const tenpaiSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] > 0);
-    const summary = tenpaiSeats.length > 0 ? "罚符结算" : "全员不听";
+    const summary = reason === "exhaustive" ? (tenpaiSeats.length > 0 ? "罚符结算" : "无罚符结算") : "点数变化";
     html += `<div style="font-size:13px; color:rgba(255,255,255,0.7);">${summary}</div></div>`;
 
     html += `<table class="kd-settle-delta-table" style="width:100%; border-collapse:collapse; margin-top:6px; font-size:13px;">
@@ -2231,10 +2242,10 @@ function jumpNextDecision() {
 
 function jumpPrevBlunder() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
-  const decs = kyoku.decisions;
+  if (!kyoku) return;
+  const decs = kyoku.decisions || [];
   for (let i = decs.length - 1; i >= 0; i--) {
-    if (decs[i].step_idx < state.stepIdx && !decs[i].is_equal) {
+    if (decs[i].step_idx < state.stepIdx && decs[i].is_equal === false) {
       setStep(decs[i].step_idx);
       return;
     }
@@ -2243,7 +2254,7 @@ function jumpPrevBlunder() {
     const prevK = state.reviewData.kyokus[k];
     const prevDecs = prevK?.decisions || [];
     for (let i = prevDecs.length - 1; i >= 0; i--) {
-      if (!prevDecs[i].is_equal) {
+      if (prevDecs[i].is_equal === false) {
         selectKyoku(k);
         setStep(prevDecs[i].step_idx);
         return;
@@ -2255,9 +2266,9 @@ function jumpPrevBlunder() {
 
 function jumpNextBlunder() {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-  if (!kyoku?.decisions?.length) return;
-  for (const d of kyoku.decisions) {
-    if (d.step_idx > state.stepIdx && !d.is_equal) {
+  if (!kyoku) return;
+  for (const d of kyoku.decisions || []) {
+    if (d.step_idx > state.stepIdx && d.is_equal === false) {
       setStep(d.step_idx);
       return;
     }
@@ -2265,7 +2276,7 @@ function jumpNextBlunder() {
   for (let k = state.kyokuIdx + 1; k < state.reviewData.kyokus.length; k++) {
     const nextK = state.reviewData.kyokus[k];
     for (const d of nextK?.decisions || []) {
-      if (!d.is_equal) {
+      if (d.is_equal === false) {
         selectKyoku(k);
         setStep(d.step_idx);
         return;
@@ -2637,15 +2648,6 @@ function bindEvents() {
   });
 
   // Tier 2 Back to Home
-    $("btnLandingToken")?.addEventListener("click", () => {
-    const current = getApiToken();
-    const entered = window.prompt("请输入远程服务访问口令 (MAJSOUL_API_TOKEN)：", current);
-    if (entered !== null) {
-      setApiToken(entered);
-      showToast(entered.trim() ? "访问口令已配置" : "访问口令已清空", "success");
-    }
-  });
-
   $("btnBackToHome")?.addEventListener("click", () => {
     if (state.isPlaying) togglePlay(false);
     showTier(1);
@@ -2832,6 +2834,7 @@ function bindEvents() {
 
   // Global Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
     // Dismiss settlement modal or dialog on keyboard shortcuts
     const roundDialog = $("infoThisRoundModal");
     if (roundDialog && roundDialog.open) {
