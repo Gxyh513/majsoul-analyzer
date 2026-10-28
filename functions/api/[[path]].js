@@ -144,6 +144,10 @@ export async function onRequest({ request, env }) {
 
   const headers = new Headers({
     Accept: route.stream ? "text/event-stream" : "application/json",
+    // Use only the configured public site origin expected by the backend allowlist.
+    // Never reflect the caller-provided Origin or Referer.
+    Origin: "https://majsoul.ccwu.cc",
+    Referer: "https://majsoul.ccwu.cc/",
   });
   if (request.method === "POST") headers.set("Content-Type", "application/json");
   if (token) headers.set("X-Api-Token", token);

@@ -83,9 +83,12 @@ test("analysis injects only the server token and streams SSE without buffering",
     assert.equal(observed.init.redirect, "manual");
     const headers = new Headers(observed.init.headers);
     assert.equal(headers.get("X-Api-Token"), "server-only-secret");
-    for (const name of ["Authorization", "Cookie", "Origin", "X-Forwarded-For", "X-Studio-Token"]) {
+    for (const name of ["Authorization", "Cookie", "X-Forwarded-For", "X-Studio-Token"]) {
       assert.equal(headers.has(name), false);
     }
+    assert.equal(headers.get("Origin"), "https://majsoul.ccwu.cc");
+    assert.equal(headers.get("Referer"), "https://majsoul.ccwu.cc/");
+    assert.notEqual(headers.get("Origin"), "https://evil.example");
     assert.equal(new TextDecoder().decode(observed.init.body), JSON.stringify({ paipu: "demo" }));
     assert.equal(await res.text(), chunks.join(""));
     assert.equal(res.headers.get("content-type"), "text/event-stream; charset=utf-8");
