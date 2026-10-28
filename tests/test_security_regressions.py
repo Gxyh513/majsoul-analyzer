@@ -22,7 +22,7 @@ def test_local_same_origin_works_and_cross_site_is_denied(monkeypatch, tmp_path)
     assert c.get("/api/records/local", headers={"Origin":"https://evil.example"}).status_code == 403
 
 
-def test_remote_requires_token_or_allowed_origin(monkeypatch, tmp_path):
+def test_remote_requires_token_even_with_allowed_origin(monkeypatch, tmp_path):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "test-secret")
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
     monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
@@ -32,11 +32,15 @@ def test_remote_requires_token_or_allowed_origin(monkeypatch, tmp_path):
     assert c.get("/api/records/local", headers={"Authorization":"Bearer wrong"}).status_code == 401
     # Caller from an untrusted origin is rejected with 403
     assert c.get("/api/records/local", headers={"Origin":"https://evil.example"}).status_code == 403
-    # Authorized frontend origin is allowed
-    assert c.get("/api/records/local", headers={"Origin":"https://review.example"}).status_code == 200
+    # Allowed frontend origin is not an identity
+    denied = c.get("/api/records/local", headers={"Origin":"https://review.example"})
+    assert denied.status_code == 401
+    assert denied.headers["access-control-allow-origin"] == "https://review.example"
+    assert c.get("/api/records/local", headers={"Origin":"https://review.example", "X-Api-Token":"test-secret"}).status_code == 200
+    assert c.options("/api/records/local", headers={"Origin":"https://review.example", "Access-Control-Request-Method":"GET"}).status_code == 204
     # Direct caller with valid token is allowed
     assert c.get("/api/records/local", headers={"Authorization":"Bearer test-secret"}).status_code == 200
-    assert c.get("/api/records/local?api_token=test-secret").status_code == 200
+    assert c.get("/api/records/local?api_token=test-secret").status_code == 401
 
 
 def test_uploaded_uuid_cannot_escape_record_directory(monkeypatch, tmp_path):
@@ -69,7 +73,7 @@ def test_configured_token_also_protects_loopback(monkeypatch, tmp_path):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "secret")
     monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
     c = client()
-    assert c.get("/api/records/local").status_code == 200
+    assert c.get("/api/records/local").status_code == 401
     assert c.get("/api/records/local", headers={"Authorization":"Bearer secret"}).status_code == 200
 
 
@@ -79,7 +83,8 @@ def test_resolve_game_data_does_not_persist_records_to_disk(monkeypatch, tmp_pat
     monkeypatch.setattr(server_app, "RECORDS_DIR", root)
     content = {"head": {"uuid": "safe_uuid", "accounts": [], "result": {}, "config": {}}, "actions": []}
     game_id, events, meta, seat = asyncio.run(server_app.resolve_game_data(content=content, target_actor=0))
-    assert game_id == "safe_uuid"
+    assert game_id.startswith("upload-")
+    assert meta["uuid"] == "safe_uuid"
     assert len(events) > 0
     # Zero files must be written to disk
     assert not list(root.glob("*.json"))
@@ -94,6 +99,21 @@ def test_api_status_is_public_health_check(monkeypatch):
     assert c.get("/api/status").status_code == 200
     # but other endpoints require token
     assert c.get("/api/records/local").status_code == 401
-    # and support X-Api-Token header or api_token query param
+    # and support the X-Api-Token header but not query parameters
     assert c.get("/api/records/local", headers={"X-Api-Token": "test-secret"}).status_code == 200
-    assert c.get("/api/records/local?api_token=test-secret").status_code == 200
+    assert c.get("/api/records/local?api_token=test-secret").status_code == 401
+
+
+def test_remote_allowed_origin_without_configured_token_is_denied(monkeypatch, tmp_path):
+    monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
+    monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
+    monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
+    c = client(peer="203.0.113.5", host="api.example")
+    assert c.get("/api/records/local", headers={"Origin": "https://review.example"}).status_code == 401
+
+
+def test_wrong_origin_rejected_even_with_valid_token(monkeypatch):
+    monkeypatch.setenv("MAJSOUL_API_TOKEN", "secret")
+    monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
+    c = client(peer="203.0.113.5", host="api.example")
+    assert c.get("/api/records/local", headers={"Origin": "https://evil.example", "X-Api-Token": "secret"}).status_code == 403

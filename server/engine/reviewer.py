@@ -259,12 +259,19 @@ def label_to_action_dict(
             consumed = [base, base]
         return {"type": "pon", "actor": actor, "target": target, "pai": last_tile, "consumed": consumed}
     if label == 42:
+        # The primary Mortal action head has a single kan label.  It does
+        # not identify which kan was selected when multiple options exist.
+        if len(ankan_cands) + len(kakan_cands) > 1:
+            return {"type": "kan", "actor": actor, "ambiguous": True}
         if ankan_cands:
             c = ankan_cands[0]
-            return {"type": "ankan", "actor": actor, "consumed": [c] * 4}
+            consumed = [c] * 4
+            if len(c) >= 2 and c[0] == "5" and c[1] in "mps" and akas_in_hand["mps".index(c[1])]:
+                consumed[0] = c[:2] + "r"
+            return {"type": "ankan", "actor": actor, "consumed": consumed}
         if kakan_cands:
             c = kakan_cands[0]
-            return {"type": "kakan", "actor": actor, "pai": c, "consumed": [c] * 3}
+            return {"type": "kakan", "actor": actor, "pai": c}
         base = deaka(last_tile or "1m")
         return {"type": "daiminkan", "actor": actor, "target": target, "pai": last_tile, "consumed": [base] * 3}
     if label == 43:
@@ -292,6 +299,8 @@ def format_action_cn(ev: dict) -> str:
         return f"加杠 {tile_cn(ev.get('pai', '?'))}"
     if t == "daiminkan":
         return f"大明杠 {tile_cn(ev.get('pai', '?'))}"
+    if t == "kan":
+        return "杠（具体牌未判定）"
     if t == "hora":
         return "自摸" if ev.get("actor") == ev.get("target") else "荣和"
     if t == "ryukyoku":
@@ -310,6 +319,8 @@ def short_action_cn(ev: dict) -> str:
         return f"吃({c})"
     if t == "pon":
         return f"碰{tile_cn(ev['pai'])}"
+    if t == "kan":
+        return "杠（具体牌未判定）"
     if t in ("ankan", "kakan", "daiminkan"):
         p = ev.get("pai") or (ev.get("consumed") or ["?"])[0]
         return f"杠{tile_cn(p)}"
@@ -349,6 +360,8 @@ def compute_tile_danger(
     dora_cnt = sum(1 for d in dora_T34s if d == t34) + (1 if is_red else 0)
     max_danger = 0.0
     tags: list[str] = []
+    riichi_safe = 0
+    riichi_count = sum(1 for _, _, is_riichi in threatening_opps if is_riichi)
 
     for opp, weight, is_riichi in threatening_opps:
         # Build safe tiles (genbutsu) against `opp`
@@ -364,8 +377,8 @@ def compute_tile_danger(
                         safe.add(tid(item["pai"]))
 
         if t34 in safe:
-            if is_riichi and "现物" not in tags:
-                tags.append("现物")
+            if is_riichi:
+                riichi_safe += 1
             continue
 
         # Tile is not genbutsu against this threatening opponent
@@ -434,6 +447,16 @@ def compute_tile_danger(
 
         base *= 1.0 + 0.22 * dora_cnt
         max_danger = max(max_danger, min(1.0, base * weight))
+
+    # A tile safe against one riichi player may still be dangerous against another.
+    if riichi_safe:
+        if riichi_safe != riichi_count:
+            safe_tag = "对部分立直者现物"
+        elif max_danger > 0:
+            safe_tag = "对立直者现物"
+        else:
+            safe_tag = "现物"
+        tags.insert(0, safe_tag)
 
     # Deduplicate tags preserving order
     dedup = []
@@ -996,7 +1019,16 @@ def review_game(
                     scores[s] += int(deltas[s])
                     cur_kyoku["score_deltas"][s] += int(deltas[s])
                 cur_kyoku["end_scores"] = list(scores)
-            cur_kyoku["end_summaries"].append("流局")
+            reason = ev.get("majsoul", {}).get("reason")
+            label = {
+                "exhaustive": "荒牌流局",
+                "nagashi_mangan": "流局满贯",
+                "kyushu_kyuhai": "九种九牌",
+                "suufon_renda": "四风连打",
+                "suukan_sanra": "四杠散了",
+                "suucha_riichi": "四家立直",
+            }.get(reason, "流局")
+            cur_kyoku["end_summaries"].append(label)
 
         step_idx = len(cur_kyoku["steps"])
         step_snap = snapshot_board(ev, step_idx)
@@ -1146,7 +1178,8 @@ def review_game(
         actual_cand = next((c for c in candidates if c["label"] == actual_label), candidates[0])
         best_cand = candidates[0]
 
-        is_equal = actual_cand["label"] == best_cand["label"]
+        ambiguous_kan = bool(best_cand["label"] == 42 and actual_cand["label"] == 42 and best_cand["action"].get("ambiguous"))
+        is_equal = None if ambiguous_kan else actual_cand["label"] == best_cand["label"]
         q_min = min(c["raw_q"] for c in candidates)
         q_max = max(c["raw_q"] for c in candidates)
         rel_score = 1.0 if is_equal else (actual_cand["raw_q"] - q_min) / max(q_max - q_min, 1e-6)
@@ -1154,7 +1187,10 @@ def review_game(
         actual_prob = actual_cand["prob"]
 
         # Verdict classification (NAGA style)
-        if is_equal or (actual_prob >= 35.0 and q_loss < 0.08):
+        if ambiguous_kan:
+            verdict = "unknown"
+            verdict_cn = "杠牌未判定"
+        elif is_equal or (actual_prob >= 35.0 and q_loss < 0.08):
             verdict = "best"
             verdict_cn = "一致"
         elif actual_prob >= 15.0 or rel_score >= 0.72 or q_loss < 0.25:
@@ -1170,10 +1206,11 @@ def review_game(
             verdict_cn = "恶手"
             blunders += 1
 
-        total_reviewed += 1
-        if is_equal:
-            total_matches += 1
-        raw_rating_sum += rel_score
+        if not ambiguous_kan:
+            total_reviewed += 1
+            if is_equal:
+                total_matches += 1
+            raw_rating_sum += rel_score
 
         # Build tile -> probability map (0..36) for hand overlay bars
         tile_bars: dict[str, dict[str, Any]] = {}
@@ -1212,7 +1249,7 @@ def review_game(
             "actual_prob": actual_prob,
             "best_prob": best_cand["prob"],
             "q_loss": round(q_loss, 3),
-            "rel_score": round(rel_score * 100, 1),
+            "rel_score": None if ambiguous_kan else round(rel_score * 100, 1),
             "is_equal": is_equal,
             "verdict": verdict,
             "verdict_cn": verdict_cn,
@@ -1249,13 +1286,14 @@ def review_game(
         grade = "C"
 
     for k in kyokus:
-        decs = k["decisions"]
+        decs = [d for d in k["decisions"] if d["is_equal"] is not None]
+        k["unscored_count"] = len(k["decisions"]) - len(decs)
         k_tot = len(decs)
         k_match = sum(1 for d in decs if d["is_equal"])
         k_blunder = sum(1 for d in decs if d["verdict"] == "blunder")
         k_raw = sum(d["rel_score"] / 100.0 for d in decs)
         match_rate = round((k_match / k_tot) * 100.0, 1) if k_tot else None
-        rating = round(((k_raw / k_tot) ** 2) * 100.0, 1) if k_tot else 100.0
+        rating = round(((k_raw / k_tot) ** 2) * 100.0, 1) if k_tot else (None if k["unscored_count"] else 100.0)
 
         # Discard decisions vs Call response decisions breakdown
         discard_decs = [d for d in decs if d.get("decision_type") in ("self_turn", "discard_after_call", "riichi_discard")]
@@ -1277,7 +1315,7 @@ def review_game(
         k["stats"] = {
             "total": k_tot,
             "matches": k_match,
-            "match_rate": match_rate if match_rate is not None else 100.0,
+            "match_rate": match_rate if match_rate is not None else (None if k["unscored_count"] else 100.0),
             "blunders": k_blunder,
             "rating": rating,
             "discard_total": d_tot,
@@ -1286,6 +1324,8 @@ def review_game(
             "call_matches": c_match,
         }
 
+    unscored_kan = sum(k["unscored_count"] for k in kyokus)
+    no_scored_kan_only = total_reviewed == 0 and unscored_kan > 0
     if progress_callback:
         progress_callback(100.0, "牌谱分析全部完成")
 
@@ -1311,14 +1351,15 @@ def review_game(
         "summary": {
             "total_reviewed": total_reviewed,
             "total_matches": total_matches,
-            "match_rate": round(overall_match_rate, 1),
-            "rating": round(overall_rating, 1),
-            "grade": grade,
+            "match_rate": None if no_scored_kan_only else round(overall_match_rate, 1),
+            "rating": None if no_scored_kan_only else round(overall_rating, 1),
+            "grade": None if no_scored_kan_only else grade,
             "blunders": blunders,
             "blunder_rate": round(blunder_rate, 1),
             "inaccuracies": inaccuracies,
+            "unscored_kan": unscored_kan,
         },
-        "match_rate": round(overall_match_rate, 1),
+        "match_rate": None if no_scored_kan_only else round(overall_match_rate, 1),
         "blunders": blunders,
         "decisions": [d for k in kyokus for d in k.get("decisions", [])],
         "kyokus": kyokus,
