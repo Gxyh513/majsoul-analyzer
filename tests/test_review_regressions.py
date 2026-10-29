@@ -68,11 +68,26 @@ def test_riichi_discard_is_a_separate_navigable_step(monkeypatch):
     discard = next(d for d in k["decisions"] if d["decision_type"] == "riichi_discard")
     assert discard["step_idx"] == turn["step_idx"] + 1
     assert k["steps"][discard["step_idx"]]["event"]["type"] == "reach"
+    assert turn["actual"]["type"] == "reach"
+    assert discard["actual"]["tsumogiri"] is True
     assert k["steps"][turn["step_idx"]]["decision_idx"] == turn["decision_idx"]
     assert k["steps"][discard["step_idx"]]["decision_idx"] == discard["decision_idx"]
     assert all("tsumogiri" not in c["action"] for d in k["decisions"] for c in d["candidates"] if c["action"]["type"] == "dahai")
     summary = result["summary"]
     assert summary["match_rate"] == round(100 * summary["total_matches"] / summary["total_reviewed"], 1)
+
+
+def test_self_turn_decision_preserves_tsumogiri_flag(monkeypatch):
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    monkeypatch.setattr(reviewer, "analyze_candidate_metadata", lambda *args: {})
+    events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}, start_round(),
+              {"type": "tsumo", "actor": 0, "pai": "1m"},
+              {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": True},
+              {"type": "end_kyoku"}, {"type": "end_game"}]
+    kyoku = reviewer.review_game(events, 0, FakeManager())["kyokus"][0]
+    decision = next(d for d in kyoku["decisions"] if d["decision_type"] == "self_turn")
+    assert decision["actual"]["tsumogiri"] is True
+    assert kyoku["steps"][decision["step_idx"]]["drawn"][0] == "1m"
 
 
 def test_round_without_decisions_has_valid_overall_summary(monkeypatch):
@@ -97,3 +112,67 @@ def test_global_summary_is_not_last_round():
     # Per-decision rel_score is rounded to one decimal place before display.
     estimated = (sum(d["rel_score"] / 100 for d in result["decisions"]) / summary["total_reviewed"]) ** 2 * 100
     assert summary["rating"] == pytest.approx(estimated, abs=0.1)
+
+
+def test_majsoul_yakuman_fields_survive_conversion_to_round_summary(monkeypatch):
+    from server.majsoul.convert import to_mjai
+
+    # Synthetic local fixture: three dragon triplets and a fourth white tile.
+    hands = [["5z"] * 4 + ["6z"] * 3 + ["7z"] * 3 + ["1m"] * 3]
+    hands.extend([[f"{seat}m"] * 13 for seat in (2, 3, 4)])
+    round_data = {f"tiles{seat}": tiles for seat, tiles in enumerate(hands)}
+    round_data.update({"dora": "1m", "scores": [25000] * 4})
+    win = {"seat": 0, "zimo": True, "yiman": True, "title_id": 5,
+           "count": 1, "fu": 50, "fans": [{"id": 37, "val": 1}]}
+    record = {"head": {}, "actions": [
+        {"name": "RecordNewRound", "data": round_data},
+        {"name": "RecordHule", "data": {"hules": [win], "delta_scores": [32000, -12000, -10000, -10000]}},
+    ]}
+    events = to_mjai(record)
+    hora = next(event for event in events if event["type"] == "hora")
+    assert hora["yiman"] is True and hora["fans"][0]["id"] == 37
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    result = reviewer.review_game(events, 0, FakeManager())
+    assert "役满（大三元）" in result["kyokus"][0]["end_summaries"][0]
+    assert "50符1番" not in result["kyokus"][0]["end_summaries"][0]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected", "forbidden"),
+    [
+        ({"yiman": True, "title_id": 5, "han": 1, "fu": 50,
+          "fans": [{"id": 37, "val": 1}]}, "役满（大三元）", "50符1番"),
+        ({"yiman": True, "title_id": 7, "han": 3, "fu": 50,
+          "fans": [{"id": 37, "val": 1}, {"id": 48, "val": 2}]},
+         "3倍役满（大三元、四暗刻单骑）", "50符3番"),
+        ({"yiman": True, "title_id": 5, "han": 3, "fu": 40,
+          "fans": [{"id": 37, "val": 1}]}, "3倍役满（大三元）", "40符3番"),
+        ({"yiman": True, "title_id": 7, "han": 0, "fu": 40,
+          "fans": [{"id": 37, "val": 1}]}, "3倍役满（大三元）", "40符1番"),
+        ({"yiman": True, "title_id": 0, "han": 0, "fu": 40,
+          "fans": [{"id": 37, "val": 1}, {"id": 48, "val": 2}]},
+         "3倍役满（大三元、四暗刻单骑）", "40符3番"),
+        ({"yiman": True, "title_id": 6, "han": 2, "fu": 40}, "2倍役满", "40符2番"),
+        ({"yiman": True, "title_id": 10, "han": 6, "fu": 40}, "6倍役满", "40符6番"),
+        ({"yiman": True, "title_id": 0, "han": 4, "fu": 40}, "4倍役满", "40符4番"),
+        ({"yiman": False, "title_id": 11, "han": 13, "fu": 40,
+          "fans": [{"id": 29, "val": 6}, {"id": 31, "val": 7}]},
+         "累计役满 40符13番", "13倍役满"),
+        ({"yiman": True, "title_id": 5, "han": 1, "fu": 40,
+          "fans": [{"id": 999, "val": 1}]}, "役满（未知役种（ID 999））", "40符1番"),
+        ({"yiman": False, "title_id": 0, "han": 3, "fu": 40,
+          "fans": [{"id": 15, "val": 2}, {"id": 2, "val": 1}]}, "40符3番", "役满"),
+    ],
+)
+def test_round_summary_formats_yakuman_as_multiples(monkeypatch, fields, expected, forbidden):
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    hora = {"type": "hora", "actor": 0, "target": 1,
+            "deltas": [32000, -32000, 0, 0], **fields}
+    events = [{"type": "start_game", "names": ["A", "B", "C", "D"]},
+              start_round(), hora, {"type": "end_kyoku"}, {"type": "end_game"}]
+    result = reviewer.review_game(events, 0, FakeManager())
+    kyoku = result["kyokus"][0]
+    summary = kyoku["end_summaries"][0]
+    assert expected in summary
+    assert forbidden not in summary
+    assert kyoku["steps"][-1]["event"] == hora

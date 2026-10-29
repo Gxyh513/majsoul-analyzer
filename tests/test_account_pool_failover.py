@@ -132,8 +132,9 @@ async def test_all_accounts_540_raises_429():
             await fetch_record_with_failover(test_uuid)
 
         assert exc_info.value.status_code == 429
-        assert "所有已配置的 3 个账号今日抓谱额度均已耗尽" in exc_info.value.detail
+        assert "抓谱额度暂时耗尽" in exc_info.value.detail
         assert "540" in exc_info.value.detail
+        assert "1001" not in exc_info.value.detail and "3 个" not in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +180,9 @@ async def test_mixed_540_and_login_failure():
 
         assert exc_info.value.status_code == 400
         detail = exc_info.value.detail
-        assert "部分账号额度已满，且备用账号未能接替" in detail
-        assert "额度已满(540)" in detail
-        assert "登录失败" in detail
+        assert "部分抓谱额度已满" in detail
+        assert "其他连接失败" in detail
+        assert all(value not in detail for value in ("账号1", "账号2", "账号3", "1001", "1002", "1003", "wrong_password"))
 
 
 # ---------------------------------------------------------------------------
@@ -226,9 +227,9 @@ async def test_mixed_540_and_network_error():
 
         assert exc_info.value.status_code == 400
         detail = exc_info.value.detail
-        assert "部分账号额度已满，且备用账号未能接替" in detail
-        assert "额度已满(540)" in detail
-        assert "网络异常" in detail
+        assert "部分抓谱额度已满" in detail
+        assert "其他连接失败" in detail
+        assert all(value not in detail for value in ("账号1", "账号2", "1001", "1002", "Connection to gateway"))
 
 
 # ---------------------------------------------------------------------------

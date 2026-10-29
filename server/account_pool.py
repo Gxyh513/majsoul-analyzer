@@ -59,6 +59,16 @@ def _mask_account(name_or_acc: str | None) -> str:
     return s[:1] + "***"
 
 
+def _redact_error(error: Exception, *secrets: Any) -> str:
+    """Keep useful server-side diagnostics without logging known credentials."""
+    text = str(error)
+    # Longer credentials must be removed first when secrets overlap.
+    values = sorted({secret for secret in secrets if isinstance(secret, str) and secret}, key=len, reverse=True)
+    for secret in values:
+        text = text.replace(secret, "[已隐藏]")
+    return text
+
+
 def get_all_configured_accounts(
     cfg: dict | None = None,
     load_config_fn: Callable[[], dict[str, Any]] | None = None,
@@ -254,7 +264,7 @@ def _persist_updated_token(
         if updated:
             saver(cfg)
     except Exception as e:
-        log.warning("[配置保存异常] 自动更新 access_token 失败: %s", e)
+        log.warning("[配置保存异常] 自动更新 access_token 失败: %s", _redact_error(e, new_token, acc.get("access_token"), acc.get("password")))
 
 
 async def login_with_account_spec(
@@ -281,7 +291,7 @@ async def login_with_account_spec(
             logged_in = True
             log.info("[雀魂登录] Token 登录成功 | 账号: %s | 昵称: %s | ID: %s", masked, client.nickname, client.account_id)
         except Exception as e:
-            log.warning("[雀魂登录] 账号 %s 的 access_token 登录失败 (%s)，尝试密码登录...", masked, e)
+            log.warning("[雀魂登录] 账号 %s 的 access_token 登录失败 (%s)，尝试密码登录...", masked, _redact_error(e, token, password))
 
     if not logged_in:
         if account and password:
@@ -316,20 +326,22 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     if not accs:
         raise HTTPException(
             status_code=401,
-            detail="尚未登录雀魂国服账号。请先在「雀魂账号设置」中输入账号密码或 Access Token 登录（或使用演示牌谱/本地 JSON）。",
+            detail="雀魂服务暂时无法认证，请检查账号设置或使用演示牌谱/本地 JSON。",
         )
 
-    last_err = None
     for idx, acc in enumerate(accs):
         acc_label = acc.get("nickname") or _mask_account(acc.get("account")) or f"账号{idx+1}"
         try:
             await login_spec_fn(acc)
             return
         except Exception as e:
-            last_err = e
-            log.warning("[账号连接异常] 尝试登录账号 [%d/%d] (%s) 失败: %s", idx + 1, len(accs), acc_label, e)
+            log.warning(
+                "[账号连接异常] 尝试登录账号 [%d/%d] (%s) 失败: %s",
+                idx + 1, len(accs), acc_label,
+                _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)),
+            )
 
-    raise HTTPException(status_code=401, detail=f"所有已配置的雀魂账号均登录失败: {last_err}")
+    raise HTTPException(status_code=401, detail="雀魂服务暂时无法认证，请检查账号设置或稍后重试。")
 
 
 async def fetch_record_with_failover(
@@ -347,7 +359,7 @@ async def fetch_record_with_failover(
     - Stops immediately if error is 1203 (牌谱不存在/无权查看) to avoid wasting other accounts' quota
     - Distinguishes 540 rate limits, auth/login failures, and network errors
     - Raises HTTP 429 ONLY if ALL actually attempted accounts returned 540
-    - If mixed results (e.g. 540 + login fail + network error), reports accurate breakdown
+    - Keeps per-account diagnostics in server logs, not public error messages
     - Closes connection cleanly upon failure to prevent connection state leaking
     - Never writes or modifies local paipu cache upon failure
     """
@@ -379,7 +391,7 @@ async def fetch_record_with_failover(
         if not accs:
             raise HTTPException(
                 status_code=401,
-                detail="尚未配置雀魂账号。请在「雀魂账号设置」中输入账号密码或 Access Token（或直接上传牌谱 JSON 文件）。",
+                detail="雀魂牌谱服务暂不可用，请检查账号设置或上传牌谱 JSON 文件。",
             )
 
         attempt_outcomes: list[dict[str, Any]] = []
@@ -399,14 +411,13 @@ async def fetch_record_with_failover(
                         idx + 1,
                         len(accs),
                         display_name,
-                        login_err,
+                        _redact_error(login_err, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)),
                     )
                     err_str = str(login_err)
                     is_net = any(k in err_str.lower() for k in ("timeout", "connect", "connection", "network", "getaddrinfo"))
                     status_type = "network_error" if is_net else "login_failed"
                     attempt_outcomes.append({
                         "status": status_type,
-                        "error": err_str,
                         "account": display_name,
                     })
                     await client.close()
@@ -430,11 +441,12 @@ async def fetch_record_with_failover(
                 return record
             except MajsoulError as e:
                 err_str = str(e)
+                safe_err = _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None))
                 code = getattr(e, "code", None)
 
                 # 1203: 牌谱不存在或无权查看 - 立即终止轮换，避免无意义浪费其他账号配额
                 if code == 1203 or "1203" in err_str:
-                    log.warning("[牌谱不存在] 雀魂返回 1203 牌谱不存在或无权查看，终止轮换: %s", e)
+                    log.warning("[牌谱不存在] 雀魂返回 1203 牌谱不存在或无权查看，终止轮换: %s", safe_err)
                     raise HTTPException(
                         status_code=400,
                         detail="雀魂牌谱不存在、已被删除或属于匿名/私密对局无权查看 (错误码 1203)。",
@@ -462,42 +474,26 @@ async def fetch_record_with_failover(
                     k in err_str for k in ("109", "1004", "1003", "104", "103", "鉴权失效", "未登录")
                 )
                 if is_auth_error:
-                    log.warning("[账号鉴权失效] 账号 (%s) 鉴权失效: %s", actual_display, e)
-                    attempt_outcomes.append({
-                        "status": "auth_error",
-                        "error": str(e),
-                        "account": actual_display,
-                    })
+                    log.warning("[账号鉴权失效] 账号 (%s) 鉴权失效: %s", actual_display, safe_err)
+                    attempt_outcomes.append({"status": "auth_error", "account": actual_display})
                     await client.close()
                     continue
 
                 is_net = any(k in err_str for k in ("连接已断开", "timeout", "网络"))
                 if is_net:
-                    log.warning("[网络传输异常] 账号 (%s) 业务网络异常: %s", actual_display, e)
-                    attempt_outcomes.append({
-                        "status": "network_error",
-                        "error": str(e),
-                        "account": actual_display,
-                    })
+                    log.warning("[网络传输异常] 账号 (%s) 业务网络异常: %s", actual_display, safe_err)
+                    attempt_outcomes.append({"status": "network_error", "account": actual_display})
                     await client.close()
                     continue
 
-                log.warning("[接口业务异常] 账号 (%s) 抓谱异常: %s", actual_display, e)
-                attempt_outcomes.append({
-                    "status": "majsoul_error",
-                    "code": code,
-                    "error": str(e),
-                    "account": actual_display,
-                })
+                log.warning("[接口业务异常] 账号 (%s) 抓谱异常: %s", actual_display, safe_err)
+                attempt_outcomes.append({"status": "majsoul_error", "code": code, "account": actual_display})
                 await client.close()
                 continue
             except Exception as e:
-                log.warning("[网络传输异常] 账号 (%s) 网络异常: %s", actual_display, e)
-                attempt_outcomes.append({
-                    "status": "network_error",
-                    "error": str(e),
-                    "account": actual_display,
-                })
+                safe_err = _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None))
+                log.warning("[网络传输异常] 账号 (%s) 网络异常: %s", actual_display, safe_err)
+                attempt_outcomes.append({"status": "network_error", "account": actual_display})
                 await client.close()
                 continue
 
@@ -512,7 +508,7 @@ async def fetch_record_with_failover(
             log.error("[全账号频控] 已配置的全部 %d 个雀魂账号今日抓取配额均已耗尽 (错误码 540)", num_accounts)
             raise HTTPException(
                 status_code=429,
-                detail=f"雀魂官方频控限制：所有已配置的 {num_accounts} 个账号今日抓谱额度均已耗尽 (错误码 540)。官方额度每日清晨 05:00 重置。请稍后再试、配置更多备用小号，或直接导入牌谱 JSON 文件分析。",
+                detail="雀魂官方抓谱额度暂时耗尽 (错误码 540)。请稍后再试或导入牌谱 JSON 文件分析。",
             )
 
         # Build detailed diagnostic per-account outcome strings
@@ -537,7 +533,7 @@ async def fetch_record_with_failover(
             log.error("[账号容灾失败] 牌谱拉取失败 (部分额度耗尽但备用账号不可用): %s", detail_msg)
             raise HTTPException(
                 status_code=400,
-                detail=f"抓取牌谱失败：部分账号额度已满，且备用账号未能接替 ({detail_msg})。请在配置文件中检查备用账号登录状态或稍后再试。",
+                detail="抓取牌谱暂时不可用：部分抓谱额度已满，其他连接失败。请稍后重试或导入牌谱 JSON 文件。",
             )
 
         # Case 3: All accounts failed login/auth
@@ -545,7 +541,7 @@ async def fetch_record_with_failover(
             log.error("[全账号认证失败] 所有已配置账号均登录或鉴权失败: %s", detail_msg)
             raise HTTPException(
                 status_code=401,
-                detail=f"抓取牌谱失败：所有已配置的雀魂账号均登录或鉴权失败 ({detail_msg})。请检查账号密码或 Access Token。",
+                detail="雀魂服务暂时无法认证，请检查账号设置或稍后重试。",
             )
 
         # Case 4: Network errors
@@ -553,11 +549,11 @@ async def fetch_record_with_failover(
             log.error("[网络连接失败] 所有尝试连接均出现网络异常: %s", detail_msg)
             raise HTTPException(
                 status_code=503,
-                detail=f"连接雀魂服务器网络超时或失败 ({detail_msg})。请检查服务器网络状态后重试。",
+                detail="连接雀魂服务器超时或失败，请稍后重试。",
             )
 
         log.error("[全账号抓谱失败] 所有已配置账号均无法抓取牌谱: %s", detail_msg)
         raise HTTPException(
             status_code=500,
-            detail=f"抓取牌谱失败：所有账号轮换尝试完毕，均未能成功获取 ({detail_msg})。",
+            detail="抓取牌谱失败，请稍后重试或导入牌谱 JSON 文件。",
         )
