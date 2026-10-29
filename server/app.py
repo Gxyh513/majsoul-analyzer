@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 import hashlib
 import hmac
 import ipaddress
@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -49,8 +50,13 @@ WEB_DIR = ROOT_DIR / "web"
 for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR, REVIEWS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# Concurrency lock to ensure only 1 heavy AI inference runs at a time
+# A review job owns the permit until its worker has finished and cached its result.
 review_semaphore = asyncio.Semaphore(1)
+_review_tasks: set[asyncio.Task] = set()
+# Windows cannot atomically replace a destination while another local thread
+# has it open without delete sharing.
+_review_cache_io_lock = threading.Lock()
+_active_review_temp_files: set[Path] = set()
 
 
 def make_cache_key(prefix: str, seat: int, engine: str, temperature: float, weight_sig: str | None = None) -> str:
@@ -63,7 +69,16 @@ def make_cache_key(prefix: str, seat: int, engine: str, temperature: float, weig
 
 def review_cache_key(game_id: str, events: list[dict], meta: dict, seat: int, engine: str, temperature: float, weight_sig: str | None) -> str:
     # Bind a review to the actual input, not just an upload-provided UUID.
-    payload = json.dumps([game_id, events, meta, seat, engine, temperature, weight_sig], sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    key_parts = [game_id, events, meta, seat, engine, temperature, weight_sig]
+    if any(
+        isinstance(ev, dict) and ev.get("type") == "hora"
+        and (ev.get("yiman") or ev.get("title_id") == 11)
+        for ev in events
+    ):
+        # Older reviews formatted true yakuman as han/fu and omitted the
+        # counted-yakuman title. Keep ordinary game caches and model provenance.
+        key_parts.append("yakuman-summary-v1")
+    payload = json.dumps(key_parts, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     digest = hashlib.sha256(payload.encode("utf8")).hexdigest()
     # Keep the filename short enough for Windows paths as well as Unix filesystems.
     return f"review-{digest}"
@@ -79,24 +94,69 @@ def resolve_engine_cache_info(requested_engine: str | None) -> tuple[str, str | 
 
 def get_cached_review(cache_key: str) -> dict[str, Any] | None:
     cache_file = REVIEWS_DIR / f"{cache_key}.json"
-    if cache_file.is_file():
-        try:
+    with _review_cache_io_lock:
+        if cache_file.is_file():
             try:
-                cache_file.touch()
-            except Exception:
-                pass
-            return json.loads(cache_file.read_text(encoding="utf8"))
-        except Exception as e:
-            log.warning("Failed to read review cache %s: %s", cache_file, e)
+                try:
+                    cache_file.touch()
+                except Exception:
+                    pass
+                return json.loads(cache_file.read_text(encoding="utf8"))
+            except Exception as e:
+                log.warning("Failed to read review cache %s: %s", cache_file, e)
     return None
 
 
 def save_cached_review(cache_key: str, data: dict[str, Any]) -> None:
+    cache_file = REVIEWS_DIR / f"{cache_key}.json"
+    temp_path = None
     try:
-        cache_file = REVIEWS_DIR / f"{cache_key}.json"
-        cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf8")
+        # Register the temp path before releasing the lock, so cache cleanup
+        # cannot delete a long-running write even if its mtime is very old.
+        with _review_cache_io_lock:
+            temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=REVIEWS_DIR, prefix=".review-", suffix=".tmp", delete=False)
+            temp_path = Path(temp.name)
+            _active_review_temp_files.add(temp_path)
+        with temp:
+            json.dump(data, temp, ensure_ascii=False)
+        # Antivirus/indexers and other processes may briefly hold the
+        # destination without Windows delete sharing. WinError 5 can also
+        # mean a permanent permission/readonly failure, so retries are bounded;
+        # never fall back to a partial write.
+        for attempt in range(5):
+            try:
+                with _review_cache_io_lock:
+                    temp_path.replace(cache_file)
+                break
+            except OSError as e:
+                if getattr(e, "winerror", None) not in (5, 32, 33) or attempt == 4:
+                    raise
+                time.sleep(0.05)
     except Exception as e:
         log.warning("Failed to save review cache %s: %s", cache_file, e)
+    finally:
+        if temp_path is not None:
+            with _review_cache_io_lock:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    log.warning("Failed to remove temporary review cache %s", temp_path)
+                finally:
+                    _active_review_temp_files.discard(temp_path)
+
+
+def _remove_review_cache_if_unchanged(path: Path, observed: os.stat_result) -> bool:
+    """Do not delete a cache replaced or touched since cleanup inspected it."""
+    with _review_cache_io_lock:
+        try:
+            current = path.stat()
+        except FileNotFoundError:
+            return False
+        identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if identity(current) != identity(observed):
+            return False
+        path.unlink()
+        return True
 
 
 def cleanup_old_caches(
@@ -124,12 +184,33 @@ def cleanup_old_caches(
             try:
                 stat = f.stat()
                 if stat.st_mtime < cutoff_time:
-                    f_size = stat.st_size
-                    f.unlink()
+                    if d == REVIEWS_DIR:
+                        if not _remove_review_cache_if_unchanged(f, stat):
+                            continue
+                    else:
+                        f.unlink()
                     cleaned_count += 1
-                    cleaned_bytes += f_size
+                    cleaned_bytes += stat.st_size
             except Exception as e:
                 log.warning("[缓存清理警告] 检查/删除文件失败 %s: %s", f.name, e)
+
+    # Atomic writes abandoned by a crash also consume space. Only collect our
+    # exact temp naming pattern in REVIEWS_DIR, and never an in-progress write.
+    # New temp files remain protected even when max_days is configured tiny.
+    temp_cutoff = now - max(max_days * 86400, 3600)
+    if REVIEWS_DIR.is_dir():
+        for f in REVIEWS_DIR.glob(".review-????????.tmp"):
+            with _review_cache_io_lock:
+                try:
+                    if f in _active_review_temp_files or f.is_symlink() or not f.is_file():
+                        continue
+                    stat = f.stat()
+                    if stat.st_mtime < temp_cutoff:
+                        f.unlink()
+                        cleaned_count += 1
+                        cleaned_bytes += stat.st_size
+                except OSError as e:
+                    log.warning("[缓存清理警告] 清理临时文件失败 %s (%s)", f.name, type(e).__name__)
 
     # Pass 2: Quota check against max_total_mb
     remaining_files: list[tuple[Path, os.stat_result]] = []
@@ -145,6 +226,17 @@ def cleanup_old_caches(
             except Exception:
                 pass
 
+    if REVIEWS_DIR.is_dir():
+        for f in REVIEWS_DIR.glob(".review-????????.tmp"):
+            with _review_cache_io_lock:
+                try:
+                    if not f.is_symlink() and f.is_file():
+                        # Active and young temp files count towards usage, but
+                        # are not quota eviction candidates.
+                        total_size += f.stat().st_size
+                except OSError:
+                    pass
+
     max_bytes = int(max_total_mb * 1024 * 1024)
     if total_size > max_bytes:
         # Sort by mtime ascending (oldest first)
@@ -153,7 +245,11 @@ def cleanup_old_caches(
             if total_size <= max_bytes:
                 break
             try:
-                f.unlink()
+                if f.parent == REVIEWS_DIR:
+                    if not _remove_review_cache_if_unchanged(f, st):
+                        continue
+                else:
+                    f.unlink()
                 total_size -= st.st_size
                 cleaned_count += 1
                 cleaned_bytes += st.st_size
@@ -492,6 +588,7 @@ from .account_pool import (  # noqa: E402
     _env_pool_token_overrides,
     _mask_account,
     _persist_updated_token,
+    _redact_error,
     ensure_ms_logged_in,
     fetch_record_with_failover,
     get_all_configured_accounts,
@@ -535,6 +632,11 @@ async def lifespan(app: FastAPI):
     finally:
         cleanup_task.cancel()
         login_task.cancel()
+        await asyncio.gather(cleanup_task, login_task, return_exceptions=True)
+        # Inference threads cannot be cancelled; drain their owning tasks before
+        # shutting down the event loop so completed reviews are still cached.
+        while _review_tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tuple(_review_tasks)), return_exceptions=True)
 
 
 app = FastAPI(title="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)", lifespan=lifespan)
@@ -548,6 +650,22 @@ def _is_loopback_host(host: str | None) -> bool:
         return ipaddress.ip_address(host or "").is_loopback
     except ValueError:
         return False
+
+
+def _request_is_authorized(request: Request) -> bool:
+    """Use the same identity check for protected routes and private status."""
+    token = os.environ.get("MAJSOUL_API_TOKEN", "").strip().strip('"').strip("'")
+    if token:
+        auth_header = request.headers.get("authorization", "").strip()
+        x_token = request.headers.get("x-api-token", "").strip()
+        supplied = x_token or (auth_header[7:].strip() if auth_header.startswith("Bearer ") else "")
+        return hmac.compare_digest(supplied.encode("utf8"), token.encode("utf8"))
+
+    peer = request.client.host if request.client else None
+    local = _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
+    origin = request.headers.get("origin")
+    own_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    return local and (not origin or origin == own_origin)
 
 
 @app.middleware("http")
@@ -570,24 +688,13 @@ async def protect_api_and_log(request: Request, call_next):
                             "Access-Control-Allow-Private-Network": "true"})
         return Response(status_code=204, headers=headers)
 
-    if is_api and path != "/api/status":
-        peer = request.client.host if request.client else None
-        local = _is_loopback_host(peer) and _is_loopback_host(request.url.hostname)
-        same_origin = not origin or origin == own_origin
-        token = os.environ.get("MAJSOUL_API_TOKEN", "").strip().strip('"').strip("'")
-
-        # CORS origins are not identities. A configured token protects even
-        # loopback traffic, including traffic arriving through a local proxy.
-        if token:
-            auth_header = request.headers.get("authorization", "").strip()
-            x_token = request.headers.get("x-api-token", "").strip()
-            supplied = x_token or (auth_header[7:].strip() if auth_header.startswith("Bearer ") else "")
-            authorized = hmac.compare_digest(supplied.encode("utf8"), token.encode("utf8"))
-        else:
-            authorized = local and same_origin
-        if not authorized:
-            headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin else None
-            return JSONResponse({"detail": "远程访问需要有效的 MAJSOUL_API_TOKEN"}, status_code=401, headers=headers)
+    # CORS origins are not identities. A configured token protects even
+    # loopback traffic, including traffic arriving through a local proxy.
+    authorized = _request_is_authorized(request) if is_api else False
+    request.state.trusted_api = authorized
+    if is_api and path != "/api/status" and not authorized:
+        headers = {"Access-Control-Allow-Origin": origin, "Vary": "Origin"} if origin else None
+        return JSONResponse({"detail": "远程访问需要有效的 MAJSOUL_API_TOKEN"}, status_code=401, headers=headers)
 
     is_biz = is_api and path != "/api/status"
     t0 = time.time()
@@ -599,6 +706,12 @@ async def protect_api_and_log(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Private-Network"] = "true"
+    if path == "/api/status":
+        # Anonymous and authenticated callers receive different status bodies;
+        # neither may be stored by a shared intermediary.
+        response.headers["Cache-Control"] = "no-store"
+        response.headers.add_vary_header("Authorization")
+        response.headers.add_vary_header("X-Api-Token")
     if path.startswith("/tiles/"):
         response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     if is_biz:
@@ -661,13 +774,45 @@ class EngineConfigReq(BaseModel):
 # ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
-@app.get("/api/status")
-async def api_status():
+def _build_api_status(*, trusted: bool) -> dict[str, Any]:
     eng_status = engine_mgr.status()
+    if not trusted:
+        # Public status carries only the fixed model identity and attestation
+        # needed by the frontend, never account state, paths or raw errors.
+        has_weights = bool(eng_status.get("has_mortal_weights"))
+        sha = eng_status.get("weight_sha256")
+        schema = eng_status.get("review_schema")
+        device = eng_status.get("device")
+        return {
+            "ok": True,
+            "engine": {
+                "has_mortal_weights": has_weights,
+                "active_engine": "mortal" if has_weights and eng_status.get("active_engine") == "mortal" else "unavailable",
+                "model_name": "Mortal-V4-582500" if has_weights else "Mortal-V4-582500 (不可用)",
+                "model_id": MODEL_ID,
+                "weight_sha256": sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha) else None,
+                "review_schema": schema if schema == REVIEW_SCHEMA else None,
+                "device": device if isinstance(device, str) and re.fullmatch(r"(?:CPU|CUDA(?::[0-9]+)?|MPS|N/A)", device) else "N/A",
+                "selected_model": MODEL_ID,
+                "available_models": [{"id": MODEL_ID, "name": "Mortal-V4-582500"}] if has_weights else [],
+            },
+        }
+
+    def safe_download_state(state: dict[str, Any]) -> dict[str, Any]:
+        result = dict(state)
+        if result.get("error_msg"):
+            result["error_msg"] = "模型下载失败，请查看服务端日志。"
+        return result
+
+    # Even trusted status responses should not reflect arbitrary exception text,
+    # which can contain credentials or signed network URLs.
+    if eng_status.get("load_error"):
+        eng_status["load_error"] = "模型权重不可用，请查看服务端日志。"
     selected_id = engine_mgr.selected_model or "akagi"
-    cur_dl = get_current_model_download_state(selected_id)
+    cur_dl = safe_download_state(get_current_model_download_state(selected_id))
+    all_dl = {k: safe_download_state(v) for k, v in models_download_state.items()}
     eng_status["model_download"] = dict(cur_dl)
-    eng_status["models_download"] = {k: dict(v) for k, v in models_download_state.items()}
+    eng_status["models_download"] = all_dl
     return {
         "ok": True,
         "majsoul": {
@@ -676,8 +821,13 @@ async def api_status():
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
-        "models_download": {k: dict(v) for k, v in models_download_state.items()},
+        "models_download": all_dl,
     }
+
+
+@app.get("/api/status")
+async def api_status(request: Request):
+    return _build_api_status(trusted=request.state.trusted_api)
 
 
 @app.post("/api/login")
@@ -711,12 +861,14 @@ async def api_login(req: LoginReq):
                     cfg["account_id"] = ms_client.account_id
                 save_config(cfg)
 
-            return await api_status()
-        except MajsoulError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            return _build_api_status(trusted=True)
+        except HTTPException:
+            raise
         except Exception as e:  # noqa: BLE001
-            log.exception("Login failed")
-            raise HTTPException(status_code=500, detail=f"连接或登录失败: {e}") from e
+            normalized_token = req.access_token.strip() if req.access_token else None
+            log.warning("Login failed: %s", _redact_error(e, req.password, req.access_token, normalized_token, getattr(ms_client, "access_token", None)))
+            status_code = 400 if isinstance(e, MajsoulError) else 500
+            raise HTTPException(status_code=status_code, detail="连接或登录失败，请检查账号设置后重试。") from e
 
 
 @app.post("/api/logout")
@@ -727,7 +879,7 @@ async def api_logout():
         cfg.pop("access_token", None)
         cfg.pop("password", None)
         save_config(cfg, clear_local_credentials=True)
-        return await api_status()
+        return _build_api_status(trusted=True)
 
 
 @app.get("/api/recent_games")
@@ -738,7 +890,8 @@ async def api_recent_games():
             games = await ms_client.fetch_recent_records(count=15)
             return {"games": games}
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"获取最近牌谱失败: {e}") from e
+            log.warning("获取最近牌谱失败: %s", _redact_error(e, getattr(ms_client, "access_token", None)))
+            raise HTTPException(status_code=400, detail="获取最近牌谱失败，请稍后重试。") from e
 
 
 @app.get("/api/records/local")
@@ -877,7 +1030,10 @@ async def resolve_game_data(
                     break
             canonical = json.dumps(mjai_events, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
             game_id = "mjai-" + hashlib.sha256(canonical.encode("utf8")).hexdigest()
-            meta = {"uuid": game_id, "names": names, "start_time": int(time.time())}
+            # Raw MJAI uploads have no separate game metadata. Do not invent
+            # a changing game start time from the upload time; this also lets
+            # repeated uploads reuse the same content-bound review cache.
+            meta = {"uuid": game_id, "names": names, "start_time": None}
         else:
             raise HTTPException(
                 status_code=400,
@@ -900,8 +1056,8 @@ async def resolve_game_data(
         game_uuid, url_acc_id = parse_paipu(raw_input)
         log.info("[牌谱识别] 成功提取雀魂牌谱 UUID: %s", game_uuid)
     except MajsoulError as e:
-        log.warning("[牌谱识别失败] 输入内容无效: %s", e)
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        log.warning("[牌谱识别失败] 输入内容无效 (%s)", _safe_error_context(e))
+        raise HTTPException(status_code=400, detail="无法识别的牌谱 ID，请检查输入。") from e
 
     record_file = RECORDS_DIR / f"{game_uuid}.json"
     if record_file.is_file():
@@ -931,6 +1087,144 @@ async def resolve_game_data(
     return game_uuid, mjai_events, meta, seat
 
 
+def _safe_error_context(error: BaseException) -> str:
+    """Report exception type and source line, never its message or locals."""
+    locations = []
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        tb = current.__traceback__
+        while tb is not None:
+            # Emit only fixed package paths and line numbers, never exception
+            # messages, locals, absolute paths, or user-defined filenames.
+            filename = tb.tb_frame.f_code.co_filename
+            for module in ("server/app.py", "server/account_pool.py", "server/engine/reviewer.py", "server/majsoul/convert.py"):
+                if filename.replace("\\", "/").endswith("/" + module):
+                    locations.append(f"{module}:{tb.tb_lineno}")
+                    break
+            tb = tb.tb_next
+        current = current.__cause__
+    code = getattr(error, "code", None)
+    safe_code = f" code={code}" if isinstance(code, int) and not isinstance(code, bool) else ""
+    return f"{type(error).__name__}{safe_code} at {','.join(locations[-4:]) or 'external'}"
+
+
+def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Strip engine filesystem details without mutating the cached result."""
+    engine = result.get("engine")
+    if not isinstance(engine, dict):
+        return dict(result)
+    # The proxy authenticates upstream, so its token cannot identify a trusted
+    # end user. All analysis responses use the same path-free engine fields.
+    public_engine = {
+        key: engine[key]
+        for key in ("type", "id", "tag", "weight_file", "weight_sha256", "version", "steps", "q_source", "review_schema", "device")
+        if key in engine
+    }
+    return {**result, "engine": public_engine}
+
+
+def _valid_cached_review(cache_key: str, weight_sha256: str) -> dict[str, Any] | None:
+    cached = get_cached_review(cache_key)
+    return cached if valid_review_source(cached, weight_sha256) else None
+
+
+async def _start_review_job(**kwargs: Any) -> tuple[dict[str, Any] | None, asyncio.Task | None]:
+    """Acquire in the request, then transfer the permit to an independent job."""
+    semaphore = review_semaphore
+    await semaphore.acquire()
+    transferred = False
+    try:
+        cached = await asyncio.to_thread(_valid_cached_review, kwargs["cache_key"], kwargs["weight_sha256"])
+        if cached is not None:
+            log.info("[复盘缓存命中] 排队后命中缓存 (Key: %s)", kwargs["cache_key"])
+            return cached, None
+
+        released = False
+
+        def release_once() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                semaphore.release()
+
+        async def owned_job() -> dict[str, Any]:
+            try:
+                return await _review_job(**kwargs)
+            finally:
+                release_once()
+
+        task = asyncio.create_task(owned_job())
+        _review_tasks.add(task)
+
+        def job_done(done: asyncio.Task) -> None:
+            # Also handles a task cancelled before its coroutine first ran.
+            release_once()
+            _review_tasks.discard(done)
+            if not done.cancelled():
+                error = done.exception()
+                if error is not None:
+                    log.error("[AI检讨失败] 后台任务失败 (%s)", _safe_error_context(error))
+
+        task.add_done_callback(job_done)
+        transferred = True
+        return None, task
+    finally:
+        if not transferred:
+            semaphore.release()
+
+
+async def _review_job(
+    *,
+    game_id: str,
+    mjai_events: list[dict],
+    meta: dict,
+    seat: int,
+    engine: str,
+    temperature: float,
+    cache_key: str,
+    weight_sha256: str,
+    progress_callback=None,
+) -> dict[str, Any]:
+    t_start = time.monotonic()
+    log.info("[AI推理启动] 已获取推理并发锁 (牌谱: %s, 视角: P%d)", game_id, seat)
+
+    def worker() -> dict[str, Any]:
+        kwargs = {"meta": meta, "temperature": temperature, "force_engine": engine}
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
+        res = review_game(mjai_events, seat, engine_mgr, **kwargs)
+        if not valid_review_source(res, weight_sha256):
+            raise RuntimeError("模型权重在分析期间发生变化，结果未保存，请重试。")
+        res["game_id"] = game_id
+        save_cached_review(cache_key, res)
+        return res
+
+    # asyncio cancellation does not stop executor threads. Even if this job
+    # itself is cancelled (e.g. during shutdown), keep its permit until the
+    # actual thread finishes, then propagate cancellation only after caching.
+    future = asyncio.get_running_loop().run_in_executor(None, worker)
+    cancelled = False
+    while True:
+        try:
+            res = await asyncio.shield(future)
+            break
+        except asyncio.CancelledError:
+            if future.done():
+                # The worker itself can raise CancelledError. Its completed
+                # future is not necessarily marked cancelled; retrieve it
+                # rather than repeatedly shielding an already-failed future.
+                res = future.result()
+                cancelled = True
+                break
+            cancelled = True
+    log.info("[AI检讨完成] 牌谱 %s 检讨完毕，用时 %.2f 秒", game_id, time.monotonic() - t_start)
+    if cancelled:
+        raise asyncio.CancelledError
+    return res
+
+
 async def _run_review_with_cache(
     game_id: str,
     mjai_events: list[dict],
@@ -941,44 +1235,21 @@ async def _run_review_with_cache(
 ) -> dict[str, Any]:
     resolved_id, weight_sig = resolve_engine_cache_info(engine)
     cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, temperature, weight_sig)
-    cached = get_cached_review(cache_key)
-    if cached:
-        cached_eng = cached.get("engine", {})
-        # Strictly reject historical builtin cache; require authentic mortal neural network output
-        if valid_review_source(cached, weight_sig.rsplit("_", 1)[-1]):
-            log.info("[复盘缓存命中] 命中历史检讨缓存 (Key: %s) -> 秒级返回结果！无需重复消耗算力", cache_key)
-            return cached
+    weight_sha256 = weight_sig.rsplit("_", 1)[-1]
+    cached = await asyncio.to_thread(_valid_cached_review, cache_key, weight_sha256)
+    if cached is not None:
+        return cached
 
-    log.info("[AI推理排队] 准备执行牌谱检讨推理: %s (视角: P%d, 请求模型: %s, 生效引擎: %s)", game_id, seat, engine, resolved_id)
-    async with review_semaphore:
-        cached = get_cached_review(cache_key)
-        if cached:
-            cached_eng = cached.get("engine", {})
-            if valid_review_source(cached, weight_sig.rsplit("_", 1)[-1]):
-                log.info("[复盘缓存命中] 命中历史检讨缓存 (Key: %s) -> 秒级返回结果！", cache_key)
-                return cached
-        t_start = time.time()
-        log.info("[AI推理启动] 成功获取推理并发锁，开始执行检讨计算 (牌谱: %s, 视角: P%d, 引擎: %s)...", game_id, seat, resolved_id)
-        res = review_game(
-            mjai_events, seat, engine_mgr, meta=meta, temperature=temperature, force_engine=engine
-        )
-        if not valid_review_source(res, weight_sig.rsplit("_", 1)[-1]):
-            raise RuntimeError("模型权重在分析期间发生变化，结果未保存，请重试。")
-        res["game_id"] = game_id
-        save_cached_review(cache_key, res)
-        elapsed = time.time() - t_start
-        sum_stats = res.get("summary", {})
-        m_rate = sum_stats.get("match_rate")
-        rate_str = f"{m_rate:.1f}%" if m_rate is not None else "--"
-        log.info(
-            "[AI检讨完成] 牌谱 %s 检讨完毕！总用时: %.2f秒 | 模型一致率: %s | 恶手: %d | 综合评分: %.1f | 已存入缓存",
-            game_id,
-            elapsed,
-            rate_str,
-            sum_stats.get("blunders", 0),
-            sum_stats.get("rating") if sum_stats.get("rating") is not None else 0.0,
-        )
-        return res
+    log.info("[AI推理排队] 准备执行牌谱检讨推理: %s (视角: P%d, 请求模型: %s)", game_id, seat, engine)
+    cached, task = await _start_review_job(
+        game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
+        engine=engine, temperature=temperature, cache_key=cache_key,
+        weight_sha256=weight_sha256,
+    )
+    if cached is not None:
+        return cached
+    assert task is not None
+    return await asyncio.shield(task)
 
 
 async def _wait_for_model_download(model_id: str | None = None, timeout_s: float = 300.0) -> None:
@@ -997,28 +1268,69 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
                 raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 正在首次下载中，请求等待超时，请稍后重试")
             await asyncio.sleep(0.5)
         if st["status"] == "error":
-            raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 下载失败: {st.get('error_msg')}")
+            raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 下载失败，请稍后重试。")
+
+
+async def _run_nonstream_until_disconnect(request: Request, work) -> dict[str, Any]:
+    """Stop waiting or preparing after a real ASGI disconnect.
+
+    A started review owns its permit independently, so cancelling this request
+    does not stop its worker or prevent the worker from caching its result.
+    """
+    async def watch_disconnect() -> None:
+        while True:
+            if (await request.receive())["type"] == "http.disconnect":
+                return
+
+    work_task = asyncio.create_task(work)
+    disconnect_task = asyncio.create_task(watch_disconnect())
+    try:
+        done, _ = await asyncio.wait((work_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
+        if disconnect_task in done:
+            # Propagate receive errors too; don't leave the analysis running.
+            disconnect_task.result()
+            raise asyncio.CancelledError
+        return _public_review_result(await work_task)
+    finally:
+        for task in (work_task, disconnect_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(work_task, disconnect_task, return_exceptions=True)
 
 
 @app.post("/api/analyze/paipu")
-async def api_analyze_paipu(req: AnalyzePaipuReq):
-    await _wait_for_model_download(req.engine)
-    game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
-    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request):
+    async def work():
+        await _wait_for_model_download(req.engine)
+        game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
+        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+    return await _run_nonstream_until_disconnect(request, work())
 
 
 @app.post("/api/analyze/json")
-async def api_analyze_json(req: AnalyzeJsonReq):
-    await _wait_for_model_download(req.engine)
-    game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
-    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+async def api_analyze_json(req: AnalyzeJsonReq, request: Request):
+    async def work():
+        await _wait_for_model_download(req.engine)
+        game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
+        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+    return await _run_nonstream_until_disconnect(request, work())
 
 
 @app.post("/api/analyze/demo")
-async def api_analyze_demo(req: AnalyzeDemoReq):
-    await _wait_for_model_download(req.engine)
-    game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
-    return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+async def api_analyze_demo(req: AnalyzeDemoReq, request: Request):
+    async def work():
+        await _wait_for_model_download(req.engine)
+        game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
+        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+    return await _run_nonstream_until_disconnect(request, work())
+
+
+class _ClosingStreamingResponse(StreamingResponse):
+    async def stream_response(self, send) -> None:
+        # Starlette can be cancelled while sending a yielded chunk, outside the
+        # generator. Close it explicitly so its progress listener is detached.
+        async with aclosing(self.body_iterator):
+            await super().stream_response(send)
 
 
 @app.post("/api/analyze/stream")
@@ -1037,7 +1349,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                     await asyncio.sleep(0.5)
 
                 if dl_state["status"] == "error":
-                    err_detail = f"AI 核心权重 ({resolved_engine}) 下载失败: {dl_state.get('error_msg')}，请检查网络后重试"
+                    err_detail = f"AI 核心权重 ({resolved_engine}) 下载失败，请稍后重试"
                     yield f"data: {json.dumps({'type': 'error', 'detail': err_detail}, ensure_ascii=False)}\n\n"
                     return
 
@@ -1053,118 +1365,81 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
                 return
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+                log.error("牌谱解析失败 (%s)", _safe_error_context(e))
+                yield f"data: {json.dumps({'type': 'error', 'detail': '牌谱解析失败，请检查输入后重试。'}, ensure_ascii=False)}\n\n"
                 return
 
             resolved_id, weight_sig = resolve_engine_cache_info(req.engine)
             cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, req.temperature, weight_sig)
-            cached = get_cached_review(cache_key)
-            if cached:
-                cached_eng = cached.get("engine", {})
-                if valid_review_source(cached, weight_sig.rsplit("_", 1)[-1]):
-                    log.info("[复盘缓存命中] 牌谱 %s (视角: P%d, 模型: %s) 命中缓存 -> 秒级直接返回，无需重复运算", game_id, seat, resolved_id)
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
-                    return
+            weight_sha256 = weight_sig.rsplit("_", 1)[-1]
+            cached = await asyncio.to_thread(_valid_cached_review, cache_key, weight_sha256)
+            if cached is not None:
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(cached)}, ensure_ascii=False)}\n\n"
+                return
 
-            # If semaphore is currently busy, notify user
             if review_semaphore.locked():
-                log.info("[AI排队等待] 服务器当前正有对局在跑推理，新请求已进入排队队列 (牌谱: %s, 视角: P%d)", game_id, seat)
+                log.info("[AI排队等待] 服务器正忙 (牌谱: %s, 视角: P%d)", game_id, seat)
                 yield f"data: {json.dumps({'type': 'queued', 'message': '服务器正忙，当前正在排队中...'}, ensure_ascii=False)}\n\n"
 
-            async with review_semaphore:
-                # Double-check inside semaphore
-                cached = get_cached_review(cache_key)
-                if cached:
-                    cached_eng = cached.get("engine", {})
-                    if valid_review_source(cached, weight_sig.rsplit("_", 1)[-1]):
-                        log.info("[复盘缓存命中] 排队后检测到缓存已就绪，秒级返回 (Key: %s)", cache_key)
-                        yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                        yield f"data: {json.dumps({'type': 'complete', 'result': cached}, ensure_ascii=False)}\n\n"
-                        return
+            # The request is cancellable while waiting for the permit. Once a
+            # job starts it owns the permit and survives any SSE cancellation.
+            loop = asyncio.get_running_loop()
+            q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1)
+            listening = threading.Event()
+            listening.set()
 
-                t_infer_start = time.time()
-                log.info("[AI推理启动] 获取并发锁成功，启动 AI 检讨引擎 (模型: %s, 视角: P%d, 牌谱: %s)...", resolved_id, seat, game_id)
+            def enqueue_progress(data: dict[str, Any]) -> None:
+                if not listening.is_set():
+                    return
+                if q.full():
+                    q.get_nowait()
+                q.put_nowait(data)
+
+            def on_progress(pct: float, msg: str) -> None:
+                if listening.is_set():
+                    try:
+                        loop.call_soon_threadsafe(enqueue_progress, {"percent": round(pct, 1), "message": msg})
+                    except RuntimeError:
+                        # A forcibly stopped event loop cannot receive progress.
+                        listening.clear()
+
+            try:
+                cached, task = await _start_review_job(
+                    game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
+                    engine=req.engine, temperature=req.temperature, cache_key=cache_key,
+                    weight_sha256=weight_sha256, progress_callback=on_progress,
+                )
+                if cached is not None:
+                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(cached)}, ensure_ascii=False)}\n\n"
+                    return
+
+                assert task is not None
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 15, 'message': '牌谱准备就绪，启动 AI 检讨引擎...'}, ensure_ascii=False)}\n\n"
-
-                # Thread-safe queue connecting progress callback to SSE generator
-                loop = asyncio.get_running_loop()
-                q: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-
-                def on_progress(pct: float, msg: str):
-                    if pct == 15 or pct >= 99 or "第" in msg or "局" in msg:
-                        log.info("[AI推理进度 %5.1f%%] %s", pct, msg)
-                    loop.call_soon_threadsafe(q.put_nowait, ("progress", {"percent": round(pct, 1), "message": msg}))
-
-                def worker():
-                    return review_game(
-                        mjai_events,
-                        seat,
-                        engine_mgr,
-                        meta=meta,
-                        temperature=req.temperature,
-                        force_engine=req.engine,
-                        progress_callback=on_progress,
-                    )
-
-                task = asyncio.create_task(asyncio.to_thread(worker))
-
                 while not task.done():
                     try:
-                        ev_type, ev_data = await asyncio.wait_for(q.get(), timeout=0.25)
-                        if ev_type == "progress":
-                            yield f"data: {json.dumps({'type': 'progress', **ev_data}, ensure_ascii=False)}\n\n"
+                        progress = await asyncio.wait_for(q.get(), timeout=0.25)
                     except asyncio.TimeoutError:
-                        pass
+                        continue
+                    yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
 
                 while not q.empty():
-                    ev_type, ev_data = q.get_nowait()
-                    if ev_type == "progress":
-                        yield f"data: {json.dumps({'type': 'progress', **ev_data}, ensure_ascii=False)}\n\n"
-
-                try:
-                    res = await task
-                    if not valid_review_source(res, weight_sig.rsplit("_", 1)[-1]):
-                        raise RuntimeError("模型权重在分析期间发生变化，结果未保存，请重试。")
-                    res["game_id"] = game_id
-                    save_cached_review(cache_key, res)
-
-                    elapsed = time.time() - t_infer_start
-                    sum_stats = res.get("summary", {})
-                    m_rate = sum_stats.get("match_rate")
-                    rate_str = f"{m_rate:.1f}%" if m_rate is not None else "--"
-                    log.info(
-                        "[AI检讨完成] 牌谱 %s 检讨完毕！总用时: %.2f秒 | 模型一致率: %s | 恶手: %d | 综合评分: %.1f | 已持久化至缓存: data/reviews/%s.json",
-                        game_id,
-                        elapsed,
-                        rate_str,
-                        sum_stats.get("blunders", 0),
-                        sum_stats.get("rating") if sum_stats.get("rating") is not None else 0.0,
-                        cache_key,
-                    )
-
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'complete', 'result': res}, ensure_ascii=False)}\n\n"
-                except (asyncio.CancelledError, GeneratorExit):
-                    log.info("[客户端断开] 客户端提前关闭了连接，AI 检讨任务将在后台继续完成并写入缓存...")
-                    async def _save_detached():
-                        try:
-                            bg_res = await task
-                            if not valid_review_source(bg_res, weight_sig.rsplit("_", 1)[-1]):
-                                raise RuntimeError("模型权重在分析期间发生变化，结果未保存。")
-                            bg_res["game_id"] = game_id
-                            save_cached_review(cache_key, bg_res)
-                            log.info("[后台缓存就绪] 离线检讨完成并已存入缓存: %s", cache_key)
-                        except Exception as err:
-                            log.warning("[后台缓存异常] 离线保存失败: %s", err)
-                    asyncio.create_task(_save_detached())
-                    raise
+                    progress = q.get_nowait()
+                    yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                res = await asyncio.shield(task)
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(res)}, ensure_ascii=False)}\n\n"
+            finally:
+                # The worker may outlive this generator. Drop future progress
+                # notifications instead of accumulating an unconsumed queue.
+                listening.clear()
 
         except Exception as e:
-            log.exception("SSE analyze error: %s", e)
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+            log.error("SSE analyze error (%s)", _safe_error_context(e))
+            yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(
+    return _ClosingStreamingResponse(
         sse_generator(),
         media_type="text/event-stream",
         headers={

@@ -95,15 +95,17 @@ docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_
 
 ### 访问控制
 
-- 未配置 `MAJSOUL_API_TOKEN` 时，仅允许直接连接本机回环地址的同源业务 API 访问；远程访问被拒绝。反向代理、容器和隧道部署必须配置令牌，不能依赖回环地址判断来保护公网服务。
-- 配置令牌后，所有业务 API 请求（包括本机）都需携带 `Authorization: Bearer <令牌>` 或 `X-Api-Token: <令牌>` 请求头。`/api/status` 公开用于状态检查；跨来源前端还需设置精确的 `MAJSOUL_ALLOWED_ORIGINS`。来源白名单不替代令牌认证。
-- API 不再接受 URL 查询参数中的 `api_token`。旧客户端需同步升级，并确认代理透传 `X-Api-Token` 和流式响应；此前可能出现在日志或浏览器存储中的令牌应按实际暴露情况轮换。
-- 可信浏览器可通过页面 URL 片段 `#api_token=<令牌>` 提供令牌。前端读取后会从地址栏移除片段，并将其保存在当前标签页的 sessionStorage 中、按后端来源隔离。令牌链接等同于凭据，只应通过安全渠道提供给受信任的人。
+- 后端业务 API 需要有效的 `MAJSOUL_API_TOKEN`；`/api/status` 仅用于公开健康状态。`MAJSOUL_ALLOWED_ORIGINS` 是跨来源浏览器白名单，不替代 API 身份认证。
+- 直接连接自建后端、ModelScope Studio 或其他后端时，可信用户仍可通过页面 URL 片段 `#api_token=<令牌>` 或口令提示提供令牌。前端会从地址栏移除片段，并只在当前浏览器标签页按后端来源保存。令牌链接等同凭据，不要公开分享。
+- API 不接受 URL 查询参数中的 `api_token`。此前可能出现在日志或浏览器存储中的令牌应按实际暴露情况轮换。
 - `colab_launcher.py` 会为临时隧道生成访问令牌；其输出链接包含令牌，请勿公开分享。
 
 ### Cloudflare Pages
 
-前端源码位于 `web/`。Pages 的构建命令可留空，输出目录为 `web`；远程 API 必须先正确配置令牌和来源白名单。仅部署静态页面并不会部署或启动后端。GitHub 更新和云平台部署是否成功，应以各平台的实际构建和运行状态为准。
+- Pages 前端通过同源 Pages Function 访问 ModelScope 后端；普通访客不需要手动输入 API 令牌。Function 固定代理到 `https://gxyh513-majsoul-analyzer.ms.show`，并在服务端注入 `X-Api-Token`。同源代理仅开放状态和分析接口；账号登录/登出、服务器本地牌谱、共享引擎配置、模型下载与缓存管理不会开放给匿名访问者。
+- 在 Cloudflare Pages 项目的 **Preview 和 Production** 环境分别设置 Secret `MAJSOUL_API_TOKEN`，并在 ModelScope 后端设置相同的新随机值。不要把令牌写入 `wrangler.toml`、源码、URL、浏览器存储或日志；请在已登录的设置页面中输入，不要粘贴到聊天。
+- 匿名 JSON 分析请求体上限为 4 MiB。按产品选择，不设每 IP 请求限额或等待队列上限；公开接口可被持续调用，可能让共享推理资源一直繁忙或占用等待队列内存。若出现滥用，应另行启用 Cloudflare 限流或队列控制。
+- Pages 静态输出目录为 `web/`，Pages Function 位于仓库根目录的 `functions/`。部署后应检查正式域名的 `/api/status` 版本，并完成一次分析验证。
 
 ## API
 

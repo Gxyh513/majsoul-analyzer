@@ -10,23 +10,12 @@
 
 @media (max-width: 680px) {
   :root {
-    --zoom: calc((100vw - 16px) / 655);
+    /* --zoom is a unitless scale set from the available viewport width in JS. */
     --zoom-tiles: var(--zoom);
     --tile-img-width: calc(var(--zoom) * 30px);
     --tile-img-height: calc(var(--tile-img-width) * 4 / 3);
-    --tile-width: var(--tile-img-width);
-    --tile-height: var(--tile-img-height);
-  }
-}
-
-@media (max-width: 380px) {
-  :root {
-    --zoom: calc((100vw - 8px) / 655);
-    --zoom-tiles: var(--zoom);
-    --tile-img-width: calc(var(--zoom) * 30px);
-    --tile-img-height: calc(var(--tile-img-width) * 4 / 3);
-    --tile-width: var(--tile-img-width);
-    --tile-height: var(--tile-img-height);
+    --tile-width: calc(var(--zoom) * 34px);
+    --tile-height: calc(var(--zoom) * 44px);
   }
 }
 
@@ -91,7 +80,6 @@ input, textarea {
 }
 
 html, body {
-  scrollbar-gutter: stable;
   overflow-y: scroll;
 }
 
@@ -1020,7 +1008,7 @@ button {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--color-table-border);
-  border-radius: 20px;
+  border-radius: calc(var(--zoom) * 20px);
   box-shadow: var(--color-table-shadow, 0 12px 40px rgba(0, 0, 0, 0.55)), inset 0 1px 0 rgba(255, 255, 255, 0.1);
   overflow: hidden;
   transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
@@ -1047,11 +1035,11 @@ button {
 }
 
 /* Drawn tile separation from hand */
-.hand-closed-p0 .tileDiv.is-drawn { margin-left: 20px !important; }
+.hand-closed-p0 .tileDiv.is-drawn { margin-left: calc(var(--zoom) * 20px) !important; }
 /* p1 flows bottom-up, so the drawn tile sits above the hand and the gap goes below it. */
-.hand-closed-p1 .tileDiv.is-drawn { margin-bottom: 20px !important; }
-.hand-closed-p2 .tileDiv.is-drawn { margin-right: 20px !important; }
-.hand-closed-p3 .tileDiv.is-drawn { margin-top: 20px !important; }
+.hand-closed-p1 .tileDiv.is-drawn { margin-bottom: calc(var(--zoom) * 20px) !important; }
+.hand-closed-p2 .tileDiv.is-drawn { margin-right: calc(var(--zoom) * 20px) !important; }
+.hand-closed-p3 .tileDiv.is-drawn { margin-top: calc(var(--zoom) * 20px) !important; }
 
 /* Melds have no gap */
 .hand-calls-p0, .hand-calls-p1, .hand-calls-p2, .hand-calls-p3 {
@@ -1118,7 +1106,7 @@ button {
   align-items: center !important;
   padding-left: calc(var(--zoom) * 5px) !important;
   padding-right: calc(var(--zoom) * 15px) !important;
-  height: 44px !important;
+  height: calc(var(--zoom) * 44px) !important;
   box-sizing: border-box !important;
 }
 
@@ -1154,8 +1142,8 @@ button {
 .hand-calls-p2 { display: flex !important; flex-direction: row-reverse !important; }
 .hand-calls-p3 { display: flex !important; flex-direction: column !important; }
 
-.pov-p1 > div { width: var(--tile-height) !important; height: var(--tile-width) !important; }
-.pov-p3 > div { width: var(--tile-height) !important; height: var(--tile-width) !important; }
+.pov-p1 > .tileDiv { width: var(--tile-height) !important; height: var(--tile-width) !important; }
+.pov-p3 > .tileDiv { width: var(--tile-height) !important; height: var(--tile-width) !important; }
 /* Only the tile itself, not the river row that contains it — :has(.rotate) also
    matched the row and crushed it to a single tile's size. */
 .pov-p0 > div.has-rotate { width: var(--tile-height) !important; height: var(--tile-height) !important; }
@@ -1303,6 +1291,12 @@ button {
   box-shadow: inset 0 0 calc(var(--zoom-tiles) * 2px) black !important;
 }
 
+/* Match each board image's content and padding to its scaled tile cell. */
+.grid-main .tileImg,
+.grid-main .tileImg[src*="back"] {
+  padding: calc(var(--zoom) * 2px) !important;
+}
+
 .tileImgHighlight,
 .tileDiv.tileImgHighlight .tileImg,
 img.tileImg.tileImgHighlight {
@@ -1375,8 +1369,8 @@ img.tileImg.tileImgHighlight {
   grid-area: ad-p0 !important;
   display: flex !important;
   flex-direction: column !important;
-  width: 205px !important;
-  height: 135px !important;
+  width: calc(var(--zoom) * 205px) !important;
+  height: calc(var(--zoom) * 135px) !important;
   justify-content: flex-start !important;
   align-items: flex-start !important;
   justify-self: center !important;
@@ -1391,8 +1385,8 @@ img.tileImg.tileImgHighlight {
   grid-area: ad-p2 !important;
   display: flex !important;
   flex-direction: column-reverse !important;
-  width: 205px !important;
-  height: 135px !important;
+  width: calc(var(--zoom) * 205px) !important;
+  height: calc(var(--zoom) * 135px) !important;
   justify-content: flex-start !important;
   align-items: flex-start !important;
   justify-self: center !important;
@@ -1402,7 +1396,7 @@ img.tileImg.tileImgHighlight {
   display: flex !important;
   flex-direction: row-reverse !important;
   height: var(--tile-height) !important;
-  width: 204px !important;
+  width: calc(var(--zoom) * 204px) !important;
   justify-content: flex-start !important;
 }
 
@@ -1410,8 +1404,8 @@ img.tileImg.tileImgHighlight {
   grid-area: ad-p3 !important;
   display: flex !important;
   flex-direction: row-reverse !important;
-  width: 135px !important;
-  height: 205px !important;
+  width: calc(var(--zoom) * 135px) !important;
+  height: calc(var(--zoom) * 205px) !important;
   justify-content: flex-start !important;
   align-items: flex-start !important;
   justify-self: end !important;
@@ -1420,14 +1414,15 @@ img.tileImg.tileImgHighlight {
 .grid-discard-p3 .river-row {
   flex-direction: column !important;
   width: var(--tile-height) !important;
+  height: calc(var(--zoom) * 204px) !important;
 }
 
 .grid-discard-p1 {
   grid-area: ad-p1 !important;
   display: flex !important;
   flex-direction: row !important;
-  width: 135px !important;
-  height: 204px !important;
+  width: calc(var(--zoom) * 135px) !important;
+  height: calc(var(--zoom) * 204px) !important;
   justify-content: flex-start !important;
   align-items: flex-end !important;
   justify-self: start !important;
@@ -1436,7 +1431,7 @@ img.tileImg.tileImgHighlight {
 .grid-discard-p1 .river-row {
   flex-direction: column-reverse !important;
   width: var(--tile-height) !important;
-  height: 204px !important;
+  height: calc(var(--zoom) * 204px) !important;
   justify-content: flex-start !important;
 }
 
@@ -1448,11 +1443,14 @@ img.tileImg.tileImgHighlight {
   height: calc(var(--zoom) * 200px);
   grid-area: a-info;
   display: grid;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 16px;
+  border-radius: calc(var(--zoom) * 16px);
   margin: auto;
-  grid-template-columns: 30px 6px 128px 6px 30px;
-  grid-template-rows: 40px 38px 36px 42px 40px;
+  /* Percentages fit inside the scaled box, including its physical borders. */
+  grid-template-columns: 15% 3% 64% 3% 15%;
+  grid-template-rows: 20% 24% 14% 21% 19%;
   grid-template-areas:
     "ai-p3 ai-p2 ai-p2   ai-p2 ai-p2"
     "ai-p3 .    ai-round   .     ai-p1"
@@ -1479,56 +1477,60 @@ img.tileImg.tileImgHighlight {
   flex-direction: column !important;
   align-items: center !important;
   justify-content: center !important;
-  padding: 3px 5px !important;
-  gap: 2px !important;
+  min-width: 0;
+  min-height: 0;
+  padding: calc(var(--zoom) * 1px) calc(var(--zoom) * 3px) !important;
+  gap: calc(var(--zoom) * 1px) !important;
   transition: all 0.18s ease;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
 }
 
 .info-round-title {
-  font-size: 13.5px;
+  font-size: max(9px, calc(var(--zoom) * 13.5px));
   font-weight: 800;
-  line-height: 1.2;
+  line-height: 1.1;
   color: #ffffff;
 }
 
 .info-round-title.only {
-  font-size: 15px;
+  font-size: max(10px, calc(var(--zoom) * 15px));
 }
 
 .info-round-sub {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(var(--zoom) * 2px);
   line-height: 1;
 }
 
 .info-tag-honba {
   background: rgba(255, 255, 255, 0.12);
-  padding: 1px 4px;
+  padding: 0 calc(var(--zoom) * 2px);
   border-radius: 3px;
-  font-size: 10px;
+  font-size: max(8px, calc(var(--zoom) * 9px));
   font-weight: 600;
   color: rgba(235, 235, 245, 0.9);
+  white-space: nowrap;
 }
 
 .info-tag-kyotaku {
   background: rgba(255, 69, 58, 0.16);
   border: 1px solid rgba(255, 69, 58, 0.35);
   color: #ff6961;
-  padding: 1px 4px;
+  padding: 0 calc(var(--zoom) * 2px);
   border-radius: 3px;
-  font-size: 10px;
+  font-size: max(8px, calc(var(--zoom) * 9px));
   font-weight: 700;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: calc(var(--zoom) * 1px);
+  white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 .riichi-stick-mini {
-  width: 10px;
-  height: 3px;
+  width: calc(var(--zoom) * 10px);
+  height: calc(var(--zoom) * 3px);
   background: #ffffff;
   border-radius: 1px;
   display: inline-block;
@@ -1538,12 +1540,12 @@ img.tileImg.tileImgHighlight {
 
 .riichi-stick-mini::after {
   content: "";
-  width: 3px;
-  height: 3px;
+  width: calc(var(--zoom) * 3px);
+  height: calc(var(--zoom) * 3px);
   background: #ff453a;
   border-radius: 50%;
   position: absolute;
-  left: 3.5px;
+  left: calc(var(--zoom) * 3.5px);
   top: 0;
 }
 
@@ -1559,8 +1561,9 @@ img.tileImg.tileImgHighlight {
 .info-tiles-left {
   grid-area: ai-tiles;
   margin: auto;
-  font-size: 14px;
+  font-size: max(9px, calc(var(--zoom) * 14px));
   font-weight: 600;
+  line-height: 1;
   color: #ffffff;
 }
 
@@ -1569,8 +1572,11 @@ img.tileImg.tileImgHighlight {
 .gi-p0-outer, .gi-p1-outer, .gi-p2-outer, .gi-p3-outer {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  min-width: 0;
+  min-height: 0;
+  font-size: max(9px, calc(var(--zoom) * 12px));
   font-weight: 500;
+  line-height: 1;
   color: rgba(235, 235, 245, 0.75);
 }
 
@@ -1603,13 +1609,13 @@ img.tileImg.tileImgHighlight {
 .gi-wind {
   color: rgba(255, 255, 255, 0.45);
   font-weight: 500;
-  margin-right: 4px;
+  margin-right: calc(var(--zoom) * 4px);
 }
 
 .gi-score {
   color: #ffffff;
   font-weight: 700;
-  letter-spacing: 0.5px;
+  letter-spacing: calc(var(--zoom) * 0.5px);
 }
 
 /* ============================================================================
@@ -1618,19 +1624,14 @@ img.tileImg.tileImgHighlight {
 .discard-bars {
   display: block !important;
   width: 100% !important;
-  height: 50px !important;
-  margin-top: 2px !important;
+  height: calc(var(--zoom) * 50px) !important;
+  margin-top: calc(var(--zoom) * 2px) !important;
   position: relative !important;
 }
 .discard-bars-svg {
   width: 100% !important;
-  height: 50px !important;
+  height: calc(var(--zoom) * 50px) !important;
   display: block !important;
-}
-
-.discard-bars-svg {
-  width: 100%;
-  height: 50px;
 }
 
 /* ============================================================================
@@ -3848,17 +3849,6 @@ code {
     min-height: 32px !important;
   }
 
-  /* Center Info Box font size scaling */
-  .gi-p0-outer, .gi-p1-outer, .gi-p2-outer, .gi-p3-outer {
-    font-size: calc(var(--zoom) * 16px + 2px) !important;
-  }
-  .info-round {
-    font-size: calc(var(--zoom) * 18px + 2px) !important;
-  }
-  .info-tiles-left {
-    font-size: calc(var(--zoom) * 16px + 2px) !important;
-  }
-
   /* Decision Card & Candidate Table on Mobile */
   .kd-decision-card {
     padding: 10px 8px !important;
@@ -4281,7 +4271,7 @@ code {
   justify-content: center !important;
   gap: 0 !important;
   margin: auto !important;
-  height: 34px !important;
+  height: calc(var(--zoom) * 34px) !important;
 }
 
 .info-doras .tileDiv {

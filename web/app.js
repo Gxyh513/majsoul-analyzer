@@ -41,21 +41,24 @@ function getPlayerDisplayName(seat, kyoku = null) {
   return isTarget ? `${wind}家 (自家)` : `${wind}家`;
 }
 
-function sanitizeSummaryText(text) {
-  if (!text) return "";
-  let s = String(text);
-  if (state.reviewData?.names) {
-    const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-    state.reviewData.names.forEach((origName, seat) => {
-      if (origName && origName.trim()) {
-        const wind = currentKyoku ? handWind(seat, currentKyoku) : WIND_CN[seat % 4];
-        const isTarget = seat === (state.targetActor ?? 0);
-        const replacement = isTarget ? `${wind}家 (自家)` : `${wind}家`;
-        s = s.split(origName).join(replacement);
-      }
-    });
-  }
-  return s;
+function sanitizeSummaryText(text, event = null, kyoku = null) {
+  const value = String(text ?? "");
+  if (event?.type !== "hora") return value;
+  const names = state.reviewData?.names || [];
+  const who = names[event.actor];
+  if (typeof who !== "string" || !who) return value;
+  const seatLabel = (seat) => {
+    const wind = kyoku ? handWind(seat, kyoku) : WIND_CN[seat % 4];
+    return seat === (state.targetActor ?? 0) ? `${wind}家 (自家)` : `${wind}家`;
+  };
+  const isRon = event.target !== undefined && event.target !== null && event.actor !== event.target;
+  const target = names[event.target];
+  const originalPrefix = isRon ? `${who} 荣和 ${target} ` : `${who} 自摸 `;
+  if (isRon && (typeof target !== "string" || !target)) return value;
+  if (!value.startsWith(originalPrefix)) return value;
+  const safePrefix = isRon ? `${seatLabel(event.actor)} 荣和 ${seatLabel(event.target)} ` : `${seatLabel(event.actor)} 自摸 `;
+  // Only replace the identity prefix, never score text or a yaku name.
+  return safePrefix + value.slice(originalPrefix.length);
 }
 
 function toggleHidePlayerId() {
@@ -289,7 +292,7 @@ function showAnalysisError(errMsg, retryCallback = null) {
   if (!overlay || !errorBox) return;
 
   if (normalState) normalState.classList.add("hidden");
-  if (errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
+  if (!isPagesProxyMode() && errMsg && (errMsg.includes("MAJSOUL_API_TOKEN") || errMsg.includes("401"))) {
     if (errorDetail) {
       errorDetail.innerHTML = `
         <div style="margin-bottom: 10px; font-weight: 500; color: #ffffff;">本服务器已启用远程访问口令保护，请输入口令：</div>
@@ -323,7 +326,37 @@ function showAnalysisError(errMsg, retryCallback = null) {
   overlay.classList.remove("hidden");
 }
 
-// API tokens are scoped to the selected backend and retained only in this tab.
+// The public Cloudflare deployment uses a same-origin Pages Function proxy.
+// Never let public Pages URLs override the fixed server-side upstream.
+function isPagesProxyMode() {
+  const host = (window.location.hostname || "").toLowerCase();
+  return host === "majsoul.ccwu.cc" || host === "majsoul-analyzer.pages.dev" || host.endsWith(".majsoul-analyzer.pages.dev");
+}
+
+// Remove legacy client credentials from public Pages sessions without reading
+// or exposing their values. The proxy injects its Secret on the server side.
+function clearPagesProxyCredentials() {
+  clearLegacyApiTokens();
+  try {
+    const keys = [];
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith("majsoul_api_token:")) keys.push(key);
+    }
+    for (const key of keys) sessionStorage.removeItem(key);
+  } catch (_) {}
+  try {
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    if (fragment.has("api_token")) {
+      fragment.delete("api_token");
+      const url = new URL(window.location.href);
+      url.hash = fragment.toString();
+      window.history.replaceState(null, "", url.toString());
+    }
+  } catch (_) {}
+}
+
+// API tokens are scoped to the selected direct backend and retained only in this tab.
 function tokenStorageKey() {
   const backend = getBackendUrl();
   const origin = backend ? new URL(backend.startsWith("http") ? backend : `http://${backend}`).origin : window.location.origin;
@@ -340,6 +373,10 @@ function clearLegacyApiTokens() {
 }
 
 function getApiToken() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return "";
+  }
   clearLegacyApiTokens();
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const token = fragment.get("api_token");
@@ -355,6 +392,10 @@ function getApiToken() {
 }
 
 function setApiToken(token) {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return;
+  }
   clearLegacyApiTokens();
   const key = tokenStorageKey();
   if (token && token.trim()) sessionStorage.setItem(key, token.trim());
@@ -362,6 +403,10 @@ function setApiToken(token) {
 }
 
 function apiAuthHeaders() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return {};
+  }
   const token = getApiToken();
   // ModelScope may consume Authorization for its own gateway credentials.
   return token ? { "X-Api-Token": token } : {};
@@ -371,6 +416,7 @@ async function fetchReviewStream(postBody, onProgress) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const resp = await fetch(url, {
     method: "POST",
+    credentials: isPagesProxyMode() ? "omit" : "same-origin",
     redirect: "error",
     headers: {
       "Content-Type": "application/json",
@@ -443,6 +489,10 @@ async function fetchReviewStream(postBody, onProgress) {
 const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";
 
 function getBackendUrl() {
+  if (isPagesProxyMode()) {
+    clearPagesProxyCredentials();
+    return "";
+  }
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has("backend")) {
     const b = urlParams.get("backend").trim().replace(/\/+$/, "");
@@ -459,6 +509,10 @@ function getBackendUrl() {
 }
 
 function buildApiUrl(backend, path) {
+  if (isPagesProxyMode()) {
+    if (/^https?:\/\//i.test(path)) throw new Error("公开 Pages 只能使用同源 API 代理。");
+    return path.startsWith("/") ? path : `/${path}`;
+  }
   if (!backend && !window.location.search.includes("studio_token")) return path;
   try {
     const currentSearch = new URLSearchParams(window.location.search);
@@ -490,25 +544,45 @@ function buildApiUrl(backend, path) {
 }
 
 async function apiFetch(path, options = {}) {
+  const proxyMode = isPagesProxyMode();
   const isAbs = /^https?:\/\//i.test(path);
   const backend = getBackendUrl();
   const url = isAbs ? path : buildApiUrl(backend, path);
+  if (proxyMode && isAbs && new URL(url).origin !== window.location.origin) {
+    throw new Error("公开 Pages 只能使用同源 API 代理。");
+  }
+
+  const optionHeaders = {};
+  if (options.headers instanceof Headers) {
+    options.headers.forEach((value, key) => { optionHeaders[key] = value; });
+  } else {
+    Object.assign(optionHeaders, options.headers || {});
+  }
+  if (proxyMode) {
+    for (const key of Object.keys(optionHeaders)) {
+      if (["authorization", "x-api-token", "cookie", "x-studio-token"].includes(key.toLowerCase())) {
+        delete optionHeaders[key];
+      }
+    }
+  }
 
   const headers = {
     Accept: "application/json",
-    ...(new URL(url, window.location.origin).origin === new URL(backend ? (backend.startsWith("http") ? backend : `http://${backend}`) : window.location.origin).origin ? apiAuthHeaders() : {}),
-    ...(options.headers || {}),
+    ...(!proxyMode && new URL(url, window.location.origin).origin === new URL(backend ? (backend.startsWith("http") ? backend : `http://${backend}`) : window.location.origin).origin ? apiAuthHeaders() : {}),
+    ...optionHeaders,
   };
-  if (options.body && !headers["Content-Type"]) {
+  if (options.body && !Object.keys(headers).some((key) => key.toLowerCase() === "content-type")) {
     headers["Content-Type"] = "application/json";
   }
 
-  const resp = await fetch(url, {
+  const fetchOptions = {
     mode: "cors",
     ...options,
     redirect: "error",
     headers,
-  });
+  };
+  if (proxyMode) fetchOptions.credentials = "omit";
+  const resp = await fetch(url, fetchOptions);
 
   if (!resp.ok) {
     let detail = `HTTP ${resp.status} ${resp.statusText}`;
@@ -1326,14 +1400,17 @@ function renderBoard(kyoku, snap, activeDecision) {
       btnRound.innerHTML = `
         <span class="info-round-title">${escapeHtml(roundName)}</span>
         <span class="info-round-sub">
-          ${honbaCount > 0 ? `<span class="info-tag-honba">${honbaCount}本场</span>` : ""}
-          ${kyotakuCount > 0 ? `<span class="info-tag-kyotaku"><span class="riichi-stick-mini"></span>${kyotakuCount * 1000}</span>` : ""}
+          ${honbaCount > 0 ? `<span class="info-tag-honba">${honbaCount}本</span>` : ""}
+          ${kyotakuCount > 0 ? `<span class="info-tag-kyotaku"><span class="riichi-stick-mini"></span>${kyotakuCount}</span>` : ""}
         </span>
       `;
-      btnRound.title = `${escapeHtml(roundName)}${honbaCount > 0 ? ` ${honbaCount}本场` : ""}${kyotakuCount > 0 ? ` · 场供供托 ${kyotakuCount * 1000}点` : ""} · 点击查看局数得点表`;
+      const roundDescription = `${roundName}${honbaCount > 0 ? ` ${honbaCount}本场` : ""}${kyotakuCount > 0 ? ` · 立直供托 ${kyotakuCount}根 (${kyotakuCount * 1000}点)` : ""} · 点击查看局数得点表`;
+      btnRound.title = roundDescription;
+      btnRound.setAttribute("aria-label", roundDescription);
     } else {
       btnRound.innerHTML = `<span class="info-round-title only">${escapeHtml(roundName)}</span>`;
-      btnRound.title = `${escapeHtml(roundName)} · 点击查看局数得点表`;
+      btnRound.title = `${roundName} · 点击查看局数得点表`;
+      btnRound.setAttribute("aria-label", btnRound.title);
     }
   }
 
@@ -1395,7 +1472,13 @@ function renderBoard(kyoku, snap, activeDecision) {
 
   // Hands
   const nextSnap = kyoku.steps?.[state.stepIdx + 1] || null;
-  renderHeroHand(hero, snap, activeDecision, agariTile, winActor, isRon, nextSnap);
+  let nextHeroSnap = nextSnap;
+  // A riichi discard can have its own intermediate replay snapshot. Look past
+  // that declaration, but never past an unrelated action or across rounds.
+  if (activeDecision?.actual?.type === "reach" && nextSnap?.event?.type === "reach" && nextSnap.event.actor === hero) {
+    nextHeroSnap = kyoku.steps?.[state.stepIdx + 2] || null;
+  }
+  renderHeroHand(hero, snap, activeDecision, agariTile, winActor, isRon, nextHeroSnap);
   renderOpponentHand("Right", p1, snap, agariTile, winActor, isRon, nextSnap);
   renderOpponentHand("Top", p2, snap, agariTile, winActor, isRon, nextSnap);
   renderOpponentHand("Left", p3, snap, agariTile, winActor, isRon, nextSnap);
@@ -1490,23 +1573,35 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   if (drawn) allTiles.push({ pai: drawn, isDrawn: true });
 
   const tileBars = activeDecision?.tile_bars || {};
-  let actualPai = activeDecision?.actual?.pai || null;
-  const isAnkanDec = activeDecision?.actual?.type === "ankan" || activeDecision?.decision_type === "ankan";
-  const ankanTile = activeDecision?.actual?.consumed?.[0];
+  const actual = activeDecision?.actual;
+  const actualPai = actual?.pai || null;
+  const isAnkanDec = actual?.type === "ankan" || activeDecision?.decision_type === "ankan";
+  const ankanTile = actual?.consumed?.[0];
 
   // Highlight intended discard or ankan tiles in hand during draw/decision step or after call
   const highlightedIdxs = new Set();
   if (activeDecision) {
     if (isAnkanDec && ankanTile) {
+      // Red fives are distinct physical tiles but the same kind for an ankan.
+      const tileKind = (pai) => typeof pai === "string" ? pai.replace(/^5([mps])r$/, "5$1") : pai;
       allTiles.forEach(({ pai }, idx) => {
-        if (pai === ankanTile) highlightedIdxs.add(idx);
+        if (tileKind(pai) === tileKind(ankanTile)) highlightedIdxs.add(idx);
       });
-    } else if (actualPai) {
-      allTiles.forEach(({ pai }, idx) => {
-        if (pai === actualPai && highlightedIdxs.size === 0) {
-          highlightedIdxs.add(idx);
-        }
-      });
+    } else if (actualPai && (actual?.type === "dahai" || actual?.type === "reach")) {
+      // Equal tile values can occur both in the closed hand and in the draw.
+      // Only the replay's tsumogiri flag identifies which physical tile was cut.
+      const nextEvent = nextSnap?.event;
+      const nextDiscard = nextEvent?.type === "dahai" && nextEvent.actor === seat && nextEvent.pai === actualPai
+        ? nextEvent : null;
+      const tsumogiri = actual?.type === "dahai" ? (actual.tsumogiri ?? nextDiscard?.tsumogiri)
+        : actual?.type === "reach" ? nextDiscard?.tsumogiri : undefined;
+      if (tsumogiri === true) {
+        if (drawn === actualPai) highlightedIdxs.add(hand.length);
+      } else {
+        const handIdx = hand.indexOf(actualPai);
+        if (handIdx >= 0) highlightedIdxs.add(handIdx);
+        else if (tsumogiri !== false && drawn === actualPai) highlightedIdxs.add(hand.length);
+      }
     }
   } else {
     // If hero is about to discard (on normal draw OR after calling pon/chi)
@@ -1556,8 +1651,13 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
       const svgRect = svgEl.getBoundingClientRect();
       const tileRects = Array.from(renderedTiles).map((t) => t.getBoundingClientRect());
 
+      const barAreaHeight = svgRect.height || 50;
+      const barScale = barAreaHeight / 50;
+      const barWidth = 9 * barScale;
       if (svgRect.width > 0) {
-        svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} 50`);
+        // Use the rendered SVG height as well as its width so scaling the
+        // board does not shift bars away from the DOM-measured tiles.
+        svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} ${barAreaHeight}`);
       }
       const seenPai = new Set();
       renderedTiles.forEach((tileEl, idx) => {
@@ -1570,9 +1670,9 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
           if (prob > 0 && idx < tileRects.length) {
             const tileRect = tileRects[idx];
             const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
-            const height = Math.max(3, Math.round((prob / 100) * 45));
-            const y = 50 - height;
-            svgHtml += `<rect x="${Math.round(centerX - 4.5)}" y="${y}" width="9" height="${height}" fill="#5ecb7d" rx="2"></rect>`;
+            const height = Math.max(3 * barScale, (prob / 100) * barAreaHeight * 0.9);
+            const y = barAreaHeight - height;
+            svgHtml += `<rect x="${centerX - barWidth / 2}" y="${y}" width="${barWidth}" height="${height}" fill="#5ecb7d" rx="${2 * barScale}"></rect>`;
           }
         }
       });
@@ -1830,57 +1930,22 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
 // ============================================================================
 // Active Decision Details Card (In Right Sidebar)
 // ============================================================================
+// Mahjong Soul fan IDs differ from Tenhou's. Source: 雀魂API 定数一覧にゃ.
+// https://wikiwiki.jp/majsoul-api/定数一覧にゃ
 const MAJSOUL_YAKU_NAMES = {
-  1: "门前清自摸和",
-  2: "立直",
-  3: "两立直",
-  4: "枪杠",
-  5: "岭上开花",
-  6: "海底捞月",
-  7: "役牌 白",
-  8: "役牌 发",
-  9: "役牌 中",
-  10: "场风牌",
-  11: "自风牌",
-  12: "断幺九",
-  13: "一杯口",
-  14: "平和",
-  15: "河底捞鱼",
-  16: "一气通贯",
-  17: "三色同顺",
-  18: "三色同刻",
-  19: "混老头",
-  20: "对对和",
-  21: "三暗刻",
-  22: "三暗刻",
-  23: "三杠子",
-  24: "小三元",
-  25: "七对子",
-  26: "纯全带幺九",
-  27: "混一色",
-  28: "清一色",
-  29: "二杯口",
-  30: "一发",
-  31: "宝牌",
-  32: "红宝牌",
-  33: "里宝牌",
-  34: "拔北",
-  37: "混全带幺九",
-  38: "国士无双",
-  39: "九莲宝灯",
-  40: "四暗刻",
-  41: "大三元",
-  42: "字一色",
-  43: "清老头",
-  44: "绿一色",
-  45: "小四喜",
-  46: "大四喜",
-  47: "四杠子",
-  48: "天和",
-  49: "地和",
-  50: "国士无双十三面",
-  51: "四暗刻单骑",
-  52: "纯正九莲宝灯",
+  1: "门前清自摸和", 2: "立直", 3: "抢杠", 4: "岭上开花", 5: "海底捞月",
+  6: "河底捞鱼", 7: "役牌 白", 8: "役牌 发", 9: "役牌 中", 10: "自风牌",
+  11: "场风牌", 12: "断幺九", 13: "一杯口", 14: "平和", 15: "混全带幺九",
+  16: "一气通贯", 17: "三色同顺", 18: "两立直", 19: "三色同刻", 20: "三杠子",
+  21: "对对和", 22: "三暗刻", 23: "小三元", 24: "混老头", 25: "七对子",
+  26: "纯全带幺九", 27: "混一色", 28: "二杯口", 29: "清一色", 30: "一发",
+  31: "宝牌", 32: "红宝牌", 33: "里宝牌", 34: "拔北",
+  35: "天和", 36: "地和", 37: "大三元", 38: "四暗刻", 39: "字一色",
+  40: "绿一色", 41: "清老头", 42: "国士无双", 43: "小四喜", 44: "四杠子",
+  45: "九莲宝灯", 46: "八连庄", 47: "纯正九莲宝灯", 48: "四暗刻单骑",
+  49: "国士无双十三面", 50: "大四喜", 51: "燕返し", 52: "槓振り", 53: "十二落抬",
+  54: "五門斉", 55: "三連刻", 56: "一色三順", 57: "一筒摸月", 58: "九筒撈魚",
+  59: "人和", 60: "大車輪", 61: "大竹林", 62: "大数隣", 63: "石の上にも三年", 64: "大七星",
 };
 
 const MAJSOUL_TITLES = {
@@ -1893,7 +1958,57 @@ const MAJSOUL_TITLES = {
   7: "三倍役满",
   8: "四倍役满",
   9: "五倍役满",
+  10: "六倍役满",
+  11: "累计役满",
 };
+
+function validYakuFans(event) {
+  const fans = Array.isArray(event.fans) ? event.fans : [];
+  return fans.filter((fan) => fan && Number.isFinite(Number(fan.val)) && Number(fan.val) > 0);
+}
+
+function yakuName(fan) {
+  const knownName = Object.prototype.hasOwnProperty.call(MAJSOUL_YAKU_NAMES, fan.id) ? MAJSOUL_YAKU_NAMES[fan.id] : null;
+  return fan.name || knownName || `未知役种（ID ${fan.id ?? "?"}）`;
+}
+
+function yakumanTitle(event, fans = validYakuFans(event)) {
+  // Mahjong Soul count (converted to han) is the authoritative total when
+  // yiman=true. A title supplies the total if absent; fans may be incomplete.
+  const rawTotal = event.count ?? event.han;
+  const total = typeof rawTotal === "number" ? rawTotal : 0;
+  const titleId = event.title_id;
+  const byTitle = Number.isInteger(titleId) && titleId >= 5 && titleId <= 10 ? titleId - 4 : 0;
+  const byFans = fans.reduce((sum, fan) => sum + Number(fan.val), 0);
+  const multiple = (Number.isInteger(total) && total > 0 ? total : 0) || byTitle || byFans || 1;
+  return multiple > 1 ? `${multiple}倍役满` : "役满";
+}
+
+function correctedRoundSummaries(kyoku) {
+  const summaries = kyoku.end_summaries || [];
+  const endings = (kyoku.steps || []).map((step) => step.event).filter((event) =>
+    event && (event.type === "hora" || event.type === "ryukyoku" || event.type === "ryuukyoku"));
+  return summaries.map((summary, i) => {
+    const event = endings[i];
+    const text = sanitizeSummaryText(summary, event, kyoku);
+    if (event?.type !== "hora") return text;
+    const legacyScore = /(^|\s)\d+符\d+番(?=\s|$)/;
+    if (event.yiman !== true) {
+      // Counted yakuman retains its ordinary fu/han and fan values.
+      if (event.title_id !== 11 || text.includes("累计役满")) return text;
+      if (legacyScore.test(text)) return text.replace(legacyScore, (match, prefix) => `${prefix}累计役满 ${match.trim()}`);
+      return text.replace(/(\s+[+-]\d+)?\s*$/, (_, points = "") => ` 累计役满${points}`);
+    }
+    const fans = validYakuFans(event);
+    const names = fans.map(yakuName);
+    const score = yakumanTitle(event, fans) + (names.length ? `（${names.join("、")}）` : "");
+    // Old server/IndexedDB caches stored yiman count as fu/han. Preserve the
+    // original winner, target and delta while replacing only that score field.
+    if (legacyScore.test(text)) return text.replace(legacyScore, (_, prefix) => `${prefix}${score}`);
+    if (text.includes("役满")) return text;
+    return text.replace(/(\s+[+-]\d+)?\s*$/, (_, points = "") => ` ${score}${points}`);
+  });
+}
 
 function getKillerActionSpan(item) {
   if (!item) return "";
@@ -1963,11 +2078,16 @@ function renderThisRoundModalContent(snap, currentKyoku) {
       <div style="font-size:16px; font-weight:700; color:${winTitleColor}; margin-bottom:4px; letter-spacing:0.3px;">${winTitle}</div>`;
 
     // 2. Score, Han/Fu, and Title Tag
-    let han = snap.event?.han ?? snap.event?.count ?? null;
-    let fu = snap.event?.fu ?? null;
-    let titleId = snap.event?.title_id ?? 0;
+    const event = snap.event;
+    const han = event.han ?? event.count ?? null;
+    const fu = event.fu ?? null;
+    const titleId = event.title_id ?? 0;
+    const isYakuman = event.yiman === true;
+    const validFans = validYakuFans(event);
     let titleName = MAJSOUL_TITLES[titleId] || null;
-    if (!titleName && han !== null) {
+    if (isYakuman) {
+      titleName = yakumanTitle(event, validFans);
+    } else if (!titleName && han !== null) {
       if (han >= 13) titleName = "役满";
       else if (han >= 11) titleName = "三倍满";
       else if (han >= 8) titleName = "倍满";
@@ -1975,8 +2095,8 @@ function renderThisRoundModalContent(snap, currentKyoku) {
       else if (han === 5 || (han === 4 && fu >= 40) || (han === 3 && fu >= 70)) titleName = "满贯";
     }
 
-    const scoreDelta = snap.event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
-    const fuHanText = [fu ? `${fu} 符` : "", han ? `${han} 番` : ""].filter(Boolean).join(" ");
+    const scoreDelta = event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
+    const fuHanText = isYakuman ? "" : [fu ? `${fu} 符` : "", han ? `${han} 番` : ""].filter(Boolean).join(" ");
     const scoreText = scoreDelta > 0 ? `${scoreDelta} 点` : "";
 
     html += `<div style="font-size:14px; font-weight:600; color:#ffcc00; display:flex; align-items:center; justify-content:center; gap:8px;">
@@ -1985,15 +2105,15 @@ function renderThisRoundModalContent(snap, currentKyoku) {
     </div></div>`;
 
     // 3. Yaku List Breakdown
-    const rawFans = snap.event?.fans || [];
-    const validFans = rawFans.filter((f) => (f.val || 0) > 0);
     if (validFans.length > 0) {
       html += `<div class="kd-settle-yaku-list" style="margin:10px 0 12px; border-top:1px solid rgba(255,255,255,0.08); border-bottom:1px solid rgba(255,255,255,0.08); padding:6px 2px;">`;
       for (const f of validFans) {
-        const name = f.name || MAJSOUL_YAKU_NAMES[f.id] || `役种 ${f.id}`;
+        const name = yakuName(f);
+        const value = Number(f.val);
+        const valueText = isYakuman ? (value === 1 ? "役满" : `${value}倍役满`) : `${value} 番`;
         html += `<div style="display:flex; justify-content:space-between; align-items:center; font-size:12.5px; color:rgba(255,255,255,0.85); padding:2.5px 4px;">
           <span>${escapeHtml(name)}</span>
-          <span style="font-family:monospace; color:#ffd60a; font-weight:600;">${f.val} 番</span>
+          <span style="font-family:monospace; color:#ffd60a; font-weight:600;">${valueText}</span>
         </div>`;
       }
       html += `</div>`;
@@ -2097,12 +2217,17 @@ function renderThisRoundModalContent(snap, currentKyoku) {
 
   contentEl.innerHTML = html;
   const modal = $("infoThisRoundModal");
-  if (modal && !modal.open) {
-    modal.dataset.openedAt = String(Date.now());
-    if (typeof modal.showModal === "function") {
-      modal.showModal();
-    } else {
-      modal.setAttribute("open", "");
+  if (modal) {
+    // Native dialogs are hidden by their open state, not the .hidden class.
+    // Clear any stale class before entering the top layer with showModal().
+    modal.classList.remove("hidden");
+    if (!modal.open) {
+      modal.dataset.openedAt = String(Date.now());
+      if (typeof modal.showModal === "function") {
+        modal.showModal();
+      } else {
+        modal.setAttribute("open", "");
+      }
     }
   }
 }
@@ -2129,10 +2254,7 @@ function renderDecisionCard(dec, isExactStep, snap) {
   }
 
   // If not round end, close the round settlement modal if open
-  if (roundModal && roundModal.open) {
-    if (typeof roundModal.close === "function") roundModal.close();
-    else roundModal.removeAttribute("open");
-  }
+  if (roundModal?.open) closeModal("infoThisRoundModal");
 
   // Case 2: Non-decision step -> Keep table structure but do NOT show tiles
   if (optInfo) optInfo.style.display = "flex";
@@ -2300,9 +2422,21 @@ function openModal(id) {
 
 function closeModal(id) {
   const el = $(id);
-  if (el) el.classList.add("hidden");
+  if (el?.tagName === "DIALOG") {
+    if (el.open) {
+      if (typeof el.close === "function") el.close();
+      else el.removeAttribute("open");
+    }
+  } else if (el) {
+    el.classList.add("hidden");
+  }
   const bd = $(id + "Backdrop");
   if (bd) bd.classList.add("hidden");
+}
+
+function closeAllModals() {
+  document.querySelectorAll(".modal").forEach((modal) => closeModal(modal.id));
+  document.querySelectorAll(".modal-backdrop").forEach((backdrop) => backdrop.classList.add("hidden"));
 }
 
 function getRoundDeltas(k) {
@@ -2412,10 +2546,11 @@ function renderKyokuTable() {
       }
 
       // 结算文本
-      const rawSummaries = k.end_summaries && k.end_summaries.length
-        ? k.end_summaries.join("<br>")
-        : (k.result || "流局");
-      const resultText = escapeHtml(sanitizeSummaryText(rawSummaries)).replace(/&lt;br&gt;/g, "<br>");
+      const summaries = k.end_summaries && k.end_summaries.length
+        ? correctedRoundSummaries(k)
+        : [k.result || "流局"];
+      // Escape each whole summary before adding our own line separators.
+      const resultText = summaries.map(escapeHtml).join("<br>");
 
       const currentDelta = deltas[targetActor] ?? 0;
 
@@ -2504,6 +2639,11 @@ async function loadLocalCachedRecords() {
   const container = $("localRecordsList");
   const countEl = $("localRecordsCount");
   if (!container) return;
+  if (isPagesProxyMode()) {
+    if (countEl) countEl.textContent = "";
+    container.innerHTML = `<div class="kd-local-empty">公开页面不展示服务器本地缓存；请导入本地牌谱文件进行检讨</div>`;
+    return;
+  }
 
   try {
     const data = await apiFetch("/api/records/local");
@@ -2777,11 +2917,16 @@ function bindEvents() {
   // Round score history modal (Dedicated button, strictly independent from rating badge)
     $("btnOpenScoreModal")?.addEventListener("click", openRoundScoresModal);
   $("btnControlsScores")?.addEventListener("click", openRoundScoresModal);
-  $("infoThisRoundClose")?.addEventListener("click", () => {
-    $("infoThisRoundModal")?.close();
-  });
+  $("infoThisRoundClose")?.addEventListener("click", () => closeModal("infoThisRoundModal"));
   $("infoThisRoundModal")?.addEventListener("click", (e) => {
-    if (e.target === $("infoThisRoundModal")) $("infoThisRoundModal")?.close();
+    const dialog = $("infoThisRoundModal");
+    if (!dialog || e.target !== dialog || e.detail === 0) return;
+    // Native ::backdrop clicks are retargeted to the dialog. Its own padding
+    // has the same target, so only a pointer outside its box dismisses it.
+    const rect = dialog.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) {
+      closeModal("infoThisRoundModal");
+    }
   });
   $("btnRoundScore")?.addEventListener("click", openRoundScoresModal);
   $("roundModalClose")?.addEventListener("click", () => closeModal("roundModal"));
@@ -2795,6 +2940,14 @@ function bindEvents() {
   $("engineModalClose")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnCancelEngineModal")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnSaveEngineConfig")?.addEventListener("click", async () => {
+    if (isPagesProxyMode()) {
+      const statusMsg = $("engineModalStatusMsg");
+      if (statusMsg) {
+        statusMsg.style.color = "#ff9f0a";
+        statusMsg.textContent = "公开页面使用固定的 Mortal-V4-582500 引擎，不支持修改共享服务配置。";
+      }
+      return;
+    }
     const model = $("engineSelect")?.value || "akagi";
     state.selectedModel = model;
     updateEngineStatusDisplay(model);
@@ -2824,12 +2977,9 @@ function bindEvents() {
   $("btnOpenShortcutsModal")?.addEventListener("click", () => openModal("shortcutsModal"));
   $("shortcutsModalClose")?.addEventListener("click", () => closeModal("shortcutsModal"));
 
-  // Backdrop click closes any modal
+  // Close native dialogs through close(), and only hide the custom modals.
   document.querySelectorAll(".modal-backdrop").forEach((bd) => {
-    bd.addEventListener("click", () => {
-      document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
-      bd.classList.add("hidden");
-    });
+    bd.addEventListener("click", closeAllModals);
   });
 
   // Global Keyboard shortcuts
@@ -2839,8 +2989,7 @@ function bindEvents() {
     const roundDialog = $("infoThisRoundModal");
     if (roundDialog && roundDialog.open) {
       if (e.key === "Escape" || e.key === "Enter" || e.key === " " || e.key.startsWith("Arrow") || e.key === "[" || e.key === "]" || e.key === "," || e.key === ".") {
-        if (typeof roundDialog.close === "function") roundDialog.close();
-        else roundDialog.removeAttribute("open");
+        closeModal("infoThisRoundModal");
         if (e.key === "Escape" || e.key === "Enter") {
           e.preventDefault();
           return;
@@ -2849,8 +2998,7 @@ function bindEvents() {
     }
 
     if (e.key === "Escape") {
-      document.querySelectorAll(".modal:not(.hidden)").forEach((m) => m.classList.add("hidden"));
-      document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach((b) => b.classList.add("hidden"));
+      closeAllModals();
       return;
     }
 
@@ -2933,7 +3081,7 @@ function bindEvents() {
   // Global mouse wheel steps forward/backward across entire screen (green and black areas alike)
   window.addEventListener("wheel", (e) => {
     if (!state.reviewData) return;
-    if (e.target.closest("#roundModal, #shortcutsModal, #engineModal")) return;
+    if (e.target.closest("#roundModal, #shortcutsModal, #engineModal, #infoThisRoundModal")) return;
 
     const roundDialog = $("infoThisRoundModal");
     if (roundDialog && roundDialog.open) {
@@ -2942,8 +3090,7 @@ function bindEvents() {
         e.preventDefault();
         return;
       }
-      if (typeof roundDialog.close === "function") roundDialog.close();
-      else roundDialog.removeAttribute("open");
+      closeModal("infoThisRoundModal");
     }
 
     e.preventDefault();
@@ -2953,9 +3100,34 @@ function bindEvents() {
 }
 
 function updateResponsiveZoom() {
-  document.documentElement.style.setProperty("--zoom", "1.0");
+  const root = document.documentElement;
+  // Read the root layout viewport after resize, excluding classic scrollbars.
+  // The body width may be affected by the previous board scale, so never use it.
+  const viewportWidth = root.clientWidth > 0 ? Math.min(window.innerWidth, root.clientWidth) : window.innerWidth;
+  const horizontalPadding = window.innerWidth <= 768 ? 8 : window.innerWidth <= 960 ? 16 : 24;
+  const zoom = Math.min(1, Math.max(0, (viewportWidth - horizontalPadding) / 655));
+  root.style.setProperty("--zoom", String(zoom));
 }
-window.addEventListener("resize", updateResponsiveZoom);
+let resizeRafId = null;
+function handleBoardResize() {
+  if (resizeRafId !== null) return;
+  resizeRafId = requestAnimationFrame(() => {
+    resizeRafId = null;
+    // Resize can fire before the root's layout viewport has caught up with an
+    // orientation change; measure it here rather than in the resize event.
+    updateResponsiveZoom();
+    const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+    const snap = kyoku?.steps?.[state.stepIdx];
+    if (!snap) return;
+    const targetActor = state.targetActor ?? 0;
+    const isHeroDahai = snap.event?.type === "dahai" && snap.event.actor === targetActor;
+    const decision = snap.decision_idx != null && !isHeroDahai ? kyoku.decisions?.[snap.decision_idx] : null;
+    // Re-measure tiles after the zoom and layout change without calling setStep:
+    // resize must not navigate or reopen a dismissed settlement dialog.
+    renderBoard(kyoku, snap, decision);
+  });
+}
+window.addEventListener("resize", handleBoardResize);
 
 // ============================================================================
 // Initialization

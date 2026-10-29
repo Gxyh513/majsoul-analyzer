@@ -531,7 +531,8 @@ async def test_failover_all_accounts_540(monkeypatch):
         await server_app.fetch_record_with_failover("test_uuid_all_540")
 
     assert exc_info.value.status_code == 429
-    assert "所有已配置的 2 个账号今日抓谱额度均已耗尽" in exc_info.value.detail
+    assert "抓谱额度暂时耗尽" in exc_info.value.detail
+    assert "2 个" not in exc_info.value.detail
 
 
 @pytest.mark.anyio
