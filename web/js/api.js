@@ -169,6 +169,135 @@ function apiAuthHeaders() {
 
 async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
+  let supportsCompression = false;
+  try {
+    if (typeof DecompressionStream === "function" && typeof Blob === "function" &&
+        typeof Blob.prototype.stream === "function" && typeof Response === "function" &&
+        typeof Response.prototype.arrayBuffer === "function" && typeof atob === "function") {
+      new DecompressionStream("gzip");
+      supportsCompression = true;
+    }
+  } catch (_) {}
+  let requestId = globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID().replaceAll("-", "")
+    : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+  timings.requestId = requestId;
+  const visibility = () => typeof document === "undefined" ? "unknown" : document.visibilityState;
+  const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
+  const monitorStarted = performance.now();
+  let monitorEnded = Infinity;
+  let observer = null;
+  let readSamples = [];
+  let readCount = 0;
+  let chunkCount = 0;
+  let totalBytes = 0;
+  let previousReadFinished = null;
+  let completeReadWaitMs = 0;
+  let completeBetweenReadsMs = 0;
+  let longTaskCount = 0;
+  let longTaskMs = 0;
+  let longestTaskMs = 0;
+  const visibilityStates = new Set([visibility()]);
+  let progressFrame = null;
+  let completeFrame = null;
+  let frame = null;
+  let lineHasContent = false;
+
+  function flushReads() {
+    if (!readSamples.length) return;
+    console.info(`[Paipu SSE Browser] 请求ID=${requestId} read明细=序号,开始ms,完成ms,字节,可见状态或错误 ${JSON.stringify(readSamples)}`);
+    readSamples = [];
+  }
+  function logLongTasks(entries) {
+    for (const entry of entries) {
+      if (entry.startTime > monitorEnded || entry.startTime + entry.duration < monitorStarted) continue;
+      longTaskCount++;
+      longTaskMs += entry.duration;
+      longestTaskMs = Math.max(longestTaskMs, entry.duration);
+      console.info(`[Paipu SSE Browser] 请求ID=${requestId} 长任务开始=${entry.startTime.toFixed(1)}ms 耗时=${entry.duration.toFixed(1)}ms 当前可见状态=${visibility()}`);
+    }
+  }
+  function visibilityChanged() {
+    visibilityStates.add(visibility());
+    console.info(`[Paipu SSE Browser] 请求ID=${requestId} 可见状态=${visibility()} 时间=${performance.now().toFixed(1)}ms`);
+  }
+  function stopDiagnostics() {
+    monitorEnded = performance.now();
+    flushReads();
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", visibilityChanged);
+    const finish = () => {
+      if (observer) {
+        logLongTasks(observer.takeRecords());
+        observer.disconnect();
+        observer = null;
+      }
+      timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
+        visibilityStates: [...visibilityStates] };
+      console.info(`[Paipu SSE Browser] 请求ID=${requestId} 数据块数量=${chunkCount} 接收字节=${totalBytes} complete后续read等待=${completeReadWaitMs.toFixed(1)}ms complete读块间隔=${completeBetweenReadsMs.toFixed(1)}ms 长任务数量=${longTaskCount} 长任务总耗时=${longTaskMs.toFixed(1)}ms 可见状态=${visibility()}`);
+    };
+    if (observer) setTimeout(finish, 0);
+    else finish();
+  }
+  if (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
+    try {
+      observer = new PerformanceObserver((list) => logLongTasks(list.getEntries()));
+      observer.observe({ type: "longtask", buffered: false });
+    } catch (_) {
+      observer = null;
+    }
+  }
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", visibilityChanged);
+  console.info(`[Paipu SSE Browser] 请求ID=${requestId} 起始可见状态=${visibility()} performance时间原点Unix=${wallOrigin.toFixed(1)}ms 长任务监控=${observer ? "启用" : "不可用"} 监控范围=SSE请求至结果解析 说明=read完成是JS可观察时间，跨机时钟未校准`);
+
+  function measureChunk(chunk, index, receivedAt) {
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf(10, offset);
+      const end = newline < 0 ? chunk.length : newline + 1;
+      if (!frame) frame = { bytes: 0, prefix: "", firstChunk: index, firstAt: receivedAt };
+      frame.bytes += end - offset;
+      frame.lastChunk = index;
+      frame.lastAt = receivedAt;
+      if (!frame.kind) {
+        const prefixEnd = Math.min(end, offset + Math.max(0, 256 - frame.prefix.length));
+        for (let i = offset; i < prefixEnd; i++) frame.prefix += String.fromCharCode(chunk[i]);
+        const complete = /"type"\s*:\s*"complete"/.test(frame.prefix) || /(?:^|[\r\n])event:\s*complete\s*[\r\n]/.test(frame.prefix);
+        const progress = /"type"\s*:\s*"progress"/.test(frame.prefix) || /(?:^|[\r\n])event:\s*progress\s*[\r\n]/.test(frame.prefix);
+        if (complete) {
+          frame.kind = "complete";
+          completeFrame = frame;
+        } else if (progress && /"percent"\s*:\s*100\s*[,}]/.test(frame.prefix)) {
+          frame.kind = "100%";
+          progressFrame = frame;
+        }
+        if (frame.kind) {
+          frame.prefix = "";
+          console.info(`[Paipu SSE Browser] 请求ID=${requestId} 事件=${frame.kind} 首块=${frame.firstChunk} 首块read完成=${frame.firstAt.toFixed(1)}ms 可见状态=${visibility()}`);
+        }
+      }
+      const contentEnd = newline < 0 ? end : newline;
+      if (contentEnd - offset > 1 || (contentEnd - offset === 1 && chunk[offset] !== 13)) lineHasContent = true;
+      if (newline >= 0) {
+        if (!lineHasContent) {
+          frame = null;
+        }
+        lineHasContent = false;
+      }
+      offset = end;
+    }
+  }
+
+  const requestBody = { ...postBody };
+  delete requestBody.accept_compression;
+  if (supportsCompression) requestBody.accept_compression = "gzip+base64";
+  let sameOrigin = true;
+  if (typeof window !== "undefined" && window.location) {
+    try {
+      sameOrigin = new URL(url, window.location.href).origin === window.location.origin;
+    } catch (_) {
+      sameOrigin = false;
+    }
+  }
   let resp;
   try {
     resp = await fetch(url, {
@@ -179,22 +308,32 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         "Content-Type": "application/json",
         Accept: "text/event-stream",
         ...apiAuthHeaders(),
+        ...(sameOrigin ? { "X-Request-ID": requestId } : {}),
       },
-      body: JSON.stringify(postBody),
+      body: JSON.stringify(requestBody),
     });
   } catch (_) {
+    stopDiagnostics();
     throw new Error("无法确认分析请求是否送达，服务器可能已开始处理。立即重试可能导致重复推理。");
   }
 
+  const responseRequestId = resp.headers?.get?.("X-Request-ID");
+  if (typeof responseRequestId === "string" && /^[0-9a-f]{32}$/.test(responseRequestId) && responseRequestId !== requestId) {
+    console.info(`[Paipu SSE Browser] 本地请求ID=${requestId} 服务端请求ID=${responseRequestId}`);
+    requestId = responseRequestId;
+    timings.requestId = requestId;
+  }
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
     const detail = `HTTP ${resp.status}: ${errText || resp.statusText}`;
+    stopDiagnostics();
     if (resp.status >= 400 && resp.status < 500 && resp.status !== 408) {
       throw new Error(`分析请求被拒绝（${detail}）。`);
     }
     throw new Error(`分析服务没有正常响应（${detail}）。服务器可能已开始处理，立即重试可能导致重复推理。`);
   }
   if (!resp.body) {
+    stopDiagnostics();
     throw receiveError("无法读取分析响应，服务器可能仍在处理，立即重试可能导致重复推理。");
   }
 
@@ -204,7 +343,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   let dataLines = [];
   let eventName = "";
   let skipLeadingLf = false;
-  let finalResult = null;
+  let completionEvent = null;
   let ended = false;
 
   function dispatchEvent() {
@@ -215,27 +354,73 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     eventName = "";
     if (!data) return;
     let ev;
+    const eventParseStarted = performance.now();
     try {
       ev = JSON.parse(data);
     } catch (_) {
       throw receiveError("接收的分析数据格式不完整，服务器可能仍在处理，立即重试可能导致重复推理。");
     }
+    const parsedAt = performance.now();
     const type = ev.type || name;
     if (type === "progress" || type === "queued") {
       const percent = Number(ev.percent);
-      if (type === "progress" && percent === 100) timings.progress100ReceivedAt = receivedAt;
-      onProgress(Number.isFinite(percent) ? percent : (type === "queued" ? 5 : 0),
-        ev.message || (type === "queued" ? "服务器正忙，当前正在排队中..." : "正在分析牌谱..."));
+      if (type === "progress" && percent === 100) timings.progress100ReceivedAt = progressFrame?.lastAt ?? receivedAt;
+      const shown = Number.isFinite(percent) ? Math.min(percent, 99) : (type === "queued" ? 5 : 0);
+      onProgress(shown, type === "progress" && percent >= 100 ? "AI 检讨完成，正在接收结果..." :
+        (ev.message || (type === "queued" ? "服务器正忙，当前正在排队中..." : "正在分析牌谱...")));
     } else if (type === "complete") {
-      timings.completeReceivedAt = receivedAt;
+      timings.completeReceivedAt = completeFrame?.lastAt ?? receivedAt;
       const progressAt = timings.progress100ReceivedAt;
       const progressTime = Number.isFinite(progressAt) ? `${progressAt.toFixed(1)}ms` : "N/A";
-      const receiveInterval = Number.isFinite(progressAt) ? `${(receivedAt - progressAt).toFixed(1)}ms` : "N/A";
-      console.info(`[Paipu UX Performance] 100%事件接收时间=${progressTime} complete事件接收时间=${receivedAt.toFixed(1)}ms 100%事件至complete事件接收=${receiveInterval} 时间基准=页面performance.now`);
-      finalResult = ev.result;
-      onProgress(100, "分析完成，正在加载回放...");
+      const receiveInterval = Number.isFinite(progressAt) ? `${(timings.completeReceivedAt - progressAt).toFixed(1)}ms` : "N/A";
+      const first = completeFrame?.firstAt;
+      const firstTime = Number.isFinite(first) ? `${first.toFixed(1)}ms` : "N/A";
+      const parseDuration = Number.isFinite(first) ? `${(parsedAt - first).toFixed(1)}ms` : "N/A";
+      const sameChunk = progressFrame && completeFrame ? progressFrame.lastChunk === completeFrame.firstChunk : "N/A";
+      timings.sse = {
+        completeBytes: completeFrame?.bytes ?? null,
+        completeFirstAt: first ?? null,
+        completeLastAt: timings.completeReceivedAt,
+        completeEventParsedAt: parsedAt,
+        progressLastAt: progressAt ?? null,
+        sameChunk,
+        chunkCount,
+        totalBytes,
+      };
+      console.info(`[Paipu UX Performance] 请求ID=${requestId} 100%事件接收时间=${progressTime} complete事件接收时间=${timings.completeReceivedAt.toFixed(1)}ms 100%事件至complete事件接收=${receiveInterval} 时间基准=页面performance.now`);
+      console.info(`[Paipu SSE Browser] 请求ID=${requestId} complete首块=${firstTime} complete末块=${timings.completeReceivedAt.toFixed(1)}ms complete首块Unix=${Number.isFinite(first) ? (wallOrigin + first).toFixed(1) : "N/A"}ms complete事件字节数=${completeFrame?.bytes ?? "N/A"} 字节范围=Fetch解码后的SSE帧 首块至事件解析完成=${parseDuration} 100%与complete同块=${sameChunk} 可见状态=${visibility()}`);
+      completionEvent = { event: ev, eventParseMs: parsedAt - eventParseStarted };
     } else if (type === "error") {
       throw Object.assign(new Error(`服务器分析失败：${ev.detail || "分析发生错误"}`), { serverReported: true });
+    }
+  }
+
+  async function restoreComplete({ event, eventParseMs }) {
+    if (event.encoding == null) {
+      console.info(`[Paipu Compression] 请求ID=${requestId} 格式=原始JSON 接收压缩数据大小=N/A 解压耗时=0.0ms 解压后数据大小=N/A JSON解析耗时=${eventParseMs.toFixed(1)}ms`);
+      return event.result;
+    }
+    if (event.encoding !== "gzip+base64" || typeof event.data !== "string" || !supportsCompression) {
+      throw receiveError("接收的压缩分析结果格式不受支持，请刷新页面后重试。");
+    }
+    try {
+      const base64Started = performance.now();
+      const binary = atob(event.data);
+      const compressed = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) compressed[i] = binary.charCodeAt(i);
+      const base64Ms = performance.now() - base64Started;
+      const decompressStarted = performance.now();
+      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+      const decoded = await new Response(stream).arrayBuffer();
+      const decompressMs = performance.now() - decompressStarted;
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+      const parseStarted = performance.now();
+      const result = JSON.parse(text);
+      const parseMs = performance.now() - parseStarted;
+      console.info(`[Paipu Compression] 请求ID=${requestId} 格式=gzip+base64 接收压缩数据大小=${compressed.byteLength}B Base64数据大小=${event.data.length}B Base64解码耗时=${base64Ms.toFixed(1)}ms 解压耗时=${decompressMs.toFixed(1)}ms 解压后数据大小=${decoded.byteLength}B JSON解析耗时=${parseMs.toFixed(1)}ms 事件JSON解析耗时=${eventParseMs.toFixed(1)}ms`);
+      return result;
+    } catch (_) {
+      throw receiveError("接收的压缩分析结果无法恢复，请稍后重试。");
     }
   }
 
@@ -260,8 +445,11 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       if (text[0] === "\n") start = 1;
       skipLeadingLf = false;
     }
-    for (let i = start; i < text.length; i++) {
-      if (text[i] !== "\n" && text[i] !== "\r") continue;
+    while (start < text.length) {
+      let i = text.indexOf("\n", start);
+      const carriage = text.indexOf("\r", start);
+      if (carriage >= 0 && (i < 0 || carriage < i)) i = carriage;
+      if (i < 0) break;
       lineParts.push(text.slice(start, i));
       processLine(lineParts.join(""));
       lineParts = [];
@@ -276,31 +464,59 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const readStarted = performance.now();
+      const readingComplete = Boolean(completeFrame);
+      if (readingComplete && previousReadFinished !== null) completeBetweenReadsMs += readStarted - previousReadFinished;
+      let packet;
+      try {
+        packet = await reader.read();
+      } catch (error) {
+        readCount++;
+        readSamples.push([readCount, +readStarted.toFixed(1), +performance.now().toFixed(1), 0, "error"]);
+        throw error;
+      }
+      const { done, value } = packet;
+      const readFinished = performance.now();
+      if (readingComplete) completeReadWaitMs += readFinished - readStarted;
+      previousReadFinished = readFinished;
+      readCount++;
+      const size = done ? 0 : value.byteLength;
+      visibilityStates.add(visibility());
+      readSamples.push([readCount, +readStarted.toFixed(1), +readFinished.toFixed(1), size, visibility()]);
+      if (readSamples.length >= 128) flushReads();
       if (done) {
         ended = true;
         break;
       }
+      chunkCount++;
+      totalBytes += size;
+      measureChunk(value, chunkCount, readFinished);
       processText(decoder.decode(value, { stream: true }));
-      if (finalResult) break;
+      if (completionEvent) break;
     }
-    if (!finalResult) {
+    if (!completionEvent) {
       processText(decoder.decode());
       if (lineParts.length) processLine(lineParts.join(""));
       dispatchEvent();
     }
+    if (!completionEvent) {
+      throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
+    }
+    const result = await restoreComplete(completionEvent);
+    if (!result) {
+      throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
+    }
+    timings.sse.completeParsedAt = performance.now();
+    onProgress(100, "分析完成，正在加载回放...");
+    return result;
   } catch (err) {
     if (err?.serverReported || err?.receiveError) throw err;
     throw receiveError("分析连接中断，服务器可能仍在处理，立即重试可能导致重复推理。");
   } finally {
     if (!ended) reader.cancel().catch(() => {});
     reader.releaseLock();
+    stopDiagnostics();
   }
-
-  if (!finalResult) {
-    throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
-  }
-  return finalResult;
 }
 
 const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";

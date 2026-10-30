@@ -370,7 +370,16 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.strictEqual(fetchCalls.length,6);
   assert.strictEqual(fetchCalls[0].url,'/api/analyze/stream');
   assert.strictEqual(fetchCalls[0].options.method,'POST');
-  assert.deepStrictEqual(JSON.parse(fetchCalls[0].options.body),{paipu:'demo'});
+  const expectedBody = {paipu:'demo'};
+  try {
+    if (typeof DecompressionStream === 'function' && typeof Blob === 'function' &&
+        typeof Blob.prototype.stream === 'function' && typeof Response === 'function' &&
+        typeof Response.prototype.arrayBuffer === 'function' && typeof atob === 'function') {
+      new DecompressionStream('gzip');
+      expectedBody.accept_compression = 'gzip+base64';
+    }
+  } catch (_) {}
+  assert.deepStrictEqual(JSON.parse(fetchCalls[0].options.body), expectedBody);
   assert.strictEqual(releases,6); assert.strictEqual(cancels,3);
 
   chunks=[encode('data: {"type":"error","detail":"bad JSON analysis"}\n\n')];
