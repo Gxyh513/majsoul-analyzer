@@ -264,6 +264,12 @@ function updateAnalysisProgress(percent, message) {
 function setLoading(visible, title = "AI 牌谱智能检讨", sub = null) {
   const overlay = $("loadingOverlay");
   if (!overlay) return;
+  overlay.style.pointerEvents = "";
+  overlay.style.background = "";
+  overlay.style.backdropFilter = "";
+  overlay.style.webkitBackdropFilter = "";
+  overlay.style.alignItems = "";
+  overlay.style.justifyContent = "";
   if (visible) {
     const normalState = $("analysisNormalState");
     const errorBox = $("analysisErrorBox");
@@ -757,280 +763,146 @@ function requireTrustedReview(result) {
   if (!isTrustedReview(result)) throw new Error("分析结果的模型来源无法验证，请重新分析。");
 }
 
-const inFlightRequests = {};
+const inFlightRequests = new Map();
+let analysisViewVersion = 0;
+let currentReviewSource = null;
 
-function preloadOtherPerspectives(gameId, model, currentSeat) {
-  if (!gameId) return;
-  const runner = async () => {
-    const totalSeats = state.reviewData?.names?.length || 4;
-    for (let seat = 0; seat < totalSeats; seat++) {
-      if (seat === currentSeat) continue;
-      // 若用户在后台预加载期间已切换牌谱或模型，终止当前牌谱的后台预加载
-      if (state.gameId !== gameId || state.selectedModel !== model) break;
+function reviewKey(source, model, seat) {
+  return JSON.stringify([source.kind, source.identity, model, seat]);
+}
 
-      const cacheKey = `${gameId}_${model}_${seat}`;
-      if ((state.perspectiveCache && state.perspectiveCache[cacheKey]) || inFlightRequests[cacheKey]) {
-        continue;
-      }
+function matchesReview(result, seat) {
+  return isTrustedReview(result) && Number.isInteger(result.target_actor) &&
+    (seat == null || result.target_actor === seat);
+}
 
-      try {
-        let res;
-        if (!res) {
-          const p = apiFetch("/api/analyze/paipu", {
-            method: "POST",
-            body: JSON.stringify({ paipu: gameId, target_actor: seat, engine: model }),
-          });
-          inFlightRequests[cacheKey] = p;
-          res = await p;
-        }
-        if (res) {
-          requireTrustedReview(res);
-          if (!state.perspectiveCache) state.perspectiveCache = {};
-          state.perspectiveCache[cacheKey] = res;
-          await idbReviewCache.set(`${gameId}_${seat}_${model}`, res);
-        }
-      } catch (e) {
-        console.warn(`[Preload] 静默预加载视角 ${seat} 失败:`, e);
-      } finally {
-        delete inFlightRequests[cacheKey];
+function getReview(source, model, seat, onProgress) {
+  const key = reviewKey(source, model, seat);
+  const existing = inFlightRequests.get(key);
+  if (existing) {
+    existing.onProgress = onProgress;
+    return existing.promise;
+  }
+
+  const task = { onProgress };
+  task.promise = (async () => {
+    await requireModelStatus();
+    const cached = seat == null ? null : state.perspectiveCache[key];
+    if (matchesReview(cached, seat)) return cached;
+
+    if (source.kind === "paipu" && seat != null) {
+      const stored = await idbReviewCache.findByGame(source.identity, model, seat);
+      if (matchesReview(stored, seat)) {
+        state.perspectiveCache[key] = stored;
+        return stored;
       }
     }
-  };
 
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(() => { runner(); }, { timeout: 2000 });
-  } else {
-    setTimeout(runner, 400);
+    const body = source.kind === "json"
+      ? { content: source.input, engine: model }
+      : { paipu: source.input, engine: model };
+    if (seat != null) body.target_actor = seat;
+    let result;
+    try {
+      result = await fetchReviewStream(body, (pct, msg) => task.onProgress?.(pct, msg));
+    } catch (streamErr) {
+      console.warn("SSE stream failed, falling back to analysis API:", streamErr);
+      const endpoint = source.kind === "json" ? "/api/analyze/json" : "/api/analyze/paipu";
+      result = await apiFetch(endpoint, { method: "POST", body: JSON.stringify(body) });
+    }
+    requireTrustedReview(result);
+    if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
+    const resultKey = reviewKey(source, model, result.target_actor);
+    state.perspectiveCache[resultKey] = result;
+    if (source.kind === "paipu") {
+      await idbReviewCache.set(`${source.identity}_${result.target_actor}_${model}`, result);
+    }
+    return result;
+  })().finally(() => {
+    if (inFlightRequests.get(key) === task) inFlightRequests.delete(key);
+  });
+  inFlightRequests.set(key, task);
+  return task.promise;
+}
+
+function setPerspectiveLoading(title) {
+  setLoading(true, title);
+  const overlay = $("loadingOverlay");
+  if (overlay) {
+    overlay.style.pointerEvents = "none";
+    overlay.style.background = "transparent";
+    overlay.style.backdropFilter = "none";
+    overlay.style.webkitBackdropFilter = "none";
+    overlay.style.alignItems = "flex-end";
+    overlay.style.justifyContent = "flex-start";
   }
 }
 
+function applyPerspective(result, preservePosition) {
+  const round = preservePosition ? state.kyokuIdx : 0;
+  const step = preservePosition ? state.stepIdx : 0;
+  if (state.isPlaying) togglePlay(false);
+  cancelScheduledStep();
+  state.reviewData = result;
+  state.gameId = result.game_id || currentReviewSource.identity;
+  state.targetActor = result.target_actor;
+  const index = Math.min(round, Math.max(0, (result.kyokus?.length || 1) - 1));
+  renderSummaryDashboard();
+  selectKyoku(index, !preservePosition);
+  if (preservePosition) setStep(Math.min(step, Math.max(0, (result.kyokus?.[index]?.steps?.length || 1) - 1)));
+  if ($("roundModal") && !$("roundModal").classList.contains("hidden")) renderKyokuTable();
+}
+
 async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
-  if (!rawInput) {
-    rawInput = "demo";
-  }
-  const trimmedInput = rawInput.trim();
-  const isJsonInput = trimmedInput.startsWith("{") || trimmedInput.startsWith("[");
-  const paipuId = isJsonInput ? "custom-json" : parsePaipuUuid(trimmedInput);
+  const input = (rawInput || "demo").trim();
+  const isJson = input.startsWith("{") || input.startsWith("[");
+  const source = { kind: isJson ? "json" : "paipu", input, identity: isJson ? input : parsePaipuUuid(input) };
+  const version = ++analysisViewVersion;
   state.selectedModel = model;
   updateEngineStatusDisplay(model);
+  setLoading(true, "正在分析牌谱...", "正在使用 Mortal-V4-582500 神经网络检讨每一手决策");
   try {
-    await requireModelStatus();
-  } catch (err) {
-    setLoading(true);
-    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, model, seat));
-    return;
-  }
-
-  // 1. 检查内存缓存
-  const cacheKey = seat !== null && seat !== undefined ? `${paipuId}_${model}_${seat}` : null;
-  if (!isJsonInput && cacheKey && state.perspectiveCache && isTrustedReview(state.perspectiveCache[cacheKey])) {
-    const cachedRes = state.perspectiveCache[cacheKey];
-    state.reviewData = cachedRes;
-    state.gameId = cachedRes.game_id || paipuId;
-    state.targetActor = cachedRes.target_actor !== undefined ? cachedRes.target_actor : seat;
-    state.kyokuIdx = 0;
-
+    const result = await getReview(source, model, seat, (pct, msg) => {
+      if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
+    });
+    if (version !== analysisViewVersion || state.selectedModel !== model) return;
+    currentReviewSource = source;
+    applyPerspective(result, false);
     showTier(2);
-
     const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("paipu", paipuId);
+    if (isJson) newUrl.searchParams.delete("paipu");
+    else newUrl.searchParams.set("paipu", source.identity);
     window.history.pushState(null, "", newUrl.toString());
-
-    renderSummaryDashboard();
-    selectKyoku(0, true);
-    showToast(`分析完成：共检讨 ${cachedRes.kyokus?.length || 0} 局`, "success");
-    preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
-    return;
-  }
-
-  // 2. 检查 IndexedDB 离线持久缓存（0ms 秒开）
-  if (!isJsonInput) {
-    try {
-      // A bare game ID does not determine the user's seat. Let the server
-      // resolve it rather than opening an arbitrary cached perspective.
-      const idbCached = seat == null ? null : await idbReviewCache.findByGame(paipuId, model, seat);
-      if (isTrustedReview(idbCached)) {
-        state.reviewData = idbCached;
-        state.gameId = idbCached.game_id || paipuId;
-        state.targetActor = idbCached.target_actor !== undefined ? idbCached.target_actor : (seat ?? 0);
-        state.kyokuIdx = 0;
-
-        if (!state.perspectiveCache) state.perspectiveCache = {};
-        const k1 = `${state.gameId}_${state.targetActor}_${model}`;
-        const k2 = `${state.gameId}_${model}_${state.targetActor}`;
-        state.perspectiveCache[k1] = idbCached;
-        state.perspectiveCache[k2] = idbCached;
-
-        showTier(2);
-
-        const newUrl = new URL(window.location.href);
-        newUrl.searchParams.set("paipu", paipuId);
-        window.history.pushState(null, "", newUrl.toString());
-
-        renderSummaryDashboard();
-        selectKyoku(0, true);
-        showToast("已从本地离线缓存秒级载入", "success");
-        preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
-        return;
-      }
-    } catch (e) {
-      console.warn("IndexedDB cache check error:", e);
-    }
-  }
-
-  const loadingSub = "正在使用 Mortal-V4-582500 神经网络检讨每一手决策";
-  setLoading(true, "正在分析牌谱...", loadingSub);
-
-  try {
-    let res;
-
-    if (!res) {
-      const postBody = isJsonInput
-        ? { content: trimmedInput, engine: model }
-        : { paipu: trimmedInput, engine: model };
-      if (seat !== null && seat !== undefined) {
-        postBody.target_actor = seat;
-      }
-
-      try {
-        res = await fetchReviewStream(postBody, (pct, msg) => {
-          updateAnalysisProgress(pct, msg);
-        });
-      } catch (streamErr) {
-        console.warn("SSE stream failed, falling back to /api/analyze/paipu:", streamErr);
-        try {
-          const fallbackEndpoint = isJsonInput ? "/api/analyze/json" : "/api/analyze/paipu";
-          res = await apiFetch(fallbackEndpoint, {
-            method: "POST",
-            body: JSON.stringify(postBody),
-          });
-        } catch (apiErr) {
-          throw new Error(apiErr.message || streamErr.message);
-        }
-      }
-    }
-
-    requireTrustedReview(res);
-    state.reviewData = res;
-    state.gameId = res.game_id || paipuId;
-    state.targetActor = res.target_actor !== undefined ? res.target_actor : (seat ?? 0);
-    state.kyokuIdx = 0;
-
-    if (!state.perspectiveCache) state.perspectiveCache = {};
-    const k1 = `${state.gameId}_${state.targetActor}_${state.selectedModel}`;
-    const k2 = `${state.gameId}_${state.selectedModel}_${state.targetActor}`;
-    state.perspectiveCache[k1] = res;
-    state.perspectiveCache[k2] = res;
-
-    // 保存到 IndexedDB
-    await idbReviewCache.set(k1, res);
-
-    showTier(2);
-
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("paipu", isJsonInput ? state.gameId : paipuId);
-    window.history.pushState(null, "", newUrl.toString());
-
-    renderSummaryDashboard();
-    selectKyoku(0, true);
-    showToast(`分析完成：共检讨 ${res.kyokus?.length || 0} 局`, "success");
-
-    if (res.engine) {
-      const isResBuiltin = res.engine.type === "builtin" || res.engine.id === "builtin";
-      updateEngineStatusDisplay(
-        res.engine.id,
-        res.engine.device,
-        isResBuiltin ? "builtin" : "mortal",
-        !isResBuiltin
-      );
-    }
-
-    preloadOtherPerspectives(state.gameId, state.selectedModel, state.targetActor);
+    showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);
   } catch (err) {
-    showAnalysisError(`分析失败：${err.message}`, () => {
-      startAnalysisFromInput(rawInput, model, seat);
-    });
+    if (version !== analysisViewVersion || state.selectedModel !== model) return;
+    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, model, seat));
   }
 }
 
 async function switchSeatPerspective(newSeat) {
-  if (!state.reviewData || newSeat === state.targetActor) return;
-  const paipuId = state.gameId;
-  if (!paipuId) return;
-
-  const cacheKey = `${paipuId}_${state.selectedModel}_${newSeat}`;
-  try {
-    await requireModelStatus();
-  } catch (err) {
-    showToast(`切换视角失败：${err.message}`, "error");
-    return;
-  }
-
-  // 1. 若已命中缓存：直接同步切换，0 毫秒瞬间秒切！
-  if (state.perspectiveCache && isTrustedReview(state.perspectiveCache[cacheKey])) {
-    const cachedRes = state.perspectiveCache[cacheKey];
-    state.reviewData = cachedRes;
-    state.targetActor = newSeat;
-    renderSummaryDashboard();
-    selectKyoku(state.kyokuIdx);
-    if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
-      renderKyokuTable();
-    }
-    return;
-  }
-
-  // 1.5 检查 IndexedDB 本地缓存
-  try {
-    const idbCached = await idbReviewCache.findByGame(paipuId, state.selectedModel, newSeat);
-    if (isTrustedReview(idbCached)) {
-      if (!state.perspectiveCache) state.perspectiveCache = {};
-      state.perspectiveCache[cacheKey] = idbCached;
-      state.reviewData = idbCached;
-      state.targetActor = newSeat;
-      renderSummaryDashboard();
-      selectKyoku(state.kyokuIdx);
-      if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
-        renderKyokuTable();
-      }
-      return;
-    }
-  } catch (_) {}
-
-  // 2. 若未命中缓存：仅在首次请求该视角时向后端请求
-  const seatName = getPlayerDisplayName(newSeat);
-  setLoading(true, `切换到「${seatName}」视角...`);
-  try {
-    let res;
-
-    if (!res) {
-      if (inFlightRequests[cacheKey]) {
-        res = await inFlightRequests[cacheKey];
-      } else {
-        const p = apiFetch("/api/analyze/paipu", {
-          method: "POST",
-          body: JSON.stringify({ paipu: paipuId, target_actor: newSeat, engine: state.selectedModel }),
-        });
-        inFlightRequests[cacheKey] = p;
-        res = await p;
-      }
-    }
-    requireTrustedReview(res);
-    if (!state.perspectiveCache) state.perspectiveCache = {};
-    state.perspectiveCache[cacheKey] = res;
-    await idbReviewCache.set(`${paipuId}_${newSeat}_${state.selectedModel}`, res);
-    state.reviewData = res;
-    state.targetActor = res.target_actor !== undefined ? res.target_actor : newSeat;
-    renderSummaryDashboard();
-    selectKyoku(state.kyokuIdx);
-    if ($("roundModal") && !$("roundModal").classList.contains("hidden")) {
-      renderKyokuTable();
-    }
-  } catch (err) {
-    showToast(`切换视角失败：${err.message}`, "error");
-  } finally {
-    delete inFlightRequests[cacheKey];
+  if (!state.reviewData || !currentReviewSource) return;
+  const version = ++analysisViewVersion;
+  const source = currentReviewSource;
+  const model = state.selectedModel;
+  if (newSeat === state.targetActor) {
     setLoading(false);
+    return;
+  }
+  const seatName = getPlayerDisplayName(newSeat);
+  setPerspectiveLoading(`正在分析 ${seatName} 的 AI 检讨`);
+  try {
+    const result = await getReview(source, model, newSeat, (pct, msg) => {
+      if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
+    });
+    if (version !== analysisViewVersion || currentReviewSource !== source || state.selectedModel !== model) return;
+    applyPerspective(result, true);
+    setLoading(false);
+  } catch (err) {
+    if (version !== analysisViewVersion || currentReviewSource !== source || state.selectedModel !== model) return;
+    setLoading(false);
+    showAnalysisError(`切换视角失败：${err.message}`, () => switchSeatPerspective(newSeat));
   }
 }
 
@@ -2497,10 +2369,7 @@ function renderKyokuTable() {
     povTabs.querySelectorAll(".round-modal-pov-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const s = parseInt(btn.dataset.seat, 10);
-        if (s !== state.targetActor) {
-          await switchSeatPerspective(s);
-          renderKyokuTable();
-        }
+        await switchSeatPerspective(s);
       });
     });
   }
@@ -2789,6 +2658,8 @@ function bindEvents() {
 
   // Tier 2 Back to Home
   $("btnBackToHome")?.addEventListener("click", () => {
+    ++analysisViewVersion;
+    setLoading(false);
     if (state.isPlaying) togglePlay(false);
     showTier(1);
     const input = $("homePaipuInput");
@@ -2949,6 +2820,8 @@ function bindEvents() {
       return;
     }
     const model = $("engineSelect")?.value || "akagi";
+    ++analysisViewVersion;
+    setLoading(false);
     state.selectedModel = model;
     updateEngineStatusDisplay(model);
     const statusMsg = $("engineModalStatusMsg");
@@ -2963,7 +2836,7 @@ function bindEvents() {
       });
       closeModal("engineModal");
       if (state.reviewData && state.gameId) {
-        await startAnalysisFromInput(state.gameId, model, state.targetActor);
+        await startAnalysisFromInput(currentReviewSource?.input || state.gameId, model, state.targetActor);
       }
     } catch (e) {
       if (statusMsg) {

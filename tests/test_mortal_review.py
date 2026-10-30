@@ -459,7 +459,7 @@ def test_frontend_engine_status_mapping():
     source = (ROOT_DIR / "web" / "app.js").read_text(encoding="utf-8")
     assert "系统已自动回退为内置引擎" not in source
     assert "无法分析，不会回退到其他引擎" in source
-    assert "requireTrustedReview(res)" in source
+    assert "requireTrustedReview(result)" in source
     status = server_app.engine_mgr.status()
     assert status["active_engine"] in ("mortal", "unavailable")
 
