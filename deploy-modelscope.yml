@@ -1,0 +1,56 @@
+
+name: Deploy to ModelScope Studio
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 获取 GitHub 代码
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      # 2. 配置 Git
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git lfs install
+
+      # 3. 同步代码到魔搭
+      - name: Push to ModelScope
+        env:
+          TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          OWNER: ${{ vars.MODELSCOPE_OWNER }}
+          STUDIO: ${{ vars.MODELSCOPE_STUDIO }}
+        run: |
+          set -euo pipefail
+
+          git remote add modelscope \
+            "https://oauth2:${TOKEN}@www.modelscope.cn/studios/${OWNER}/${STUDIO}.git"
+
+          git push modelscope HEAD:master
+
+      # 4. 通知魔搭重新部署
+      - name: Deploy Studio
+        env:
+          TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          OWNER: ${{ vars.MODELSCOPE_OWNER }}
+          STUDIO: ${{ vars.MODELSCOPE_STUDIO }}
+        run: |
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://modelscope.cn/openapi/v1/studios/${OWNER}/${STUDIO}/deploy"
