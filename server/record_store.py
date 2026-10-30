@@ -15,7 +15,7 @@ import weakref
 import zlib
 from typing import Awaitable, Callable
 
-from .paipu_performance import measure
+from .paipu_performance import measure, set_value
 
 
 _MAGIC = b"MSRAW\x01"
@@ -80,15 +80,19 @@ def read_record(records_dir: Path, game_uuid: str, legacy_dirs: tuple[Path, ...]
         for suffix in (".pb", ".json"):
             path = directory / f"{game_uuid}{suffix}"
             try:
-                if path.is_symlink():
-                    raise CorruptRecordError("原始牌谱文件不能是符号链接。")
-                data = path.read_bytes()
+                with measure("本地记录检查"):
+                    if path.is_symlink():
+                        raise CorruptRecordError("原始牌谱文件不能是符号链接。")
+                with measure("本地文件读取", missing_stage="本地记录检查"):
+                    data = path.read_bytes()
+                set_value("是否命中本地记录", True)
             except FileNotFoundError:
                 continue
             except OSError as exc:
                 raise RecordStorageError("无法读取原始牌谱，请检查存储目录。") from exc
             if suffix == ".pb":
                 return _decode(data)
+            set_value("原始数据大小", len(data))
             try:
                 with measure("JSON解析"):
                     record = json.loads(data)
@@ -102,31 +106,32 @@ def read_record(records_dir: Path, game_uuid: str, legacy_dirs: tuple[Path, ...]
 
 
 def save_record(records_dir: Path, game_uuid: str, record: RawRecord) -> None:
-    _record_uuid(game_uuid)
-    data = _encode(record)
-    records_dir = Path(records_dir)
-    records_dir.mkdir(parents=True, exist_ok=True)
-    path = records_dir / f"{game_uuid}.pb"
-    temp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as file:
-            temp_path = Path(file.name)
-            file.write(data)
-            file.flush()
-            os.fsync(file.fileno())
-        legacy = records_dir / f"{game_uuid}.json"
-        if path.exists() or path.is_symlink() or legacy.exists() or legacy.is_symlink():
-            raise RecordStorageError("原始牌谱已存在，拒绝覆盖。")
-        os.replace(temp_path, path)
-        if os.name != "nt":
-            directory_fd = os.open(records_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
+    with measure("原始牌谱保存"):
+        _record_uuid(game_uuid)
+        data = _encode(record)
+        records_dir = Path(records_dir)
+        records_dir.mkdir(parents=True, exist_ok=True)
+        path = records_dir / f"{game_uuid}.pb"
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as file:
+                temp_path = Path(file.name)
+                file.write(data)
+                file.flush()
+                os.fsync(file.fileno())
+            legacy = records_dir / f"{game_uuid}.json"
+            if path.exists() or path.is_symlink() or legacy.exists() or legacy.is_symlink():
+                raise RecordStorageError("原始牌谱已存在，拒绝覆盖。")
+            os.replace(temp_path, path)
+            if os.name != "nt":
+                directory_fd = os.open(records_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
 
 @asynccontextmanager
@@ -144,20 +149,23 @@ async def _process_lock(records_dir: Path, game_uuid: str):
         if file.tell() == 0:
             file.write(b"0")
             file.flush()
-        while True:
-            try:
-                file.seek(0)
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) and getattr(exc, "winerror", None) not in (32, 33, 36):
-                    raise
-                await asyncio.sleep(0.05)
+        set_value("是否等待文件锁", False)
+        with measure("文件锁等待"):
+            while True:
+                try:
+                    file.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK) and getattr(exc, "winerror", None) not in (32, 33, 36):
+                        raise
+                    set_value("是否等待文件锁", True)
+                    await asyncio.sleep(0.05)
         try:
             yield
         finally:
@@ -178,21 +186,31 @@ async def get_or_download_record(
     _record_uuid(game_uuid)
     existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
     if existing is not None:
+        set_value("是否命中本地记录", True)
+        set_value("牌谱获取方式", "本地直接读取")
         return existing
+    set_value("是否命中本地记录", False)
     key = (asyncio.get_running_loop(), str(Path(records_dir).resolve()), game_uuid)
     flight = _flights.get(key)
     if flight is None:
+        set_value("牌谱获取方式", "下载任务")
         async def download_once():
             lock = _locks.setdefault(key, asyncio.Lock())
             async with lock:
                 existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
                 if existing is not None:
+                    set_value("是否命中本地记录", True)
+                    set_value("牌谱获取方式", "进程内锁后读取本地")
                     return existing
                 async with _process_lock(records_dir, game_uuid):
                     existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
                     if existing is not None:
+                        set_value("是否命中本地记录", True)
+                        set_value("牌谱获取方式", "文件锁后读取本地")
                         return existing
-                    record = await download(game_uuid)
+                    set_value("牌谱获取方式", "雀魂下载")
+                    with measure("雀魂抓取"):
+                        record = await download(game_uuid)
                     if not isinstance(record, RawRecord):
                         raise RecordStorageError("雀魂未返回原始 Protobuf 牌谱。")
                     try:
@@ -216,7 +234,10 @@ async def get_or_download_record(
                 done.exception()
 
         flight.add_done_callback(discard)
-    return await asyncio.shield(flight)
+        return await asyncio.shield(flight)
+    set_value("牌谱获取方式", "等待并发任务")
+    with measure("并发任务等待"):
+        return await asyncio.shield(flight)
 
 
 async def drain_record_downloads() -> None:
