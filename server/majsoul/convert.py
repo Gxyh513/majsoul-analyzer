@@ -56,7 +56,7 @@ def to_mjai(record: dict) -> list[dict]:
     dora_count = 0
     pending_reach: int | None = None
     last_discarder: int | None = None
-    last_kakan_actor: int | None = None
+    last_kan_actor: int | None = None
     in_kyoku = False
 
     def emit_doras(doras: list[str]):
@@ -110,7 +110,7 @@ def to_mjai(record: dict) -> list[dict]:
             dora_count = 1
             pending_reach = None
             last_discarder = None
-            last_kakan_actor = None
+            last_kan_actor = None
             in_kyoku = True
             events.append(
                 {
@@ -137,7 +137,7 @@ def to_mjai(record: dict) -> list[dict]:
             t = ms_to_mjai(d["tile"])
             events.append({"type": "tsumo", "actor": seat, "pai": t})
             take(seat, t)
-            last_kakan_actor = None
+            last_kan_actor = None
 
         elif name == "RecordDiscardTile":
             seat = int(d.get("seat", 0))
@@ -151,8 +151,10 @@ def to_mjai(record: dict) -> list[dict]:
             if is_reach:
                 pending_reach = seat
             last_discarder = seat
+            last_kan_actor = None
 
         elif name == "RecordChiPengGang":
+            last_kan_actor = None
             seat = int(d.get("seat", 0))
             accept_reach()
             ts = [ms_to_mjai(t) for t in d["tiles"]]
@@ -184,6 +186,7 @@ def to_mjai(record: dict) -> list[dict]:
                 for c in consumed:
                     remove(seat, c)
                 events.append({"type": "ankan", "actor": seat, "consumed": consumed})
+                last_kan_actor = seat
                 emit_doras(d.get("doras", []))
             elif typ == 2:  # kakan
                 pon = pons[seat].get(base)
@@ -195,7 +198,7 @@ def to_mjai(record: dict) -> list[dict]:
                 pai = t if t in cand else cand[0]
                 remove(seat, pai)
                 events.append({"type": "kakan", "actor": seat, "pai": pai, "consumed": pon})
-                last_kakan_actor = seat
+                last_kan_actor = seat
                 # dora for kakan is revealed later (handled by emit_doras on discard/deal)
             else:
                 raise ConvertError(f"未知杠类型 {typ}")
@@ -216,7 +219,7 @@ def to_mjai(record: dict) -> list[dict]:
                 if h.get("zimo"):
                     target = seat
                 else:
-                    target = last_kakan_actor if last_kakan_actor is not None else last_discarder
+                    target = last_kan_actor if last_kan_actor is not None else last_discarder
                 ev = {
                     "type": "hora",
                     "actor": seat,
@@ -232,10 +235,11 @@ def to_mjai(record: dict) -> list[dict]:
                     ],
                 }
                 if target is not None and target != seat:
-                    # A robbing-kan win uses the added tile, not the last river tile.
-                    winning_action = next((x for x in reversed(events) if x.get("actor") == target and x.get("type") in ("dahai", "kakan")), None)
-                    if winning_action and winning_action.get("pai"):
-                        ev["pai"] = winning_action["pai"]
+                    winning_action = next((x for x in reversed(events) if x.get("actor") == target and x.get("type") in ("dahai", "kakan", "ankan")), None)
+                    if winning_action:
+                        tile = (winning_action.get("consumed") or [None])[0] if winning_action.get("type") == "ankan" else winning_action.get("pai")
+                        if tile:
+                            ev["pai"] = tile
                 if i == 0 and len(deltas) == 4:
                     ev["deltas"] = deltas
                 ura = [ms_to_mjai(x) for x in h.get("li_doras", [])]

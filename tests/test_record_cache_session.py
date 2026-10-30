@@ -64,6 +64,53 @@ async def test_fetch_persists_and_concurrent_calls_reuse_disk(monkeypatch, tmp_p
 
 
 @pytest.mark.anyio
+async def test_fetched_record_reuses_validated_conversion(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import server.majsoul.convert as convert
+
+    acc = {"account": "a", "account_id": 11}
+    client = SimpleNamespace(logged_in=True, _ws=SimpleNamespace(closed=False), account_id=11,
+                             current_account="a", access_token=None, nickname="A", close=AsyncMock(),
+                             fetch_record=AsyncMock(return_value=record(U1)))
+    monkeypatch.setattr(app, "ms_client", client)
+    monkeypatch.setattr(app, "_ms_client_lock", asyncio.Lock())
+    monkeypatch.setattr(app, "_game_resolve_flights", {})
+    monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
+    monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: pool.is_client_logged_in_as(a, client))
+    expected_events = convert.to_mjai(record(U1))
+    converter = Mock(wraps=convert.to_mjai)
+    monkeypatch.setattr(convert, "to_mjai", converter)
+    monkeypatch.setattr(app, "to_mjai", converter)
+    game_id, events, meta, seat = await app.resolve_game_data(paipu=U1, target_actor=1)
+    assert (game_id, seat, meta["uuid"]) == (U1, 1, U1)
+    assert events == expected_events
+    converter.assert_called_once()
+    client.fetch_record.assert_awaited_once_with(U1)
+
+
+@pytest.mark.anyio
+async def test_fetched_credentials_are_stripped_and_saved_record_validated(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import server.majsoul.convert as convert
+
+    acc = {"account": "a", "account_id": 11}
+    raw = {**record(U1), "extra": {"access_token": "private", "value": "kept"}}
+    client = SimpleNamespace(logged_in=True, _ws=SimpleNamespace(closed=False), account_id=11,
+                             current_account="a", access_token=None, nickname="A", close=AsyncMock(),
+                             fetch_record=AsyncMock(return_value=raw))
+    monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
+    monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: pool.is_client_logged_in_as(a, client))
+    converter = Mock(wraps=convert.to_mjai)
+    monkeypatch.setattr(convert, "to_mjai", converter)
+    fetched, events, meta = await pool.fetch_record_with_failover(U1, client, tmp_path, asyncio.Lock(),
+                                                                 include_parsed=True)
+    assert fetched == raw and meta["uuid"] == U1 and events
+    saved = json.loads((tmp_path / f"{U1}.json").read_text(encoding="utf8"))
+    assert saved["extra"] == {"value": "kept"}
+    assert converter.call_count == 2
+
+
+@pytest.mark.anyio
 async def test_invalid_or_wrong_uuid_cache_refetched(monkeypatch, tmp_path):
     (tmp_path / f"{U1}.json").write_text(json.dumps(record(U2)), encoding="utf8")
     monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [{"account": "a", "account_id": 11}])
@@ -167,7 +214,7 @@ async def test_fetch_reports_persistence_failure_without_retrying_accounts(monke
                              fetch_record=AsyncMock(return_value=record(U1)))
     monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
     monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: pool.is_client_logged_in_as(a, client))
-    def fail_save(*args):
+    def fail_save(*args, **kwargs):
         raise OSError("disk full")
     monkeypatch.setattr(pool, "_save_record", fail_save)
     with pytest.raises(app.HTTPException, match="保存失败") as error:

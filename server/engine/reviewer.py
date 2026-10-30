@@ -310,15 +310,22 @@ def label_to_action_dict(
             return {"type": "kan", "actor": actor, "ambiguous": True}
         if ankan_cands:
             c = ankan_cands[0]
-            consumed = [c] * 4
-            if len(c) >= 2 and c[0] == "5" and c[1] in "mps" and akas_in_hand["mps".index(c[1])]:
-                consumed[0] = c[:2] + "r"
+            base = deaka(c)
+            consumed = [base] * 4
+            if base[0] == "5" and base[1] in "mps" and (is_aka(c) or akas_in_hand["mps".index(base[1])]):
+                consumed[0] = base + "r"
             return {"type": "ankan", "actor": actor, "consumed": consumed}
         if kakan_cands:
             c = kakan_cands[0]
+            base = deaka(c)
+            if base[0] == "5" and base[1] in "mps" and akas_in_hand["mps".index(base[1])]:
+                c = base + "r"
             return {"type": "kakan", "actor": actor, "pai": c}
         base = deaka(last_tile or "1m")
-        return {"type": "daiminkan", "actor": actor, "target": target, "pai": last_tile, "consumed": [base] * 3}
+        consumed = [base] * 3
+        if last_tile and base[0] == "5" and base[1] in "mps" and not is_aka(last_tile) and akas_in_hand["mps".index(base[1])]:
+            consumed[0] = base + "r"
+        return {"type": "daiminkan", "actor": actor, "target": target, "pai": last_tile, "consumed": consumed}
     if label == 43:
         return {"type": "hora", "actor": actor, "target": target}
     if label == 44:
@@ -603,6 +610,7 @@ def review_game(
                 remove_from_hand(seat, c)
             melds[seat].append({"type": "ankan", "pai": consumed[0], "consumed": consumed, "from": seat, "tiles": consumed})
             last_actor = seat
+            last_tile = consumed[0]
 
         elif etype == "kakan":
             seat = int(ev["actor"])
@@ -781,10 +789,11 @@ def review_game(
 
         ambiguous_kan = bool(best_cand["label"] == 42 and actual_cand["label"] == 42 and best_cand["action"].get("ambiguous"))
         is_equal = None if ambiguous_kan else actual_cand["label"] == best_cand["label"]
-        q_min = min(c["raw_q"] for c in candidates)
-        q_max = max(c["raw_q"] for c in candidates)
-        rel_score = 1.0 if is_equal else (actual_cand["raw_q"] - q_min) / max(q_max - q_min, 1e-6)
         q_loss = max(0.0, best_cand["raw_q"] - actual_cand["raw_q"])
+        rel_score = max(0.0, 1.0 - q_loss)
+        # Verdict thresholds use the original candidate-range scale.
+        q_min = min(c["raw_q"] for c in candidates)
+        verdict_score = 1.0 if is_equal else (actual_cand["raw_q"] - q_min) / max(best_cand["raw_q"] - q_min, 1e-6)
         actual_prob = actual_cand["prob"]
 
         # Verdict classification (NAGA style)
@@ -794,11 +803,11 @@ def review_game(
         elif is_equal or (actual_prob >= 35.0 and q_loss < 0.08):
             verdict = "best"
             verdict_cn = "一致"
-        elif actual_prob >= 15.0 or rel_score >= 0.72 or q_loss < 0.25:
+        elif actual_prob >= 15.0 or verdict_score >= 0.72 or q_loss < 0.25:
             verdict = "ok"
             verdict_cn = "微差"
             inaccuracies += 1
-        elif actual_prob >= 5.0 or rel_score >= 0.42 or q_loss < 0.65:
+        elif actual_prob >= 5.0 or verdict_score >= 0.42 or q_loss < 0.65:
             verdict = "question"
             verdict_cn = "疑问手"
             inaccuracies += 1

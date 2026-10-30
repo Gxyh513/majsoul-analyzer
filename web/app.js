@@ -744,7 +744,7 @@ function showTier(tierNum) {
   }
 }
 
-const REVIEW_SCHEMA = "mortal-582500-only-v3";
+const REVIEW_SCHEMA = "mortal-582500-only-v4";
 
 function isTrustedReview(result) {
   const status = state.serverStatus?.engine;
@@ -793,12 +793,14 @@ function getReview(source, model, seat, onProgress) {
 
   const task = { onProgress };
   task.promise = (async () => {
-    await requireModelStatus();
     const cached = seat == null ? null : state.perspectiveCache[key];
+    const storedPromise = !cached && source.kind === "paipu" && seat != null
+      ? idbReviewCache.findByGame(source.identity, model, seat) : null;
+    await requireModelStatus();
     if (matchesReview(cached, seat)) return cached;
 
     if (source.kind === "paipu" && seat != null) {
-      const stored = await idbReviewCache.findByGame(source.identity, model, seat);
+      const stored = await (storedPromise || idbReviewCache.findByGame(source.identity, model, seat));
       if (matchesReview(stored, seat)) {
         state.perspectiveCache[key] = stored;
         return stored;
@@ -822,7 +824,7 @@ function getReview(source, model, seat, onProgress) {
     const resultKey = reviewKey(source, model, result.target_actor);
     state.perspectiveCache[resultKey] = result;
     if (source.kind === "paipu") {
-      await idbReviewCache.set(`${source.identity}_${result.target_actor}_${model}`, result);
+      void idbReviewCache.set(`${source.identity}_${result.target_actor}_${model}`, result);
     }
     return result;
   })().finally(() => {
@@ -851,6 +853,9 @@ function applyPerspective(result, preservePosition) {
   if (state.isPlaying) togglePlay(false);
   cancelScheduledStep();
   state.reviewData = result;
+  const isDemo = currentReviewSource.kind === "paipu" &&
+    (currentReviewSource.input === "demo" || currentReviewSource.input.startsWith("demo-"));
+  $("demoReviewLabel")?.classList.toggle("hidden", !isDemo);
   state.gameId = result.game_id || currentReviewSource.identity;
   state.targetActor = result.target_actor;
   const index = Math.min(round, Math.max(0, (result.kyokus?.length || 1) - 1));
@@ -861,7 +866,13 @@ function applyPerspective(result, preservePosition) {
 }
 
 async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
-  const input = (rawInput || "demo").trim();
+  const input = (rawInput || "").trim();
+  if (!input) {
+    $("homeInputError")?.classList.remove("hidden");
+    $("homePaipuInput")?.focus();
+    return;
+  }
+  $("homeInputError")?.classList.add("hidden");
   const isJson = input.startsWith("{") || input.startsWith("[");
   const source = { kind: isJson ? "json" : "paipu", input, identity: isJson ? input : parsePaipuUuid(input) };
   const version = ++analysisViewVersion;
@@ -933,10 +944,12 @@ function renderSummaryDashboard() {
   }
 
   const sum = res.summary || {};
+  const hasMatchCounts = Number.isSafeInteger(sum.total_matches) && sum.total_matches >= 0 &&
+    Number.isSafeInteger(sum.total_reviewed) && sum.total_reviewed >= sum.total_matches;
   const pill = $("gameSummaryPill");
   if (pill) {
     pill.innerHTML = `
-      <div class="kd-badge-item">一致率: <strong>${fmtPct(sum.match_rate)}</strong></div>
+      <div class="kd-badge-item">一致率: <strong>${fmtPct(sum.match_rate)}${hasMatchCounts ? `（${sum.total_matches} / ${sum.total_reviewed}）` : ""}</strong></div>
       <div class="kd-badge-item">恶手: <strong style="color:#ff453a;">${sum.blunders || 0}</strong></div>
       <div class="kd-badge-item">Rating: <strong style="color:#ffcc00;">${sum.rating == null ? "--" : Number(sum.rating).toFixed(1)}</strong></div>
       ${sum.unscored_kan ? `<div class="kd-badge-item">未判定杠: <strong>${Number(sum.unscored_kan)}</strong></div>` : ""}
@@ -1318,10 +1331,10 @@ function renderBoard(kyoku, snap, activeDecision) {
   const targetActor = isHora ? snap.event.target : null;
   const isRon = isHora && winActor !== targetActor && targetActor !== undefined && targetActor !== null;
 
-  // A ron can claim a discard or rob a kakan. Inspect the actual preceding
+  // A ron can claim a discard or rob a kan. Inspect the actual preceding
   // action rather than assuming the target's most recent river tile was won.
   const ronSource = isRon ? findRonSource(kyoku, snap, targetActor) : null;
-  const robbingKan = isRon && (ronSource?.robbingKan || (Array.isArray(snap.event.fans) && snap.event.fans.some((fan) =>
+  const robbingKan = isRon && (["ankan", "kakan"].includes(ronSource?.event?.type) || ronSource?.robbingKan || (Array.isArray(snap.event.fans) && snap.event.fans.some((fan) =>
     Number(fan?.id) === 3 || fan?.name === "抢杠")));
   const river = isRon ? (snap.rivers?.[targetActor] || []) : [];
   const lastRiverTile = river[river.length - 1];
@@ -1336,9 +1349,10 @@ function renderBoard(kyoku, snap, activeDecision) {
   let agariTile = null;
   if (isHora) {
     if (isRon) {
-      // Old records may omit the winning tile; use a proven preceding action,
-      // never an unrelated last discard. A missing kakan cannot be guessed.
-      const sourceTile = robbingKan && ronSource?.event?.type !== "kakan" ? null : ronSource?.event?.pai;
+      // A missing kan cannot be inferred from an unrelated discard.
+      const sourceEvent = ronSource?.event;
+      const sourceTile = sourceEvent?.type === "ankan" ? sourceEvent.consumed?.[0] :
+        robbingKan && sourceEvent?.type !== "kakan" ? null : sourceEvent?.pai;
       agariTile = snap.event.pai || sourceTile || null;
     } else if (winActor !== null) {
       agariTile = snap.drawn?.[winActor] || null;
@@ -1396,7 +1410,7 @@ function findRonSource(kyoku, snap, targetActor) {
       continue;
     }
     if (["dora", "reach_accepted", "none", "pass"].includes(event.type)) continue;
-    if ((event.type === "dahai" || event.type === "kakan") && event.actor === targetActor) {
+    if (["dahai", "kakan", "ankan"].includes(event.type) && event.actor === targetActor) {
       return { event, index, robbingKan };
     }
     // A draw, call, different player's discard or incomplete history breaks
@@ -2772,6 +2786,8 @@ function bindEvents() {
     const val = $("homePaipuInput")?.value.trim();
     startAnalysisFromInput(val, state.selectedModel);
   });
+  $("btnDemoAnalyze")?.addEventListener("click", () => startAnalysisFromInput("demo", state.selectedModel));
+  $("homePaipuInput")?.addEventListener("input", () => $("homeInputError")?.classList.add("hidden"));
   $("homePaipuInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const val = $("homePaipuInput")?.value.trim();

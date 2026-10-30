@@ -406,6 +406,32 @@ button {
   transform: scale(0.98);
 }
 
+.kd-input-error {
+  margin: 0;
+  color: #ff6961;
+  font-size: 13px;
+}
+
+.kd-demo-submit {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #68788a;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.kd-demo-label {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #805b13;
+  color: #fff;
+  font-weight: 600;
+  text-align: center;
+}
+
 .kd-landing-footer {
   display: flex;
   justify-content: center;
