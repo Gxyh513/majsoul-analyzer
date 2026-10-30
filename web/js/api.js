@@ -167,7 +167,7 @@ function apiAuthHeaders() {
   return token ? { "X-Api-Token": token } : {};
 }
 
-async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
+async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
   let resp;
   try {
@@ -208,6 +208,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   let ended = false;
 
   function dispatchEvent() {
+    const receivedAt = performance.now();
     const data = dataLines.join("\n");
     dataLines = [];
     const name = eventName;
@@ -222,9 +223,15 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     const type = ev.type || name;
     if (type === "progress" || type === "queued") {
       const percent = Number(ev.percent);
+      if (type === "progress" && percent === 100) timings.progress100ReceivedAt = receivedAt;
       onProgress(Number.isFinite(percent) ? percent : (type === "queued" ? 5 : 0),
         ev.message || (type === "queued" ? "服务器正忙，当前正在排队中..." : "正在分析牌谱..."));
     } else if (type === "complete") {
+      timings.completeReceivedAt = receivedAt;
+      const progressAt = timings.progress100ReceivedAt;
+      const progressTime = Number.isFinite(progressAt) ? `${progressAt.toFixed(1)}ms` : "N/A";
+      const receiveInterval = Number.isFinite(progressAt) ? `${(receivedAt - progressAt).toFixed(1)}ms` : "N/A";
+      console.info(`[Paipu UX Performance] 100%事件接收时间=${progressTime} complete事件接收时间=${receivedAt.toFixed(1)}ms 100%事件至complete事件接收=${receiveInterval} 时间基准=页面performance.now`);
       finalResult = ev.result;
       onProgress(100, "分析完成，正在加载回放...");
     } else if (type === "error") {

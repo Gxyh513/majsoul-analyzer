@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..paipu_performance import increment as _increment, measure as _measure, review_inference as _review_inference
 from .model_policy import MODEL_REVISION, MODEL_SHA256, MODEL_SIZE, MODEL_STEPS, MODEL_VERSION
 
 OBS_SHAPE = (1012, 34)
@@ -116,7 +117,12 @@ class OnnxMortal:
         for start in range(0, len(obs_list), chunk_size):
             obs = np.ascontiguousarray(np.stack(obs_list[start:start + chunk_size]))
             mask = np.ascontiguousarray(np.stack(mask_list[start:start + chunk_size]))
-            result = self.session.run(["q"], {"obs": obs, "mask": mask})
+            if _review_inference.get():
+                _increment("ONNX推理调用次数")
+                with _measure("ONNX实际推理耗时"):
+                    result = self.session.run(["q"], {"obs": obs, "mask": mask})
+            else:
+                result = self.session.run(["q"], {"obs": obs, "mask": mask})
             if not isinstance(result, (list, tuple)) or len(result) != 1:
                 raise RuntimeError("ONNX 模型输出数量不匹配")
             q = result[0]

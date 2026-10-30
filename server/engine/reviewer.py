@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,8 @@ if str(_ENGINE_DIR) not in sys.path:
 
 import libriichi.state as lstate  # noqa: E402
 
+from ..paipu_performance import add_elapsed as _add_elapsed, increment as _increment, measure as _measure  # noqa: E402
+from ..paipu_performance import review_inference as _review_inference, set_value as _set_performance_value  # noqa: E402
 from .onnx_mortal import OnnxMortal  # noqa: E402
 from .model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, REVIEW_SCHEMA, normalize_model_id  # noqa: E402
 from .tiles import (  # noqa: E402
@@ -109,33 +112,55 @@ class EngineManager:
         return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
     def get_mortal(self, model_id: str | None = None):
-        normalize_model_id(model_id)
-        path = self.models_dir / MODEL_FILE
-        with self._lock:
-            if self._inference_failed:
-                raise RuntimeError(f'Mortal S42 ONNX 推理失败: {self._load_error}')
-            try:
-                identity = self._file_identity(path)
-                if self._model is not None and self._identity == identity:
-                    return self._model, MODEL_ID, path
-                self._model = None
-                self._identity = None
-                model = OnnxMortal(path)
-                if identity != self._file_identity(path):
-                    raise RuntimeError('模型权重在加载时发生变化')
-                self._model, self._identity, self._load_error = model, identity, None
-                return model, MODEL_ID, path
-            except Exception as exc:
-                self._model = None
-                self._identity = None
-                self._load_error = str(exc)
-                raise RuntimeError(f'Mortal S42 ONNX 不可用: {exc}') from exc
+        started = time.perf_counter()
+        with _measure("AI模型准备耗时"):
+            normalize_model_id(model_id)
+            path = self.models_dir / MODEL_FILE
+            lock_started = time.perf_counter()
+            with self._lock:
+                _add_elapsed("模型锁等待耗时", lock_started)
+                if self._inference_failed:
+                    raise RuntimeError(f'Mortal S42 ONNX 推理失败: {self._load_error}')
+                try:
+                    identity = self._file_identity(path)
+                    if self._model is not None and self._identity == identity:
+                        _increment("AI模型复用次数")
+                        _add_elapsed("获取已加载模型耗时", started)
+                        return self._model, MODEL_ID, path
+                    self._model = None
+                    self._identity = None
+                    _increment("AI模型加载次数")
+                    load_started = time.perf_counter()
+                    try:
+                        with _measure("模型加载及初始化耗时"):
+                            model = OnnxMortal(path)
+                    finally:
+                        log.info("[AI模型准备耗时] 来源=模型获取 模型加载及初始化耗时=%.1fms",
+                                 (time.perf_counter() - load_started) * 1000)
+                    if identity != self._file_identity(path):
+                        raise RuntimeError('模型权重在加载时发生变化')
+                    self._model, self._identity, self._load_error = model, identity, None
+                    return model, MODEL_ID, path
+                except Exception as exc:
+                    self._model = None
+                    self._identity = None
+                    self._load_error = str(exc)
+                    raise RuntimeError(f'Mortal S42 ONNX 不可用: {exc}') from exc
 
     def install_model(self, temporary_path: Path):
         path = self.models_dir / MODEL_FILE
         with self._lock:
             identity = self._file_identity(temporary_path)
-            model = OnnxMortal(temporary_path)
+            load_started = time.perf_counter()
+            _set_performance_value("_model_init_started", load_started)
+            try:
+                with _measure("模型加载及初始化耗时"):
+                    model = OnnxMortal(temporary_path)
+            finally:
+                load_finished = time.perf_counter()
+                _set_performance_value("_model_init_finished", load_finished)
+                log.info("[AI模型准备耗时] 来源=后台下载任务 模型加载及初始化耗时=%.1fms",
+                         (load_finished - load_started) * 1000)
             if identity != self._file_identity(temporary_path):
                 raise RuntimeError('模型权重在校验时发生变化')
             os.replace(temporary_path, path)
@@ -379,6 +404,8 @@ def review_game(
     force_engine: str = "auto",
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
+    _set_performance_value("ONNX推理调用次数", 0)
+    _set_performance_value("ONNX实际推理耗时", 0.0)
     assert 0 <= target_actor <= 3
     mortal, resolved_id, resolved_pth = engine_mgr.get_mortal(force_engine)
     obs_version = mortal.version
@@ -743,7 +770,11 @@ def review_game(
         if progress_callback:
             progress_callback(82.0, f"正在运行 Mortal S42 ONNX 神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
         try:
-            mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
+            token = _review_inference.set(True)
+            try:
+                mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
+            finally:
+                _review_inference.reset(token)
             if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
                 raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
             if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):

@@ -157,17 +157,21 @@ class MajsoulClient:
         clean_ver = re.sub(r"\.w$", "", self.version or DEFAULT_RES_VERSION)
         return {"resource": clean_ver, "package": self.package_version}
 
-    async def _http_json(self, client: httpx.AsyncClient, url: str):
-        r = await client.get(url, headers={"User-Agent": UA}, timeout=20)
+    async def _http_json(self, client: httpx.AsyncClient, url: str, *, request_stage: str | None = None,
+                         json_stage: str | None = None):
+        with measure(request_stage) if request_stage else nullcontext():
+            r = await client.get(url, headers={"User-Agent": UA}, timeout=20)
         r.raise_for_status()
-        return r.json()
+        with measure(json_stage) if json_stage else nullcontext():
+            return r.json()
 
     async def prepare(self):
         """Fetch version, protobuf schema and gateway list."""
         async with httpx.AsyncClient(follow_redirects=True) as c:
             # 1. Check live WebGL productVersion from index.html if available
             try:
-                idx_resp = await c.get(f"{self.base}/", headers={"User-Agent": UA}, timeout=15)
+                with measure("雀魂首页请求耗时"):
+                    idx_resp = await c.get(f"{self.base}/", headers={"User-Agent": UA}, timeout=15)
                 m_pkg = re.search(r'__webglProductVersion\s*=\s*"([^"]+)"', idx_resp.text)
                 if m_pkg:
                     self.package_version = m_pkg.group(1)
@@ -175,17 +179,27 @@ class MajsoulClient:
                 log.warning("fetch index.html package version failed: %s", e)
 
             # 2. Load or fetch liqi.json schema (via legacy version.json if not cached)
-            ver_data = await self._http_json(c, f"{self.base}/version.json?randv={random.randint(10**15, 10**16)}")
+            ver_data = await self._http_json(
+                c, f"{self.base}/version.json?randv={random.randint(10**15, 10**16)}",
+                request_stage="version.json请求耗时",
+            )
             legacy_ver = ver_data["version"]
             if not isinstance(legacy_ver, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", legacy_ver):
                 raise MajsoulError("雀魂协议版本无效")
             liqi_cache = self.cache_dir / f"liqi-{legacy_ver}.json"
             if liqi_cache.exists():
-                liqi = json.loads(liqi_cache.read_text(encoding="utf8"))
+                with measure("Protobuf协议本地缓存读取耗时"):
+                    liqi_text = liqi_cache.read_text(encoding="utf8")
+                with measure("Protobuf JSON解析及协议初始化耗时"):
+                    liqi = json.loads(liqi_text)
             else:
-                r = await c.get(f"{self.base}/resversion{legacy_ver}.json", headers={"User-Agent": UA}, timeout=30)
+                with measure("协议资源索引请求耗时"):
+                    r = await c.get(f"{self.base}/resversion{legacy_ver}.json", headers={"User-Agent": UA}, timeout=30)
                 prefix = r.json()["res"]["res/proto/liqi.json"]["prefix"]
-                liqi = await self._http_json(c, f"{self.base}/{prefix}/res/proto/liqi.json")
+                liqi = await self._http_json(
+                    c, f"{self.base}/{prefix}/res/proto/liqi.json",
+                    request_stage="协议文件下载耗时", json_stage="Protobuf JSON解析及协议初始化耗时",
+                )
                 temp_path = None
                 try:
                     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=self.cache_dir,
@@ -206,7 +220,8 @@ class MajsoulClient:
                     dev_fields["uuid"] = {"type": "string", "id": 14}
             except Exception:  # noqa: BLE001
                 pass
-            self.proto = LiqiProto(liqi)
+            with measure("Protobuf JSON解析及协议初始化耗时"):
+                self.proto = LiqiProto(liqi)
             self.protocol_version = legacy_ver
             self._record_proto = (legacy_ver, self.proto)
 
@@ -220,6 +235,7 @@ class MajsoulClient:
                     data = await self._http_json(
                         c,
                         f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
+                        request_stage="雀魂routes线路请求耗时",
                     )
                     for rt in data.get("data", {}).get("routes", []):
                         if rt.get("state") != "maintenancing" and rt.get("domain"):
