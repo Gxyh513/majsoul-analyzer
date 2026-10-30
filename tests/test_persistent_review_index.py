@@ -48,6 +48,33 @@ def test_index_rejects_wrong_review_identity(index_state, monkeypatch):
     assert app._lookup_indexed_review(UUID, 0, "mortal", 0.0) is None
 
 
+def test_verified_index_skips_record_conversion_and_upgrades_legacy(index_state, monkeypatch):
+    import json
+    from unittest.mock import Mock
+    from server.account_pool import _save_record
+
+    record = {"head": {"uuid": UUID, "accounts": [{"seat": 1, "account_id": 22}]}, "actions": []}
+    _save_record(app.RECORDS_DIR, UUID, record)
+    events, meta = app.to_mjai(record), app.game_meta(record)
+    key = app.review_cache_key(UUID, events, meta, 1, "mortal", 0.0, "schema_weight")
+    app._save_review_index(UUID, meta, 1, "mortal", 0.0, "schema_weight", key)
+    reader = Mock(wraps=app._read_cached_game_input)
+    monkeypatch.setattr(app, "_read_cached_game_input", reader)
+    assert app._lookup_indexed_review(UUID, 1, "mortal", 0.0)["key"] == key
+    reader.assert_not_called()
+    path = app._review_index_path(UUID, 1, "mortal", 0.0, "schema_weight")
+    index = json.loads(path.read_text(encoding="utf8"))
+    index.pop("record_identity")
+    index.pop("review_digest")
+    path.write_text(json.dumps(index), encoding="utf8")
+    assert app._lookup_indexed_review(UUID, 1, "mortal", 0.0)["key"] == key
+    reader.reset_mock()
+    assert app._lookup_indexed_review(UUID, 1, "mortal", 0.0)["key"] == key
+    reader.assert_not_called()
+    monkeypatch.setattr(app, "_valid_cached_review", lambda *args: {"game_id": UUID, "target_actor": 1})
+    assert app._lookup_indexed_review(UUID, 1, "mortal", 0.0) is None
+
+
 def test_broken_index_falls_back(index_state):
     path = app._review_index_path(UUID, 0, "mortal", 0.0, "schema_weight")
     path.parent.mkdir()
@@ -150,8 +177,8 @@ async def test_memory_identity_does_not_bind_replaced_file_to_old_data(monkeypat
     original_load = pool.load_cached_record
     replaced = []
 
-    def replace_after_read(directory, game_id):
-        result = original_load(directory, game_id)
+    def replace_after_read(directory, game_id, **kwargs):
+        result = original_load(directory, game_id, **kwargs)
         if not replaced:
             pool._save_record(directory, game_id, new)
             replaced.append(True)
@@ -187,6 +214,51 @@ async def test_memory_entry_evicted_during_file_stat_is_safe(monkeypatch, tmp_pa
     result = await app.resolve_game_data(paipu=UUID, target_actor=0)
     assert result[0] == UUID and result[2]["names"][0] == "Old"
     assert UUID not in app._MEMORY_LOGS and UUID not in app._MEMORY_LOG_FILES
+
+
+@pytest.mark.anyio
+async def test_disk_record_is_converted_once(monkeypatch, tmp_path):
+    from unittest.mock import Mock
+    import server.account_pool as pool
+    import server.majsoul.convert as convert
+
+    monkeypatch.setattr(app, "RECORDS_DIR", tmp_path)
+    monkeypatch.setattr(app, "_MEMORY_LOGS", {})
+    monkeypatch.setattr(app, "_MEMORY_LOG_FILES", {})
+    monkeypatch.setattr(app, "_game_resolve_flights", {})
+    record = {"head": {"uuid": UUID, "accounts": []}, "actions": []}
+    pool._save_record(tmp_path, UUID, record)
+    converter = Mock(wraps=convert.to_mjai)
+    monkeypatch.setattr(convert, "to_mjai", converter)
+    monkeypatch.setattr(app, "to_mjai", converter)
+    await app.resolve_game_data(paipu=UUID, target_actor=0)
+    converter.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_concurrent_different_seats_share_game_resolution(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def resolve(paipu, content, target_actor):
+        calls.append(paipu)
+        started.set()
+        await release.wait()
+        return UUID, [{"type": "start_game"}], {"account_ids": [11, 22, 33, 44]}, 0
+
+    monkeypatch.setattr(app, "_game_resolve_flights", {})
+    monkeypatch.setattr(app, "_resolve_game_data", resolve)
+    first = asyncio.create_task(app.resolve_game_data(paipu=UUID, target_actor=0))
+    await started.wait()
+    second = asyncio.create_task(app.resolve_game_data(paipu=UUID + "_22"))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    assert (await second)[3] == 1
+    assert calls == [UUID]
 
 
 @pytest.mark.anyio

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>牌谱检讨 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20261029-review-fixes" />
+  <link rel="stylesheet" href="/styles.css?v=20261030-demo-entry" />
 </head>
 <body>
   <!-- ========================================================================
@@ -63,7 +63,9 @@
           </div>
         </div>
 
+        <p id="homeInputError" class="kd-input-error hidden" role="alert">请输入雀魂牌谱链接或牌谱号，或导入本地牌谱文件。</p>
         <button id="btnHomeAnalyze" class="kd-landing-submit">开始分析</button>
+        <button id="btnDemoAnalyze" class="kd-demo-submit" type="button">查看演示牌谱</button>
 
         <div class="kd-landing-footer">
           <a href="https://github.com/Gxyh513/majsoul-analyzer" target="_blank" rel="noopener noreferrer" class="kd-landing-github-link" title="GitHub 仓库">
@@ -88,6 +90,7 @@
         <!-- Left Panel: Back to Home, Game Summary & Vertical Perspective Selector -->
         <div class="left-panel">
           <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
+          <div id="demoReviewLabel" class="kd-demo-label hidden">演示牌谱</div>
           <div id="gameSummaryPill" class="kd-match-badge" title="模型一致率与综合评分">
             <span class="kd-badge-match">模型一致率: --%</span>
           </div>
@@ -321,6 +324,6 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <script src="/app.js?v=20261030-on-demand-review"></script>
+  <script src="/app.js?v=20261030-review-v4"></script>
 </body>
 </html>

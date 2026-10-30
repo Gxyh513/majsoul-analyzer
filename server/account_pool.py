@@ -35,37 +35,52 @@ _rate_limited_until: dict[str, float] = {}
 _record_cache_io_lock = threading.Lock()
 
 
-def _valid_record(record: Any, game_uuid: str) -> bool:
+def _parse_valid_record(record: Any, game_uuid: str) -> tuple[list[dict], dict] | None:
     from server.majsoul.convert import game_meta, to_mjai
 
     if not isinstance(record, dict) or not isinstance(record.get("head"), dict) or not isinstance(record.get("actions"), list):
-        return False
+        return None
     if record["head"].get("uuid") != game_uuid:
-        return False
+        return None
     try:
-        game_meta(record)
-        to_mjai(record)
+        meta = game_meta(record)
+        return to_mjai(record), meta
     except (ValueError, TypeError, KeyError, IndexError, AttributeError):
-        return False
+        return None
     except Exception:
         log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
-        return False
-    return True
+        return None
 
 
-def load_cached_record(records_dir: Path, game_uuid: str) -> dict | None:
+def _valid_record(record: Any, game_uuid: str) -> bool:
+    return _parse_valid_record(record, game_uuid) is not None
+
+
+def load_cached_record(records_dir: Path, game_uuid: str, *, include_parsed: bool = False,
+                       timings: dict | None = None) -> dict | tuple[dict, list[dict], dict] | None:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid):
         return None
     path = records_dir / f"{game_uuid}.json"
     try:
-        record = json.loads(path.read_text(encoding="utf8"))
-        if _valid_record(record, game_uuid):
+        started = time.perf_counter()
+        raw = path.read_text(encoding="utf8")
+        if timings is not None:
+            timings["原始牌谱读取"] = timings.get("原始牌谱读取", 0.0) + (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        record = json.loads(raw)
+        if timings is not None:
+            timings["JSON解析"] = timings.get("JSON解析", 0.0) + (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        parsed = _parse_valid_record(record, game_uuid)
+        if timings is not None:
+            timings["MJAI转换"] = timings.get("MJAI转换", 0.0) + (time.perf_counter() - started) * 1000
+        if parsed is not None:
             try:
                 path.touch()
             except OSError:
                 pass
             log.info("[牌谱缓存命中] UUID: %s", game_uuid)
-            return record
+            return (record, *parsed) if include_parsed else record
         log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
     except FileNotFoundError:
         pass
@@ -85,11 +100,14 @@ def _without_credentials(value: Any) -> Any:
     return value
 
 
-def _save_record(records_dir: Path, game_uuid: str, record: dict) -> None:
+def _save_record(records_dir: Path, game_uuid: str, record: dict, *,
+                 parsed: tuple[list[dict], dict] | None = None) -> None:
     """Atomically persist a validated record; propagate any local write error."""
-    record = _without_credentials(record)
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid) or not _valid_record(record, game_uuid):
+    sanitized = _without_credentials(record)
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid)
+            or ((parsed is None or sanitized != record) and not _valid_record(sanitized, game_uuid))):
         raise ValueError("invalid record")
+    record = sanitized
     temp_path = None
     try:
         records_dir.mkdir(parents=True, exist_ok=True)
@@ -428,7 +446,10 @@ async def fetch_record_with_failover(
     client: MajsoulClient | None = None,
     records_dir: Path | None = None,
     client_lock: asyncio.Lock | None = None,
-) -> dict:
+    *,
+    include_parsed: bool = False,
+    timings: dict | None = None,
+) -> dict | tuple[dict, list[dict], dict]:
     """
     Fetches game record with automatic multi-account failover.
     Guarantees:
@@ -458,7 +479,8 @@ async def fetch_record_with_failover(
 
     async with client_lock:
         # Re-check cache inside lock to eliminate duplicate requests in concurrent scenarios
-        cached_record = load_cached_record(records_dir, game_uuid)
+        cached_record = await asyncio.to_thread(load_cached_record, records_dir, game_uuid,
+                                                include_parsed=include_parsed, timings=timings)
         if cached_record is not None:
             return cached_record
 
@@ -521,16 +543,28 @@ async def fetch_record_with_failover(
                     game_uuid,
                 )
                 record = await client.fetch_record(game_uuid)
-                if not _valid_record(record, game_uuid):
+                started = time.perf_counter()
+                parsed = await asyncio.to_thread(_parse_valid_record, record, game_uuid)
+                if timings is not None:
+                    timings["MJAI转换"] = timings.get("MJAI转换", 0.0) + (time.perf_counter() - started) * 1000
+                if parsed is None:
                     raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
                 try:
-                    _save_record(records_dir, game_uuid, record)
+                    save_task = asyncio.create_task(asyncio.to_thread(
+                        _save_record, records_dir, game_uuid, record, parsed=parsed))
+                    try:
+                        await asyncio.shield(save_task)
+                    except asyncio.CancelledError:
+                        try:
+                            await save_task
+                        finally:
+                            raise
                 except (OSError, ValueError, TypeError) as e:
                     log.error("[牌谱缓存写入失败] UUID: %s (%s)", game_uuid, type(e).__name__)
                     raise HTTPException(status_code=500, detail="牌谱抓取成功，但原始牌谱保存失败，请检查缓存目录。") from e
                 log.info("[牌谱抓取成功] 账号 (%s) 成功抓取牌谱: %s", actual_display, game_uuid)
                 attempt_outcomes.append({"status": "success", "account": actual_display})
-                return record
+                return (record, *parsed) if include_parsed else record
             except HTTPException:
                 raise
             except MajsoulError as e:

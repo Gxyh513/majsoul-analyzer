@@ -4,8 +4,14 @@ __pycache__
 backups
 .wrangler
 data/config.local.json
-data/records/*.json
-vendor/
 data/config.json
+data/records/
+data/reviews/
+data/metadata/
+data/models/*.pth
+data/models/*.tmp
+.env
+.env.*
+vendor/
 data/cache/*.js
 web/demo_review*.json

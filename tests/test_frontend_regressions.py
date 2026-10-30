@@ -18,6 +18,24 @@ def source_between(start, end):
     return text[text.index(start):text.index(end)]
 
 
+def test_summary_match_rate_shows_scored_decision_counts():
+    code = source_between("function renderSummaryDashboard(", "function renderSeatTabs(")
+    fmt = source_between("function fmtPct(", "function showToast(")
+    script = """const assert = require('assert');
+const pill={innerHTML:''}, state={reviewData:null,kyokuIdx:0};
+const $=id=>id==='gameSummaryPill'?pill:null, renderSeatTabs=()=>{};
+""" + fmt + code + """
+function render(summary) { state.reviewData={summary}; renderSummaryDashboard(); return pill.innerHTML; }
+assert(render({match_rate:84.1,total_matches:44,total_reviewed:52}).includes('84.1%（44 / 52）'));
+assert(render({match_rate:100,total_matches:0,total_reviewed:0}).includes('100.0%（0 / 0）'));
+assert(render({match_rate:null,total_matches:0,total_reviewed:0}).includes('--%（0 / 0）'));
+assert(render({match_rate:84.1}).includes('84.1%</strong>'));
+assert(!render({match_rate:84.1,total_matches:44}).includes(' / '));
+assert(!render({match_rate:84.1,total_matches:53,total_reviewed:52}).includes(' / '));
+"""
+    run_js(script)
+
+
 def test_river_rerenders_when_earlier_tiles_change():
     code = source_between("function renderPlayerRiver(", "function renderHeroHand(")
     script = """const assert = require('assert');

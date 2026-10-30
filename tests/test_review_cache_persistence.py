@@ -113,6 +113,19 @@ def test_api_reports_persistence_without_changing_review(cache_environment, monk
         inference.assert_called_once()
 
 
+def test_tampered_review_is_not_reused_after_index_rejection(cache_environment, monkeypatch):
+    monkeypatch.setattr(app, "_rejected_review_digests", {})
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    original, _ = request_result(client, "stream")
+    path = next(app.REVIEWS_DIR.glob("review-*.json"))
+    altered = json.loads(path.read_text(encoding="utf8"))
+    altered["kyokus"] = []
+    path.write_text(json.dumps(altered), encoding="utf8")
+    result, persisted = request_result(client, "stream")
+    assert result == original and persisted
+    assert cache_environment.call_count == 2
+
+
 def test_nonstream_cache_status_is_exposed_to_allowed_origins(cache_environment, monkeypatch):
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://allowed.example")
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "synthetic-api-token")

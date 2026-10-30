@@ -94,6 +94,42 @@ const window={location:{href:'https://example.test/'},history:{pushState(){}}};
     assert proc.returncode == 0, proc.stderr
 
 
+def test_cached_read_overlaps_status_and_write_does_not_block():
+    if not shutil.which("node"):
+        pytest.skip("Node.js not installed")
+    source = Path("web/app.js").read_text(encoding="utf-8")
+    code = source[source.index("const inFlightRequests = new Map();"):source.index("function setPerspectiveLoading(")]
+    script = r'''
+const assert = require('assert');
+const state = {perspectiveCache:{}};
+let releaseStatus, readStarted = false, writes = 0, requests = 0;
+const gate = new Promise(resolve => releaseStatus = resolve);
+const requireModelStatus = () => gate;
+const isTrustedReview = r => !!r && r.trusted;
+const requireTrustedReview = r => { if (!isTrustedReview(r)) throw Error('untrusted'); };
+const cached = {target_actor:0, trusted:true};
+const idbReviewCache = {
+  findByGame: async id => { readStarted = true; return id === 'cached' ? cached : null; },
+  set: () => { writes++; return new Promise(() => {}); },
+};
+const fetchReviewStream = async () => { requests++; return cached; };
+const apiFetch = async () => { throw Error('unexpected fallback'); };
+''' + code + r'''
+(async () => {
+  const first = getReview({kind:'paipu',identity:'cached',input:'cached'}, 'akagi', 0);
+  assert(readStarted); assert.strictEqual(requests, 0);
+  releaseStatus(); assert.strictEqual(await first, cached); assert.strictEqual(requests, 0);
+  const second = await Promise.race([
+    getReview({kind:'paipu',identity:'new',input:'new'}, 'akagi', 0),
+    new Promise((_, reject) => setTimeout(() => reject(Error('write blocked result')), 100))
+  ]);
+  assert.strictEqual(second, cached); assert.strictEqual(writes, 1);
+})().catch(e => { console.error(e); process.exit(1); });
+'''
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_no_automatic_review_preloading():
     source = Path("web/app.js").read_text(encoding="utf-8")
     assert "preloadOtherPerspectives" not in source

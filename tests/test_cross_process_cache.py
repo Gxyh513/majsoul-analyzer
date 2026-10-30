@@ -145,8 +145,10 @@ def index_and_review_paths(app):
         "game_id": UUID, "seat": SEAT, "engine": MODEL_ID, "temperature": TEMPERATURE,
         "weight_sig": signature, "cache_key": index["cache_key"],
         "account_ids": [11, 22, 33, 44],
+        "record_identity": index["record_identity"], "review_digest": index["review_digest"],
     }
     assert index == expected_index
+    assert isinstance(index["record_identity"], list) and len(index["record_identity"]) == 5
     assert index["cache_key"] == app.review_cache_key(
         UUID, app.to_mjai(RECORD), app.game_meta(RECORD), SEAT, MODEL_ID, TEMPERATURE, signature,
     )
@@ -203,7 +205,9 @@ async def read_cache():
     assert pool.load_cached_record(app.RECORDS_DIR, UUID) == RECORD
     with patch.object(pool, "load_cached_record", wraps=pool.load_cached_record) as load:
         game_id, events, meta, seat = await app.resolve_game_data(paipu=f"{UUID}_22")
-        load.assert_called_once_with(app.RECORDS_DIR, UUID)
+        assert load.call_count == 1
+        assert load.call_args.args == (app.RECORDS_DIR, UUID)
+        assert load.call_args.kwargs["include_parsed"] is True
     assert (game_id, seat) == (UUID, SEAT)
     assert events == app.to_mjai(RECORD) and len(events) > 2
     assert meta == app.game_meta(RECORD) and meta["uuid"] == UUID
@@ -222,7 +226,9 @@ async def read_cache():
         assert str(error) == "unexpected network failover fetch in an offline cache reader"
     else:
         raise AssertionError("wrong record UUID was treated as a cache hit")
-    app.fetch_record_with_failover.assert_awaited_once_with(UUID)
+    app.fetch_record_with_failover.assert_awaited_once()
+    assert app.fetch_record_with_failover.await_args.args == (UUID,)
+    assert app.fetch_record_with_failover.await_args.kwargs["include_parsed"] is True
     app.fetch_record_with_failover.reset_mock()
     record_path.write_text(json.dumps(RECORD, ensure_ascii=False), encoding="utf8")
 
@@ -275,7 +281,9 @@ async def read_cache():
         app._MEMORY_LOGS.clear()
         with patch.object(pool, "load_cached_record", wraps=pool.load_cached_record) as load:
             messages = await analyze_messages(app)
-            load.assert_called_once_with(app.RECORDS_DIR, UUID)
+            assert load.call_count == 1
+        assert load.call_args.args == (app.RECORDS_DIR, UUID)
+        assert load.call_args.kwargs["include_parsed"] is True
         assert not [message for message in messages if message["type"] == "complete"], (field, messages)
         app._start_review_job.assert_awaited_once()
         app._start_review_job.reset_mock()
@@ -299,7 +307,9 @@ async def read_cache():
             app._MEMORY_LOGS.clear()
             with patch.object(pool, "load_cached_record", wraps=pool.load_cached_record) as load:
                 messages = await analyze_messages(app)
-                load.assert_called_once_with(app.RECORDS_DIR, UUID)
+                assert load.call_count == 1
+                assert load.call_args.args == (app.RECORDS_DIR, UUID)
+                assert load.call_args.kwargs["include_parsed"] is True
             assert not [message for message in messages if message["type"] == "complete"], (field, messages)
             app._start_review_job.assert_awaited_once()
             app._start_review_job.reset_mock()
@@ -311,7 +321,9 @@ async def read_cache():
     app._MEMORY_LOGS.clear()
     with patch.object(pool, "load_cached_record", wraps=pool.load_cached_record) as load:
         assert await analyze(app) == expected
-        load.assert_called_once_with(app.RECORDS_DIR, UUID)
+        assert load.call_count == 1
+        assert load.call_args.args == (app.RECORDS_DIR, UUID)
+        assert load.call_args.kwargs["include_parsed"] is True
     assert app._lookup_indexed_review(UUID, SEAT, MODEL_ID, TEMPERATURE) == expected
     assert_not_called(forbidden + [app.review_game, app._start_review_job])
 
@@ -332,7 +344,9 @@ async def recover_cache():
     assert not app._MEMORY_LOGS
     with patch.object(pool, "load_cached_record", wraps=pool.load_cached_record) as load:
         assert await analyze(app) == expected_review(app)
-        load.assert_called_once_with(app.RECORDS_DIR, UUID)
+        assert load.call_count == 1
+        assert load.call_args.args == (app.RECORDS_DIR, UUID)
+        assert load.call_args.kwargs["include_parsed"] is True
     app.review_game.assert_called_once()
     assert_not_called(forbidden)
     assert json.loads(review_path.read_text(encoding="utf8")) == expected_review(app)
