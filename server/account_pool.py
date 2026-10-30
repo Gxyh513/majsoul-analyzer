@@ -11,6 +11,10 @@ import hashlib
 import json
 import logging
 import os
+import re
+import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -25,6 +29,79 @@ log = logging.getLogger(__name__)
 
 # Refreshed credentials for environment-managed pools remain in memory only.
 _env_pool_token_overrides: dict[str, tuple[str | None, str]] = {}
+# A 540 response has no reliable reset timestamp; avoid retrying it for a full day.
+_RATE_LIMIT_COOLDOWN = 24 * 60 * 60
+_rate_limited_until: dict[str, float] = {}
+_record_cache_io_lock = threading.Lock()
+
+
+def _valid_record(record: Any, game_uuid: str) -> bool:
+    from server.majsoul.convert import game_meta, to_mjai
+
+    if not isinstance(record, dict) or not isinstance(record.get("head"), dict) or not isinstance(record.get("actions"), list):
+        return False
+    if record["head"].get("uuid") != game_uuid:
+        return False
+    try:
+        game_meta(record)
+        to_mjai(record)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return False
+    except Exception:
+        log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
+        return False
+    return True
+
+
+def load_cached_record(records_dir: Path, game_uuid: str) -> dict | None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid):
+        return None
+    path = records_dir / f"{game_uuid}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf8"))
+        if _valid_record(record, game_uuid):
+            try:
+                path.touch()
+            except OSError:
+                pass
+            log.info("[牌谱缓存命中] UUID: %s", game_uuid)
+            return record
+        log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, UnicodeError):
+        log.warning("[牌谱缓存读取失败] UUID: %s", game_uuid)
+    return None
+
+
+def _without_credentials(value: Any) -> Any:
+    """Exclude authentication fields from persisted game data at every depth."""
+    if isinstance(value, dict):
+        secret_keys = {"password", "access_token", "token", "refresh_token", "secret"}
+        return {k: _without_credentials(v) for k, v in value.items()
+                if not (isinstance(k, str) and k.lower() in secret_keys)}
+    if isinstance(value, list):
+        return [_without_credentials(item) for item in value]
+    return value
+
+
+def _save_record(records_dir: Path, game_uuid: str, record: dict) -> None:
+    record = _without_credentials(record)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid) or not _valid_record(record, game_uuid):
+        raise ValueError("invalid record")
+    temp_path = None
+    try:
+        records_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(record, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        with _record_cache_io_lock:
+            os.replace(temp_path, records_dir / f"{game_uuid}.json")
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _account_pool_key(acc: dict) -> str:
@@ -276,6 +353,7 @@ async def login_with_account_spec(
         import server.app as server_app
         client = server_app.ms_client
 
+    log.info("[连接重建] 建立雀魂 WebSocket 会话")
     await client.close()
     await client.connect()
     token = acc.get("access_token")
@@ -377,15 +455,9 @@ async def fetch_record_with_failover(
 
     async with client_lock:
         # Re-check cache inside lock to eliminate duplicate requests in concurrent scenarios
-        record_file = records_dir / f"{game_uuid}.json"
-        if record_file.is_file():
-            try:
-                cached_record = json.loads(record_file.read_text(encoding="utf8"))
-                if isinstance(cached_record, dict) and ("head" in cached_record or "actions" in cached_record):
-                    log.info("[牌谱读取] 并发排队后命中本地已存牌谱: data/records/%s.json (无需请求雀魂服务器)", game_uuid)
-                    return cached_record
-            except Exception:
-                pass
+        cached_record = load_cached_record(records_dir, game_uuid)
+        if cached_record is not None:
+            return cached_record
 
         accs = get_accounts_fn()
         if not accs:
@@ -395,14 +467,24 @@ async def fetch_record_with_failover(
             )
 
         attempt_outcomes: list[dict[str, Any]] = []
+        # Keep the live session at the front, including when it belongs to a backup.
+        accs = sorted(accs, key=lambda acc: not is_logged_in_fn(acc))
 
         for idx, acc in enumerate(accs):
+            pool_key = hashlib.sha256(_account_pool_key(acc).encode("utf8")).hexdigest()
+            if _rate_limited_until.get(pool_key, 0) > time.monotonic():
+                log.info("[频控冷却] 跳过已限流账号")
+                attempt_outcomes.append({"status": "rate_limited", "account": f"账号{idx + 1}"})
+                continue
+            _rate_limited_until.pop(pool_key, None)
             acc_label = acc.get("nickname") or _mask_account(acc.get("account")) or f"账号{idx+1}"
             acc_id_str = f" (ID: {acc.get('account_id')})" if acc.get("account_id") else ""
             display_name = f"{acc_label}{acc_id_str}"
 
             # Step A: Ensure logged into THIS specific account
             if not is_logged_in_fn(acc):
+                if idx > 0:
+                    log.info("[账号切换] 尝试下一个可用账号")
                 try:
                     await login_spec_fn(acc)
                 except Exception as login_err:
@@ -436,6 +518,12 @@ async def fetch_record_with_failover(
                     game_uuid,
                 )
                 record = await client.fetch_record(game_uuid)
+                if not _valid_record(record, game_uuid):
+                    raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
+                try:
+                    _save_record(records_dir, game_uuid, record)
+                except (OSError, ValueError, TypeError):
+                    log.warning("[牌谱缓存写入失败] UUID: %s", game_uuid)
                 log.info("[牌谱抓取成功] 账号 (%s) 成功抓取牌谱: %s", actual_display, game_uuid)
                 attempt_outcomes.append({"status": "success", "account": actual_display})
                 return record
@@ -454,6 +542,7 @@ async def fetch_record_with_failover(
 
                 # 540: 官方频控限制 (单账号单日抓取额度已达上限)
                 if code == 540 or "540" in err_str:
+                    _rate_limited_until[pool_key] = time.monotonic() + _RATE_LIMIT_COOLDOWN
                     log.warning(
                         "[单账号额度耗尽] 账号 [%d/%d] (%s) 今日抓谱配额已达官方上限 (错误码 540)",
                         idx + 1,

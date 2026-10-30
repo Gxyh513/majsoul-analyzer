@@ -17,6 +17,8 @@ import hashlib
 import hmac
 import json
 import logging
+import os
+import tempfile
 import random
 import re
 import time
@@ -171,7 +173,18 @@ class MajsoulClient:
                 r = await c.get(f"{self.base}/resversion{legacy_ver}.json", headers={"User-Agent": UA}, timeout=30)
                 prefix = r.json()["res"]["res/proto/liqi.json"]["prefix"]
                 liqi = await self._http_json(c, f"{self.base}/{prefix}/res/proto/liqi.json")
-                liqi_cache.write_text(json.dumps(liqi), encoding="utf8")
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=self.cache_dir,
+                                                     prefix=".liqi-", suffix=".tmp", delete=False) as f:
+                        temp_path = Path(f.name)
+                        json.dump(liqi, f)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(temp_path, liqi_cache)
+                finally:
+                    if temp_path is not None:
+                        temp_path.unlink(missing_ok=True)
 
             # Ensure Unity WebGL 4.0 fields exist on ClientDeviceInfo
             try:
@@ -251,7 +264,12 @@ class MajsoulClient:
         self.logged_in = False
         self.current_account = None
         if self._reader:
-            self._reader.cancel()
+            reader, self._reader = self._reader, None
+            reader.cancel()
+            try:
+                await reader
+            except asyncio.CancelledError:
+                pass
         if self._ws:
             try:
                 await self._ws.close()

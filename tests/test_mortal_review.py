@@ -467,8 +467,15 @@ def test_frontend_engine_status_mapping():
 # ---------------------------------------------------------------------------
 # 9. Multi-Account Failover & Rate Limit (Error 540) Tests
 # ---------------------------------------------------------------------------
+@pytest.fixture
+def isolated_failover(monkeypatch, tmp_path):
+    monkeypatch.setattr("server.account_pool._rate_limited_until", {})
+    monkeypatch.setattr("server.app.RECORDS_DIR", tmp_path)
+    monkeypatch.setattr("server.app.ms_client.logged_in", False)
+
+
 @pytest.mark.anyio
-async def test_failover_primary_540_backup_success(monkeypatch):
+async def test_failover_primary_540_backup_success(monkeypatch, isolated_failover):
     """Scenario 1: Primary account hits 540 rate limit, backup account succeeds."""
     from server import app as server_app
     from server.majsoul.client import MajsoulError
@@ -503,7 +510,7 @@ async def test_failover_primary_540_backup_success(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_failover_all_accounts_540(monkeypatch):
+async def test_failover_all_accounts_540(monkeypatch, isolated_failover):
     """Scenario 2: All configured accounts hit 540, raises HTTP 429 stating all accounts exhausted."""
     from fastapi import HTTPException
     from server import app as server_app
@@ -536,7 +543,7 @@ async def test_failover_all_accounts_540(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_auth_or_network_error_not_misreported_as_all_540(monkeypatch):
+async def test_auth_or_network_error_not_misreported_as_all_540(monkeypatch, isolated_failover):
     """Scenario 3: One account has 540, another has auth/login failure; must NOT claim all accounts exhausted."""
     from fastapi import HTTPException
     from server import app as server_app

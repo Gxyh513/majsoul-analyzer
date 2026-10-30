@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .cache_paths import cache_paths
 from .engine.reviewer import EngineManager, review_game
 from .engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file, valid_review_source
 from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu
@@ -37,17 +38,16 @@ log = logging.getLogger("majsoul-analyzer")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
-CACHE_DIR = DATA_DIR / "cache"
-RECORDS_DIR = DATA_DIR / "records"
+CACHE_DIR, RECORDS_DIR, REVIEWS_DIR = cache_paths(DATA_DIR)
+METADATA_DIR = RECORDS_DIR.parent / "metadata"
 MODELS_DIR = DATA_DIR / "models"
-REVIEWS_DIR = DATA_DIR / "reviews"
 CONFIG_PATH = DATA_DIR / "config.json"
 LOCAL_CONFIG_PATH = DATA_DIR / "config.local.json"
 EXAMPLE_CONFIG_PATH = DATA_DIR / "config.example.json"
 DEMO_PATH = DATA_DIR / "demo_mjai.json"
 WEB_DIR = ROOT_DIR / "web"
 
-for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR, REVIEWS_DIR):
+for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR, REVIEWS_DIR, METADATA_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # A review job owns the permit until its worker has finished and cached its result.
@@ -119,6 +119,8 @@ def save_cached_review(cache_key: str, data: dict[str, Any]) -> None:
             _active_review_temp_files.add(temp_path)
         with temp:
             json.dump(data, temp, ensure_ascii=False)
+            temp.flush()
+            os.fsync(temp.fileno())
         # Antivirus/indexers and other processes may briefly hold the
         # destination without Windows delete sharing. WinError 5 can also
         # mean a permanent permission/readonly failure, so retries are bounded;
@@ -147,7 +149,12 @@ def save_cached_review(cache_key: str, data: dict[str, Any]) -> None:
 
 def _remove_review_cache_if_unchanged(path: Path, observed: os.stat_result) -> bool:
     """Do not delete a cache replaced or touched since cleanup inspected it."""
-    with _review_cache_io_lock:
+    if path.parent == RECORDS_DIR:
+        from .account_pool import _record_cache_io_lock
+        lock = _record_cache_io_lock
+    else:
+        lock = _review_cache_io_lock
+    with lock:
         try:
             current = path.stat()
         except FileNotFoundError:
@@ -174,6 +181,8 @@ def cleanup_old_caches(
     cleaned_bytes = 0
 
     target_dirs = [REVIEWS_DIR, RECORDS_DIR, CACHE_DIR]
+    if METADATA_DIR.parent == RECORDS_DIR.parent:
+        target_dirs.append(METADATA_DIR)
     log.info("[缓存自动巡检] 开始巡检本地磁盘缓存 (规则: 清理超过 %.0f 天未访问文件, 容量上限: %.0f MB)", max_days, max_total_mb)
 
     # Pass 1: Remove files older than cutoff_time
@@ -184,7 +193,7 @@ def cleanup_old_caches(
             try:
                 stat = f.stat()
                 if stat.st_mtime < cutoff_time:
-                    if d == REVIEWS_DIR:
+                    if d in (REVIEWS_DIR, RECORDS_DIR):
                         if not _remove_review_cache_if_unchanged(f, stat):
                             continue
                     else:
@@ -245,7 +254,7 @@ def cleanup_old_caches(
             if total_size <= max_bytes:
                 break
             try:
-                if f.parent == REVIEWS_DIR:
+                if f.parent in (REVIEWS_DIR, RECORDS_DIR):
                     if not _remove_review_cache_if_unchanged(f, st):
                         continue
                 else:
@@ -614,25 +623,15 @@ async def lifespan(app: FastAPI):
     log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
     st = engine_mgr.status()
     log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), engine_mgr.selected_model)
-    log.info("数据缓存目录: %s (已挂载 7 天过期自动清理与 3GB 磁盘配额)", DATA_DIR)
+    log.info("数据缓存目录: %s (7 天过期自动清理与 3GB 磁盘配额)", RECORDS_DIR.parent)
     log.info("==================================================================")
     cleanup_task = asyncio.create_task(_cache_cleanup_loop())
 
-    async def _try_auto_login():
-        try:
-            async with _ms_client_lock:
-                await ensure_ms_logged_in()
-            log.info("【雀魂账号状态】已自动验证/登录雀魂服务 (昵称: %s)", ms_client.nickname or ms_client.account_id or "已登录")
-        except Exception as e:
-            log.warning("【雀魂账号状态】启动自动登录提示: %s (将在首次分析时尝试连接)", e)
-
-    login_task = asyncio.create_task(_try_auto_login())
     try:
         yield
     finally:
         cleanup_task.cancel()
-        login_task.cancel()
-        await asyncio.gather(cleanup_task, login_task, return_exceptions=True)
+        await asyncio.gather(cleanup_task, return_exceptions=True)
         # Inference threads cannot be cancelled; drain their owning tasks before
         # shutting down the event loop so completed reviews are still cached.
         while _review_tasks:
@@ -1045,13 +1044,12 @@ async def resolve_game_data(
         log.info("[牌谱解析] 本地上传牌谱解析完成 | ID: %s | 目标视角: P%d (%s)", game_id, seat, meta.get("names", ["?"]*4)[seat])
         return game_id, mjai_events, meta, seat
 
-    # 3. Majsoul Paipu URL / UUID
-    if raw_input in _MEMORY_LOGS:
+    # Uploaded inputs use content-derived identifiers, not Mahjong Soul UUIDs.
+    if re.fullmatch(r"(?:upload|mjai)-[0-9a-f]{64}", raw_input) and raw_input in _MEMORY_LOGS:
         mjai_events, meta = _MEMORY_LOGS[raw_input]
-        seat = select_game_seat(meta, target_actor)
-        log.info("[牌谱处理] 命中当前内存热数据: %s | 视角: P%d", raw_input, seat)
-        return raw_input, mjai_events, meta, seat
+        return raw_input, mjai_events, meta, select_game_seat(meta, target_actor)
 
+    # 3. Majsoul Paipu URL / UUID
     try:
         game_uuid, url_acc_id = parse_paipu(raw_input)
         log.info("[牌谱识别] 成功提取雀魂牌谱 UUID: %s", game_uuid)
@@ -1059,15 +1057,15 @@ async def resolve_game_data(
         log.warning("[牌谱识别失败] 输入内容无效 (%s)", _safe_error_context(e))
         raise HTTPException(status_code=400, detail="无法识别的牌谱 ID，请检查输入。") from e
 
-    record_file = RECORDS_DIR / f"{game_uuid}.json"
-    if record_file.is_file():
-        try:
-            record_file.touch()
-        except Exception:
-            pass
-        record = json.loads(record_file.read_text(encoding="utf8"))
-        log.info("[牌谱读取] 命中服务器磁盘已存牌谱: data/records/%s.json (无需重新请求雀魂服务器)", game_uuid)
-    else:
+    if game_uuid in _MEMORY_LOGS:
+        mjai_events, meta = _MEMORY_LOGS[game_uuid]
+        seat = select_game_seat(meta, target_actor, url_acc_id)
+        log.info("[牌谱内存缓存命中] UUID: %s | 视角: P%d", game_uuid, seat)
+        return game_uuid, mjai_events, meta, seat
+
+    from .account_pool import load_cached_record
+    record = load_cached_record(RECORDS_DIR, game_uuid)
+    if record is None:
         log.info("[牌谱抓取] 正在连接雀魂服务器请求数据 (UUID: %s)...", game_uuid)
         record = await fetch_record_with_failover(game_uuid)
         log.info("[牌谱抓取] 雀魂官方牌谱抓取成功 | UUID: %s", game_uuid)
@@ -1128,6 +1126,67 @@ def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
 def _valid_cached_review(cache_key: str, weight_sha256: str) -> dict[str, Any] | None:
     cached = get_cached_review(cache_key)
     return cached if valid_review_source(cached, weight_sha256) else None
+
+
+def _review_index_path(game_id: str, seat: int, engine: str, temperature: float, weight_sig: str) -> Path:
+    identity = json.dumps([game_id, seat, engine, temperature, weight_sig], separators=(",", ":"))
+    return METADATA_DIR / ("review-" + hashlib.sha256(identity.encode("utf8")).hexdigest() + ".json")
+
+
+def _save_review_index(game_id: str, meta: dict, seat: int, engine: str, temperature: float,
+                       weight_sig: str, cache_key: str) -> None:
+    try:
+        parsed, _ = parse_paipu(game_id)
+        if parsed != game_id:
+            return
+        path = _review_index_path(game_id, seat, engine, temperature, weight_sig)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=path.parent,
+                                             prefix=".index-", suffix=".tmp", delete=False) as f:
+                temp_path = Path(f.name)
+                json.dump({"game_id": game_id, "seat": seat, "engine": engine,
+                           "temperature": temperature, "weight_sig": weight_sig,
+                           "cache_key": cache_key, "account_ids": meta.get("account_ids", [])}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+    except (OSError, ValueError, TypeError, MajsoulError):
+        log.warning("Failed to save review index for %s", game_id)
+
+
+def _lookup_indexed_review(paipu: str | None, target_actor: int | None, engine: str,
+                           temperature: float) -> dict[str, Any] | None:
+    if not paipu:
+        return None
+    try:
+        game_id, url_account = parse_paipu(paipu)
+        resolved_id, weight_sig = resolve_engine_cache_info(engine)
+        if not weight_sig:
+            return None
+        for seat in range(4):
+            path = _review_index_path(game_id, seat, resolved_id, temperature, weight_sig)
+            try:
+                index = json.loads(path.read_text(encoding="utf8"))
+                expected = (game_id, seat, resolved_id, temperature, weight_sig)
+                actual = tuple(index.get(k) for k in ("game_id", "seat", "engine", "temperature", "weight_sig"))
+                if actual != expected or select_game_seat(index, target_actor, url_account) != seat:
+                    continue
+                cache_key = index.get("cache_key")
+                if not isinstance(cache_key, str) or not re.fullmatch(r"review-[0-9a-f]{64}", cache_key):
+                    continue
+                cached = _valid_cached_review(cache_key, weight_sig.rsplit("_", 1)[-1])
+                if cached is not None and cached.get("game_id") == game_id and cached.get("target_actor") == seat:
+                    return cached
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    except (MajsoulError, ValueError, TypeError):
+        return None
+    return None
 
 
 async def _start_review_job(**kwargs: Any) -> tuple[dict[str, Any] | None, asyncio.Task | None]:
@@ -1199,6 +1258,10 @@ async def _review_job(
             raise RuntimeError("模型权重在分析期间发生变化，结果未保存，请重试。")
         res["game_id"] = game_id
         save_cached_review(cache_key, res)
+        if _valid_cached_review(cache_key, weight_sha256) is not None:
+            resolved_id, weight_sig = resolve_engine_cache_info(engine)
+            if weight_sig and weight_sig.rsplit("_", 1)[-1] == weight_sha256:
+                _save_review_index(game_id, meta, seat, resolved_id, temperature, weight_sig, cache_key)
         return res
 
     # asyncio cancellation does not stop executor threads. Even if this job
@@ -1238,6 +1301,8 @@ async def _run_review_with_cache(
     weight_sha256 = weight_sig.rsplit("_", 1)[-1]
     cached = await asyncio.to_thread(_valid_cached_review, cache_key, weight_sha256)
     if cached is not None:
+        await asyncio.to_thread(_save_review_index, game_id, meta, seat, resolved_id, temperature, weight_sig, cache_key)
+        log.info("[复盘缓存命中] 牌谱: %s | 视角: P%d", game_id, seat)
         return cached
 
     log.info("[AI推理排队] 准备执行牌谱检讨推理: %s (视角: P%d, 请求模型: %s)", game_id, seat, engine)
@@ -1302,6 +1367,9 @@ async def _run_nonstream_until_disconnect(request: Request, work) -> dict[str, A
 async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request):
     async def work():
         await _wait_for_model_download(req.engine)
+        cached = await asyncio.to_thread(_lookup_indexed_review, req.paipu, req.target_actor, req.engine, req.temperature)
+        if cached is not None:
+            return cached
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
         return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
     return await _run_nonstream_until_disconnect(request, work())
@@ -1357,6 +1425,13 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
             else:
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
 
+            if req.content is None:
+                cached = await asyncio.to_thread(_lookup_indexed_review, req.paipu, req.target_actor, req.engine, req.temperature)
+                if cached is not None:
+                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(cached)}, ensure_ascii=False)}\n\n"
+                    return
+
             try:
                 game_id, mjai_events, meta, seat = await resolve_game_data(
                     paipu=req.paipu, content=req.content, target_actor=req.target_actor
@@ -1374,6 +1449,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
             weight_sha256 = weight_sig.rsplit("_", 1)[-1]
             cached = await asyncio.to_thread(_valid_cached_review, cache_key, weight_sha256)
             if cached is not None:
+                await asyncio.to_thread(_save_review_index, game_id, meta, seat, resolved_id, req.temperature, weight_sig, cache_key)
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(cached)}, ensure_ascii=False)}\n\n"
                 return

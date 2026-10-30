@@ -1311,13 +1311,30 @@ function renderBoard(kyoku, snap, activeDecision) {
   const targetActor = isHora ? snap.event.target : null;
   const isRon = isHora && winActor !== targetActor && targetActor !== undefined && targetActor !== null;
 
+  // A ron can claim a discard or rob a kakan. Inspect the actual preceding
+  // action rather than assuming the target's most recent river tile was won.
+  const ronSource = isRon ? findRonSource(kyoku, snap, targetActor) : null;
+  const robbingKan = isRon && (ronSource?.robbingKan || (Array.isArray(snap.event.fans) && snap.event.fans.some((fan) =>
+    Number(fan?.id) === 3 || fan?.name === "抢杠")));
+  const river = isRon ? (snap.rivers?.[targetActor] || []) : [];
+  const lastRiverTile = river[river.length - 1];
+  const sourceMatchesTile = ronSource?.event?.pai == null || ronSource.event.pai === lastRiverTile?.pai;
+  const winMatchesTile = snap.event?.pai == null || snap.event.pai === lastRiverTile?.pai;
+  const identifiedDiscard = lastRiverTile?.step != null
+    ? Number.isInteger(lastRiverTile.step) && lastRiverTile.step === ronSource?.index
+    : ronSource?.event?.pai != null && ronSource.event.pai === lastRiverTile?.pai;
+  const isRonDiscard = isRon && !robbingKan && ronSource?.event?.type === "dahai" &&
+    lastRiverTile && !lastRiverTile.called && sourceMatchesTile && winMatchesTile && identifiedDiscard;
+
   let agariTile = null;
   if (isHora) {
-    if (isRon && targetActor !== null && targetActor !== undefined) {
-      const river = snap.rivers[targetActor] || [];
-      agariTile = snap.event.pai || (river.length > 0 ? river[river.length - 1].pai : null);
+    if (isRon) {
+      // Old records may omit the winning tile; use a proven preceding action,
+      // never an unrelated last discard. A missing kakan cannot be guessed.
+      const sourceTile = robbingKan && ronSource?.event?.type !== "kakan" ? null : ronSource?.event?.pai;
+      agariTile = snap.event.pai || sourceTile || null;
     } else if (winActor !== null) {
-      agariTile = snap.drawn[winActor];
+      agariTile = snap.drawn?.[winActor] || null;
     }
   }
 
@@ -1337,10 +1354,10 @@ function renderBoard(kyoku, snap, activeDecision) {
   if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`;
 
   // Rivers
-  renderPlayerRiver("Bottom", hero, snap, isRon, targetActor);
-  renderPlayerRiver("Right", p1, snap, isRon, targetActor);
-  renderPlayerRiver("Top", p2, snap, isRon, targetActor);
-  renderPlayerRiver("Left", p3, snap, isRon, targetActor);
+  renderPlayerRiver("Bottom", hero, snap, isRonDiscard, targetActor);
+  renderPlayerRiver("Right", p1, snap, isRonDiscard, targetActor);
+  renderPlayerRiver("Top", p2, snap, isRonDiscard, targetActor);
+  renderPlayerRiver("Left", p3, snap, isRonDiscard, targetActor);
 
   // Hands
   const nextSnap = kyoku.steps?.[state.stepIdx + 1] || null;
@@ -1356,10 +1373,36 @@ function renderBoard(kyoku, snap, activeDecision) {
   renderOpponentHand("Left", p3, snap, agariTile, winActor, isRon, nextSnap);
 }
 
+function findRonSource(kyoku, snap, targetActor) {
+  const steps = kyoku?.steps;
+  if (!Array.isArray(steps)) return null;
+  const currentIndex = steps.indexOf(snap);
+  if (currentIndex < 0) return null;
+  let robbingKan = false;
+  for (let index = currentIndex - 1; index >= 0; index--) {
+    const event = steps[index]?.event;
+    if (!event?.type) return null;
+    // Consecutive wins on the same target share one discard or added kan tile.
+    if (event.type === "hora" && event.target === targetActor && event.actor !== targetActor) {
+      robbingKan ||= Array.isArray(event.fans) && event.fans.some((fan) =>
+        Number(fan?.id) === 3 || fan?.name === "抢杠");
+      continue;
+    }
+    if (["dora", "reach_accepted", "none", "pass"].includes(event.type)) continue;
+    if ((event.type === "dahai" || event.type === "kakan") && event.actor === targetActor) {
+      return { event, index, robbingKan };
+    }
+    // A draw, call, different player's discard or incomplete history breaks
+    // the causal chain; a matching older tile is not sufficient evidence.
+    return null;
+  }
+  return null;
+}
+
 function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const container = $(`river${pos}`);
   if (!container) return;
-  const fullRiver = snap.rivers[seat] || [];
+  const fullRiver = snap.rivers?.[seat] || [];
   const river = fullRiver;
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
   const isRonTarget = isRon && seat === targetActor;
@@ -1628,8 +1671,7 @@ function renderCallsHtml(melds, seat, povSeat) {
   for (let meldIdx = 0; meldIdx < orderedMelds.length; meldIdx++) {
     const m = orderedMelds[meldIdx];
     const type = (m.type || "").toLowerCase();
-    const pai = m.pai;
-    const consumed = [...(m.consumed || m.tiles || [])];
+    const pai = m.pai ?? m.tiles?.[0];
 
     if (type === "ankan") {
       // Standard Riichi Mahjong Ankan: [back, tile, tile, back]
@@ -1651,19 +1693,35 @@ function renderCallsHtml(melds, seat, povSeat) {
       if (fromIdxRel > 2) fromIdxRel = 2;
     }
 
+    // Current records store only hand tiles in consumed; older caches may
+    // instead have tiles=[called,...consumed,added]. Do not duplicate the
+    // called or added tile when recovering from that older representation.
+    const handTileCount = type === "daiminkan" ? 3 : 2;
+    const storedTiles = Array.isArray(m.tiles) ? m.tiles : [];
+    let consumed = Array.isArray(m.consumed) ? m.consumed : [];
+    if (consumed.length !== handTileCount && storedTiles.length >= handTileCount + 1) {
+      const remaining = [...storedTiles];
+      const calledIndex = remaining.indexOf(pai);
+      if (calledIndex >= 0) remaining.splice(calledIndex, 1);
+      if (type === "kakan" && remaining.length > handTileCount) remaining.pop();
+      consumed = remaining.slice(0, handTileCount);
+    } else {
+      consumed = consumed.slice(0, handTileCount);
+    }
     const allTiles = [...consumed];
-    allTiles.splice(fromIdxRel, 0, pai);
+    // A four-tile open kan places the right-hand discard at the far end.
+    const calledIndex = type === "daiminkan" && fromIdxRel === 2 ? 3 : fromIdxRel;
+    allTiles.splice(calledIndex, 0, pai);
     if (type === "kakan") {
       // Keep the actual added tile (including red five) in the stacked slot.
-      const added = m.added || (m.tiles?.length === 4 ? m.tiles[3] : pai);
-      allTiles.splice(fromIdxRel + 1, 0, added);
+      const added = m.added ?? (storedTiles.length >= 4 ? storedTiles[3] : pai);
+      allTiles.splice(calledIndex + 1, 0, added);
     }
 
     for (let i = 0; i < allTiles.length; i++) {
       const tile = allTiles[i];
-      const isDaiminkanOrKakan = (type === "daiminkan" || type === "kakan");
-      const isRotated = (i === fromIdxRel || (i === fromIdxRel + 1 && isDaiminkanOrKakan));
-      const isFloated = (i === fromIdxRel + 1 && isDaiminkanOrKakan);
+      const isFloated = type === "kakan" && i === calledIndex + 1;
+      const isRotated = i === calledIndex || isFloated;
 
       const divClasses = ["tileDiv"];
       if (isRotated) divClasses.push("has-rotate");
@@ -1926,6 +1984,22 @@ function renderThisRoundModalContent(snap, currentKyoku) {
   const targetActor = state.targetActor ?? 0;
   const isHora = snap?.event?.type === "hora";
   const isRyuukyoku = snap?.event?.type === "ryuukyoku" || snap?.event?.type === "ryukyoku";
+  const finiteNumber = (value) => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value) && Number.isFinite(Number(value))) return Number(value);
+    return null;
+  };
+  const eventDelta = (seat) => finiteNumber(snap?.event?.deltas?.[seat]);
+  const stateCount = (value) => {
+    const count = finiteNumber(value);
+    return Number.isInteger(count) && count > 0 ? count : 0;
+  };
+  const honbaCount = stateCount(snap?.honba ?? currentKyoku?.honba);
+  const kyotakuCount = stateCount(snap?.kyotaku ?? currentKyoku?.kyotaku);
+  const roundState = [honbaCount ? `${honbaCount}本场` : "", kyotakuCount ? `立直供托 ${kyotakuCount}根` : ""].filter(Boolean);
+  const roundStateHtml = roundState.length ? `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
+    <td colspan="2" style="padding:5px 8px; color:rgba(255,255,255,0.65);">本局状态：${roundState.join(" · ")}</td>
+  </tr>` : "";
 
   let html = "";
   if (isHora) {
@@ -1934,8 +2008,13 @@ function renderThisRoundModalContent(snap, currentKyoku) {
     const isRon = winActor !== tgtActor && tgtActor !== undefined && tgtActor !== null;
     const isHeroWin = winActor === targetActor;
     const isHeroLoser = isRon && tgtActor === targetActor;
+    const horaEvents = (currentKyoku?.steps || []).filter((step) => step?.event?.type === "hora");
+    // Legacy caches can retain both win summaries but omit a later step.
+    const isMultiHora = horaEvents.length > 1 || (currentKyoku?.end_summaries?.length ?? 0) > 1;
+    const hasEventDeltas = [0, 1, 2, 3].some((seat) => eventDelta(seat) !== null);
 
     const relativeSeatName = (seat) => {
+      if (!Number.isInteger(seat) || seat < 0 || seat > 3) return "未知座位";
       const diff = (seat - targetActor + 4) % 4;
       return ["自家", "下家", "对家", "上家"][diff];
     };
@@ -1951,12 +2030,12 @@ function renderThisRoundModalContent(snap, currentKyoku) {
 
     // 2. Score, Han/Fu, and Title Tag
     const event = snap.event;
-    const han = event.han ?? event.count ?? null;
-    const fu = event.fu ?? null;
-    const titleId = event.title_id ?? 0;
+    const han = finiteNumber(event.han ?? event.count);
+    const fu = finiteNumber(event.fu);
+    const titleId = finiteNumber(event.title_id) ?? 0;
     const isYakuman = event.yiman === true;
     const validFans = validYakuFans(event);
-    let titleName = MAJSOUL_TITLES[titleId] || null;
+    let titleName = Object.prototype.hasOwnProperty.call(MAJSOUL_TITLES, titleId) ? MAJSOUL_TITLES[titleId] : null;
     if (isYakuman) {
       titleName = yakumanTitle(event, validFans);
     } else if (!titleName && han !== null) {
@@ -1967,9 +2046,11 @@ function renderThisRoundModalContent(snap, currentKyoku) {
       else if (han === 5 || (han === 4 && fu >= 40) || (han === 3 && fu >= 70)) titleName = "满贯";
     }
 
-    const scoreDelta = event.deltas?.[winActor] ?? currentKyoku?.score_deltas?.[winActor] ?? 0;
+    // Whole-round deltas also include riichi deposits and possibly other wins;
+    // only an explicitly recorded event delta is a settlement amount.
+    const scoreDelta = eventDelta(winActor);
     const fuHanText = isYakuman ? "" : [fu ? `${fu} 符` : "", han ? `${han} 番` : ""].filter(Boolean).join(" ");
-    const scoreText = scoreDelta > 0 ? `${scoreDelta} 点` : "";
+    const scoreText = !isMultiHora && scoreDelta > 0 ? `${scoreDelta} 点` : "";
 
     html += `<div style="font-size:14px; font-weight:600; color:#ffcc00; display:flex; align-items:center; justify-content:center; gap:8px;">
       ${titleName ? `<span class="kd-settle-tag" style="background:rgba(255,204,0,0.18); border:1px solid rgba(255,204,0,0.35); padding:1px 6px; border-radius:4px; font-size:12px; color:#ffcc00; font-weight:700;">${titleName}</span>` : ""}
@@ -1991,14 +2072,23 @@ function renderThisRoundModalContent(snap, currentKyoku) {
       html += `</div>`;
     }
 
+    // Some sources attach only the aggregate settlement to the first win.
+    // When multiple wins exist, do not present a winner's aggregate component
+    // as an individual award, even if another source supplies separate deltas.
+    if (isMultiHora) {
+      html += `<div style="font-size:12px; color:rgba(255,255,255,0.7);">${hasEventDeltas ? "多家荣和：事件点数变化（可能为多家结算合计）" : "多家荣和：本次事件未提供点数变化"}</div>`;
+    } else if (!hasEventDeltas) {
+      html += `<div style="font-size:12px; color:rgba(255,255,255,0.7);">本次事件未提供点数变化</div>`;
+    }
+
     // 4. 4-Seat Delta Table
     html += `<table class="kd-settle-delta-table" style="width:100%; border-collapse:collapse; margin-top:6px; font-size:13px;">
       <tbody>`;
     for (let diff = 0; diff < 4; diff++) {
       const seat = (targetActor + diff) % 4;
       const seatLabel = ["自家", "下家", "对家", "上家"][diff];
-      const delta = snap.event.deltas?.[seat] ?? currentKyoku?.score_deltas?.[seat] ?? 0;
-      let deltaStr = String(delta);
+      const delta = eventDelta(seat);
+      let deltaStr = delta === null ? "—" : String(delta);
       let deltaColor = "rgba(255,255,255,0.7)";
       if (delta > 0) {
         deltaStr = `+${delta}`;
@@ -2013,40 +2103,22 @@ function renderThisRoundModalContent(snap, currentKyoku) {
         <td style="padding:5px 8px; text-align:right; font-family:monospace; font-weight:700; color:${deltaColor};">${deltaStr}</td>
       </tr>`;
     }
-    const honbaCount = snap.honba ?? currentKyoku?.honba ?? 0;
-    if (honbaCount > 0) {
-      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
-        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">本场供 (${honbaCount}本场)</td>
-        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:#ffd60a; font-weight:700;">${honbaCount * 300}</td>
-      </tr>`;
-    }
-    const kyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
-    if (kyotaku > 0) {
-      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
-        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">立直场供 (${kyotaku}根)</td>
-        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:rgba(255,255,255,0.65);">${kyotaku * 1000}</td>
-      </tr>`;
-    }
-    html += `</tbody></table>`;
+    html += `${roundStateHtml}</tbody></table>`;
   } else if (isRyuukyoku) {
     const reason = snap?.event?.majsoul?.reason;
-    const drawTitle = {
+    const drawTitles = {
       exhaustive: "荒牌流局", nagashi_mangan: "流局满贯", kyushu_kyuhai: "九种九牌",
       suufon_renda: "四风连打", suukan_sanra: "四杠散了", suucha_riichi: "四家立直",
-    }[reason] || "流局";
+    };
+    const drawTitle = Object.prototype.hasOwnProperty.call(drawTitles, reason) ? drawTitles[reason] : "流局";
     html += `<div class="kd-settle-header" style="text-align:center; margin-bottom:12px; padding-top:4px;">
       <div style="font-size:16px; font-weight:700; color:#ff9f0a; margin-bottom:4px; letter-spacing:0.3px;">${drawTitle}</div>`;
 
-    const pureDeltas = [0, 1, 2, 3].map((seat) => {
-      let d = snap?.event?.deltas?.[seat];
-      if (d === undefined || d === null) {
-        d = currentKyoku?.score_deltas?.[seat] ?? 0;
-        if (snap?.riichi?.[seat]) d += 1000;
-      }
-      return d;
-    });
+    const pureDeltas = [0, 1, 2, 3].map(eventDelta);
+    const hasAllDeltas = pureDeltas.every((delta) => delta !== null);
     const tenpaiSeats = [0, 1, 2, 3].filter((s) => pureDeltas[s] > 0);
-    const summary = reason === "exhaustive" ? (tenpaiSeats.length > 0 ? "罚符结算" : "无罚符结算") : "点数变化";
+    const summary = !hasAllDeltas ? "点数变化未提供" : reason === "exhaustive"
+      ? (tenpaiSeats.length > 0 ? "罚符结算" : "无罚符结算") : "点数变化";
     html += `<div style="font-size:13px; color:rgba(255,255,255,0.7);">${summary}</div></div>`;
 
     html += `<table class="kd-settle-delta-table" style="width:100%; border-collapse:collapse; margin-top:6px; font-size:13px;">
@@ -2054,8 +2126,8 @@ function renderThisRoundModalContent(snap, currentKyoku) {
     for (let diff = 0; diff < 4; diff++) {
       const seat = (targetActor + diff) % 4;
       const seatLabel = ["自家", "下家", "对家", "上家"][diff];
-      const delta = pureDeltas[seat] ?? 0;
-      let deltaStr = String(delta);
+      const delta = pureDeltas[seat];
+      let deltaStr = delta === null ? "—" : String(delta);
       let deltaColor = "rgba(255,255,255,0.7)";
       if (delta > 0) {
         deltaStr = `+${delta}`;
@@ -2070,21 +2142,7 @@ function renderThisRoundModalContent(snap, currentKyoku) {
         <td style="padding:5px 8px; text-align:right; font-family:monospace; font-weight:700; color:${deltaColor};">${deltaStr}</td>
       </tr>`;
     }
-    const honbaCount = snap.honba ?? currentKyoku?.honba ?? 0;
-    if (honbaCount > 0) {
-      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
-        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">本场供 (${honbaCount}本场)</td>
-        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:#ffd60a; font-weight:700;">${honbaCount * 300}</td>
-      </tr>`;
-    }
-    const kyotaku = snap.kyotaku ?? currentKyoku?.kyotaku ?? 0;
-    if (kyotaku > 0) {
-      html += `<tr style="border-top:1px solid rgba(255,255,255,0.06);">
-        <td style="padding:5px 8px; color:rgba(255,255,255,0.65);">立直场供 (${kyotaku}根)</td>
-        <td style="padding:5px 8px; text-align:right; font-family:monospace; color:rgba(255,255,255,0.65);">${kyotaku * 1000}</td>
-      </tr>`;
-    }
-    html += `</tbody></table>`;
+    html += `${roundStateHtml}</tbody></table>`;
   }
 
   contentEl.innerHTML = html;
@@ -2312,26 +2370,27 @@ function closeAllModals() {
 }
 
 function getRoundDeltas(k) {
-  if (k.end_scores && k.init_scores && k.end_scores.length === 4 && k.init_scores.length === 4) {
-    return [
-      k.end_scores[0] - k.init_scores[0],
-      k.end_scores[1] - k.init_scores[1],
-      k.end_scores[2] - k.init_scores[2],
-      k.end_scores[3] - k.init_scores[3],
-    ];
-  }
-  if (k.score_deltas && Array.isArray(k.score_deltas) && k.score_deltas.length === 4) {
-    return k.score_deltas;
-  }
-  return [0, 0, 0, 0];
+  return [0, 1, 2, 3].map((seat) => {
+    const start = roundScoreNumber(k.init_scores?.[seat]);
+    const end = roundScoreNumber(k.end_scores?.[seat]);
+    return start !== null && end !== null ? end - start : roundScoreNumber(k.score_deltas?.[seat]);
+  });
+}
+
+function roundScoreNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value) && Number.isFinite(Number(value))) return Number(value);
+  return null;
 }
 
 function fmtInt(n) {
-  return Number(n || 0).toLocaleString();
+  const num = roundScoreNumber(n);
+  return num === null ? "—" : num.toLocaleString();
 }
 
 function fmtDeltaHtml(n) {
-  const num = Number(n || 0);
+  const num = roundScoreNumber(n);
+  if (num === null) return `<span class="delta-badge delta-zero">—</span>`;
   if (num > 0) return `<span class="delta-badge delta-plus">+${num.toLocaleString()}</span>`;
   if (num < 0) return `<span class="delta-badge delta-minus">${num.toLocaleString()}</span>`;
   return `<span class="delta-badge delta-zero">0</span>`;
@@ -2345,13 +2404,29 @@ function renderKyokuTable() {
   const tfoot = $("roundTableFoot");
   if (!tbody) return;
 
-  const names = [0, 1, 2, 3].map((s) => getPlayerDisplayName(s));
   const targetActor = state.targetActor ?? 0;
+  const currentKyoku = res.kyokus[state.kyokuIdx];
+  // Score columns keep the same actors across the game. Recover the original
+  // East seat even when a cache starts in the middle of the game.
+  let startOya = null;
+  for (const k of res.kyokus) {
+    const labelNumber = /^\s*[东南西北]\s*([1-4])/.exec(k.label || "")?.[1];
+    const handNumber = Number(k.kyoku_num ?? labelNumber);
+    if (Number.isInteger(k.oya) && k.oya >= 0 && k.oya < 4 &&
+        Number.isInteger(handNumber) && handNumber >= 1 && handNumber <= 4) {
+      startOya = (k.oya - handNumber + 5) % 4;
+      break;
+    }
+  }
+  const seatIdentity = (seat) => startOya === null ? `起始座位${seat + 1}` : `起始${WIND_CN[(seat - startOya + 4) % 4]}家`;
+  const currentWind = (seat) => currentKyoku ? handWind(seat, currentKyoku) : null;
 
   // Subtitle info & Quick Pov switcher
   const subEl = $("roundModalSub");
   if (subEl) {
-    subEl.innerHTML = `当前检讨视角：<strong style="color:var(--color-text-bright);">${WIND_CN[targetActor]}家 (自家)</strong> · 点击任意局可直接跳转该局检讨`;
+    const wind = currentWind(targetActor);
+    const currentSeat = wind ? `本局${wind}家 (自家)` : "本局座风未知 (自家)";
+    subEl.innerHTML = `当前检讨视角：<strong style="color:var(--color-text-bright);">${escapeHtml(currentSeat)}</strong> · ${escapeHtml(seatIdentity(targetActor))} · 得点列按起始座位固定，结算详情按本局座风 · 点击任意局可直接跳转该局检讨`;
   }
 
   const povTabs = $("roundModalPovTabs");
@@ -2360,9 +2435,10 @@ function renderKyokuTable() {
       <span style="font-size:12px; color:var(--color-text-secondary); margin-right:4px;">切换视角:</span>
       ${[0, 1, 2, 3].map((s) => {
         const active = s === targetActor ? "active" : "";
-        const label = s === targetActor ? `${WIND_CN[s]}家 (自家)` : `${WIND_CN[s]}家`;
+        const wind = currentWind(s);
+        const label = `${seatIdentity(s)}${wind ? ` · 本局${wind}家` : ""}${s === targetActor ? " (自家)" : ""}`;
         return `<button class="round-modal-pov-btn ${active}" data-seat="${s}">
-          ${label}
+          ${escapeHtml(label)}
         </button>`;
       }).join("")}
     `;
@@ -2386,7 +2462,7 @@ function renderKyokuTable() {
           const isTarget = s === targetActor;
           const thClass = isTarget ? "active-pov-th" : "";
           const povBadge = isTarget ? " <span style='font-size:10px; color:#ffcc00;'>(自家)</span>" : "";
-          return `<th class="${thClass}" style="text-align:right;">${WIND_CN[s]}家${povBadge}</th>`;
+          return `<th class="${thClass}" style="text-align:right;">${escapeHtml(seatIdentity(s))}${povBadge}</th>`;
         }).join("")}
         <th style="width:90px; text-align:right;">自家增减</th>
       </tr>
@@ -2398,7 +2474,7 @@ function renderKyokuTable() {
 
   tbody.innerHTML = res.kyokus
     .map((k, idx) => {
-      const oyaName = `${WIND_CN[k.oya]}家`;
+      const oyaName = Number.isInteger(k.oya) && k.oya >= 0 && k.oya < 4 ? seatIdentity(k.oya) : "未知座位";
       const isOya = k.oya === targetActor;
       const oyaDisplay = `<span style="${isOya ? 'color:#ffcc00; font-weight:700;' : ''}">${escapeHtml(oyaName)}</span>`;
 
@@ -2411,21 +2487,59 @@ function renderKyokuTable() {
       // Deltas calculation
       const deltas = getRoundDeltas(k);
       for (let s = 0; s < 4; s++) {
-        cumDeltas[s] += deltas[s];
+        cumDeltas[s] = cumDeltas[s] === null || deltas[s] === null ? null : cumDeltas[s] + deltas[s];
       }
 
-      // 结算文本
-      const summaries = k.end_summaries && k.end_summaries.length
-        ? correctedRoundSummaries(k)
-        : [k.result || "流局"];
+      // Summaries use this row's hand winds, not the fixed table columns.
+      // In incomplete caches, never leave an unrecognized identity prefix in
+      // the output; keep the anonymous action rather than leaking names.
+      const endings = (k.steps || []).map((step) => step?.event).filter((event) =>
+        event && ["hora", "ryukyoku", "ryuukyoku"].includes(event.type));
+      const hasSummaries = Array.isArray(k.end_summaries) && k.end_summaries.length > 0;
+      const rawSummaries = hasSummaries ? k.end_summaries : [k.result || "流局"];
+      const corrected = hasSummaries ? correctedRoundSummaries(k) : rawSummaries.map((text, i) => sanitizeSummaryText(text, endings[i], k));
+      const drawLabels = ["流局", "荒牌流局", "流局满贯", "九种九牌", "四风连打", "四杠散了", "四家立直"];
+      const summaries = corrected.map((value, i) => {
+        const text = String(value ?? "");
+        const event = endings[i];
+        if (event?.type === "hora") {
+          const label = (seat) => Number.isInteger(seat) && seat >= 0 && seat < 4
+            ? `${handWind(seat, k)}家${seat === targetActor ? " (自家)" : ""}` : "未知座位";
+          const isRon = event.target != null && event.target !== event.actor;
+          const prefix = isRon ? `${label(event.actor)} 荣和 ${label(event.target)}` : `${label(event.actor)} 自摸`;
+          return text === prefix || text.startsWith(`${prefix} `) ? text : prefix;
+        }
+        if (drawLabels.includes(text)) return text;
+        if (event?.type === "ryukyoku" || event?.type === "ryuukyoku") return "流局";
+        // Old summaries may survive without their events. Resolve only an exact
+        // unambiguous name prefix, leaving score and yaku text untouched.
+        const names = Array.isArray(res.names) ? res.names : [];
+        const candidates = [];
+        for (let actor = 0; actor < 4; actor++) {
+          if (typeof names[actor] !== "string" || !names[actor]) continue;
+          const actorLabel = `${handWind(actor, k)}家${actor === targetActor ? " (自家)" : ""}`;
+          const tsumoPrefix = `${names[actor]} 自摸 `;
+          if (text.startsWith(tsumoPrefix)) candidates.push(actorLabel + " 自摸 " + text.slice(tsumoPrefix.length));
+          for (let target = 0; target < 4; target++) {
+            if (actor === target || typeof names[target] !== "string" || !names[target]) continue;
+            const ronPrefix = `${names[actor]} 荣和 ${names[target]} `;
+            const targetLabel = `${handWind(target, k)}家${target === targetActor ? " (自家)" : ""}`;
+            if (text.startsWith(ronPrefix)) candidates.push(`${actorLabel} 荣和 ${targetLabel} ` + text.slice(ronPrefix.length));
+          }
+        }
+        if (candidates.length === 1) return candidates[0];
+        if (text.includes(" 荣和 ")) return "荣和（结算详情不可用）";
+        if (text.includes(" 自摸 ")) return "自摸（结算详情不可用）";
+        return "结算详情不可用";
+      });
       // Escape each whole summary before adding our own line separators.
       const resultText = summaries.map(escapeHtml).join("<br>");
 
-      const currentDelta = deltas[targetActor] ?? 0;
+      const currentDelta = deltas[targetActor];
 
       // 4 Players columns HTML
       const playersColsHtml = [0, 1, 2, 3].map((s) => {
-        const scoreVal = k.end_scores ? k.end_scores[s] : 25000;
+        const scoreVal = k.end_scores?.[s];
         const dVal = deltas[s];
         const isTarget = s === targetActor;
         const tdClass = isTarget ? "active-pov-td" : "";
@@ -2462,13 +2576,15 @@ function renderKyokuTable() {
   // 3. Table Footer (全庄各家结算总分)
   if (tfoot && res.kyokus.length > 0) {
     const lastKyoku = res.kyokus[res.kyokus.length - 1];
-    const finalScores = lastKyoku.end_scores || [25000, 25000, 25000, 25000];
-    const targetCumDelta = cumDeltas[targetActor] ?? 0;
+    const finalScores = [0, 1, 2, 3].map((seat) => roundScoreNumber(lastKyoku.end_scores?.[seat]));
+    const targetCumDelta = cumDeltas[targetActor];
 
-    // Calculate ranking 1位..4位
-    const sortedSeats = [0, 1, 2, 3].sort((a, b) => finalScores[b] - finalScores[a]);
+    // A rank is meaningful only when all four final scores are known.
     const ranks = {};
-    sortedSeats.forEach((s, r) => { ranks[s] = r + 1; });
+    if (finalScores.every((score) => score !== null)) {
+      const sortedSeats = [0, 1, 2, 3].sort((a, b) => finalScores[b] - finalScores[a]);
+      sortedSeats.forEach((s, r) => { ranks[s] = r + 1; });
+    }
 
     tfoot.innerHTML = `
       <tr>
@@ -2479,7 +2595,7 @@ function renderKyokuTable() {
         ${[0, 1, 2, 3].map((s) => {
           const isTarget = s === targetActor;
           const tdClass = isTarget ? "active-pov-td" : "";
-          const rankBadge = `<span style="font-size:10px; color:${ranks[s] === 1 ? '#ffcc00' : 'rgba(235,235,245,0.6)'}; margin-left:3px;">[${ranks[s]}位]</span>`;
+          const rankBadge = ranks[s] ? `<span style="font-size:10px; color:${ranks[s] === 1 ? '#ffcc00' : 'rgba(235,235,245,0.6)'}; margin-left:3px;">[${ranks[s]}位]</span>` : "";
           return `
             <td class="${tdClass}" style="text-align:right;">
               <span class="score-num">${fmtInt(finalScores[s])}</span>
@@ -2858,32 +2974,55 @@ function bindEvents() {
   // Global Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
-    // Dismiss settlement modal or dialog on keyboard shortcuts
+    if (e.key === "Escape") {
+      closeAllModals();
+      return;
+    }
+    // Never capture browser or operating-system modifier shortcuts.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    // Replay shortcuts must not operate hidden replay state on the landing page.
+    const replayScreen = $("tier2Screen");
+    if (!state.reviewData || !replayScreen || replayScreen.classList.contains("hidden")) return;
+
+    const activeEl = document.activeElement;
+    const isTextEntry = activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA" || activeEl.tagName === "SELECT" || activeEl.isContentEditable);
+    const scoreModal = $("roundModal");
+    // The score sheet focuses its close button when opened. S must still close
+    // that sheet, but never steal a letter from an editable or selection field.
+    if (!isTextEntry && (e.key === "s" || e.key === "S") && scoreModal && !scoreModal.classList.contains("hidden")) {
+      e.preventDefault();
+      closeModal("roundModal");
+      return;
+    }
+    const shortcutsModal = $("shortcutsModal");
+    const isHelpKey = e.key === "?" || (e.shiftKey && (e.key === "/" || e.code === "Slash"));
+    // The help sheet focuses its close button. Its own toggle must still work,
+    // without stealing a question mark from an editable or selection field.
+    if (!isTextEntry && isHelpKey && shortcutsModal && !shortcutsModal.classList.contains("hidden")) {
+      e.preventDefault();
+      closeModal("shortcutsModal");
+      return;
+    }
+    const isInteractive = activeEl && (isTextEntry || activeEl.tagName === "BUTTON" || activeEl.tagName === "A" ||
+      Boolean(activeEl.closest?.('button, a[href], select, input, textarea, [contenteditable=""], [contenteditable="true"], [role="button"], [role="slider"], [role="textbox"], [role="combobox"]')));
+    if (isInteractive) return;
+
+    // Preserve replay navigation from the page background when a settlement is open.
     const roundDialog = $("infoThisRoundModal");
     if (roundDialog && roundDialog.open) {
-      if (e.key === "Escape" || e.key === "Enter" || e.key === " " || e.key.startsWith("Arrow") || e.key === "[" || e.key === "]" || e.key === "," || e.key === ".") {
+      if (e.key === "Enter" || e.key === " " || e.key.startsWith("Arrow") || e.key === "[" || e.key === "]" || e.key === "," || e.key === ".") {
         closeModal("infoThisRoundModal");
-        if (e.key === "Escape" || e.key === "Enter") {
+        if (e.key === "Enter") {
           e.preventDefault();
           return;
         }
       }
     }
 
-    if (e.key === "Escape") {
-      closeAllModals();
-      return;
-    }
-
-    const activeEl = document.activeElement;
-    if (activeEl && (activeEl.tagName === "TEXTAREA" || (activeEl.tagName === "INPUT" && (activeEl.type === "text" || activeEl.type === "search" || activeEl.type === "password")))) {
-      return;
-    }
-
     // Toggle shortcuts help modal with '?'
-    if (e.key === "?" || (e.shiftKey && e.key === "/")) {
+    if (isHelpKey) {
       e.preventDefault();
-      const shortcutsModal = $("shortcutsModal");
       if (shortcutsModal?.classList.contains("hidden")) openModal("shortcutsModal");
       else closeModal("shortcutsModal");
       return;
@@ -2892,8 +3031,6 @@ function bindEvents() {
     // If modal is open, don't execute board navigation shortcuts
     const isModalOpen = Array.from(document.querySelectorAll(".modal")).some(m => !m.classList.contains("hidden") && (m.tagName !== "DIALOG" || m.open)) || !!document.querySelector("dialog[open]");
     if (isModalOpen) return;
-
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     if (e.key === " " || e.code === "Space") {
       e.preventDefault();
@@ -2931,16 +3068,8 @@ function bindEvents() {
       },
       h: toggleHandsVisibility,
       H: toggleHandsVisibility,
-      s: () => {
-        const modal = $("roundModal");
-        if (modal?.classList.contains("hidden")) openModal("roundModal");
-        else closeModal("roundModal");
-      },
-      S: () => {
-        const modal = $("roundModal");
-        if (modal?.classList.contains("hidden")) openModal("roundModal");
-        else closeModal("roundModal");
-      },
+      s: openRoundScoresModal,
+      S: openRoundScoresModal,
 
       " ": togglePlay,
     };
@@ -2951,10 +3080,13 @@ function bindEvents() {
     }
   });
 
-  // Global mouse wheel steps forward/backward across entire screen (green and black areas alike)
+  // Ordinary scrolling remains native. Alt+wheel explicitly steps the visible board.
   window.addEventListener("wheel", (e) => {
-    if (!state.reviewData) return;
+    const replayScreen = $("tier2Screen");
+    if (!state.reviewData || !replayScreen || replayScreen.classList.contains("hidden")) return;
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !e.deltaY) return;
     if (e.target.closest("#roundModal, #shortcutsModal, #engineModal, #infoThisRoundModal")) return;
+    if (!e.target.closest("#gridMain")) return;
 
     const roundDialog = $("infoThisRoundModal");
     if (roundDialog && roundDialog.open) {

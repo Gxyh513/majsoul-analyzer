@@ -13,6 +13,7 @@ data/config.local.json
 cloudflared.exe
 
 data/reviews/
+data/metadata/
 data/config.json
 .claude/
 vendor/

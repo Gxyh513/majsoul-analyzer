@@ -536,7 +536,8 @@ dialog.getBoundingClientRect=()=>({left:100,right:300,top:200,bottom:400});
 const custom=element('roundModal','DIV',['hidden']);
 const backdrop=element('roundModalBackdrop','DIV',['hidden']);
 const content={innerHTML:''};
-const nodes={infoThisRoundModal:dialog,roundModal:custom,roundModalBackdrop:backdrop,infoThisRoundContent:content};
+const tier2=element('tier2Screen','SECTION');
+const nodes={infoThisRoundModal:dialog,roundModal:custom,roundModalBackdrop:backdrop,infoThisRoundContent:content,tier2Screen:tier2};
 const $=id=>nodes[id], state={targetActor:0,reviewData:{}}, escapeHtml=s=>String(s);
 const listeners={}, window={addEventListener:(type,fn)=>listeners[type]=fn};
 const document={activeElement:null,addEventListener(){},
@@ -574,9 +575,11 @@ const wheelTarget={closest:selector=>selector.includes('#infoThisRoundModal') ? 
 const wheel={target:wheelTarget,deltaY:50,preventDefault(){prevented=true}};
 listeners.wheel(wheel); if(!prevented) scrolled+=wheel.deltaY;
 assert.strictEqual(scrolled,50); assert(dialog.open); assert.deepStrictEqual(steps,[]);
-// Background wheel behavior, including the opening guard, stays unchanged.
-const background={target:{closest:()=>null},deltaY:20,preventDefault(){prevented=true}};
+// Ordinary wheel remains native, while Alt+wheel over the board keeps the opening guard.
+const background={target:{closest:selector=>selector==='#gridMain'?{}:null},deltaY:20,altKey:false,preventDefault(){prevented=true}};
 prevented=false; listeners.wheel(background);
+assert(!prevented); assert(dialog.open); assert.deepStrictEqual(steps,[]);
+background.altKey=true; prevented=false; listeners.wheel(background);
 assert(prevented); assert(dialog.open); assert.deepStrictEqual(steps,[]);
 dialog.dataset.openedAt=String(Date.now()-1000);
 prevented=false; listeners.wheel(background);

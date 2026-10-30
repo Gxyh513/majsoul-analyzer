@@ -132,10 +132,11 @@ def test_memory_cache_resolves_configured_account_seat(monkeypatch):
     from server import app
     monkeypatch.setattr(app.ms_client, 'account_id', 20)
     monkeypatch.setattr(app, 'load_config', lambda: {})
-    monkeypatch.setattr(app, '_MEMORY_LOGS', {'existing': ([{'type': 'start_game'}], {'account_ids': [10, 20, 30, 40]})})
-    _, _, _, seat = asyncio.run(app.resolve_game_data(paipu='existing'))
+    game_uuid = '241026-11111111-2222-3333-4444-555555555555'
+    monkeypatch.setattr(app, '_MEMORY_LOGS', {game_uuid: ([{'type': 'start_game'}], {'account_ids': [10, 20, 30, 40]})})
+    _, _, _, seat = asyncio.run(app.resolve_game_data(paipu=game_uuid))
     assert seat == 1
-    _, _, _, seat = asyncio.run(app.resolve_game_data(paipu='existing', target_actor=2))
+    _, _, _, seat = asyncio.run(app.resolve_game_data(paipu=game_uuid, target_actor=2))
     assert seat == 2
 
 

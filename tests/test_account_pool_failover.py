@@ -34,6 +34,13 @@ from server.app import (
 from server.majsoul.client import MajsoulError
 
 
+@pytest.fixture(autouse=True)
+def isolate_pool_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr("server.account_pool._rate_limited_until", {})
+    monkeypatch.setattr("server.app.RECORDS_DIR", tmp_path)
+    monkeypatch.setattr("server.app._MEMORY_LOGS", {})
+
+
 # ---------------------------------------------------------------------------
 # Test Case 1: Primary 540, Backup Succeeds
 # ---------------------------------------------------------------------------
