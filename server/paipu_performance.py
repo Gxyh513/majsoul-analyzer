@@ -9,6 +9,7 @@ from typing import Any
 
 
 performance: ContextVar[dict[str, Any] | None] = ContextVar("paipu_performance", default=None)
+review_inference: ContextVar[bool] = ContextVar("paipu_review_inference", default=False)
 
 
 def _stats_lock(stats: dict[str, Any]):
@@ -31,6 +32,21 @@ def get_value(name: str) -> Any:
         with _stats_lock(stats):
             return stats.get(name)
     return None
+
+
+def increment(name: str) -> None:
+    stats = performance.get()
+    if stats is not None:
+        with _stats_lock(stats):
+            stats[name] = stats.get(name, 0) + 1
+
+
+def add_elapsed(name: str, started: float) -> None:
+    stats = performance.get()
+    if stats is not None:
+        elapsed = (time.perf_counter() - started) * 1000
+        with _stats_lock(stats):
+            stats[name] = stats.get(name, 0.0) + elapsed
 
 
 def snapshot(stats: dict[str, Any]) -> tuple[dict[str, Any], float]:

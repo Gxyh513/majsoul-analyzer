@@ -64,7 +64,7 @@ function matchesReview(result, seat) {
     (seat == null || result.target_actor === seat);
 }
 
-async function getReview(source, seat, onProgress = () => {}) {
+async function getReview(source, seat, onProgress = () => {}, timings = null) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const body = source.kind === "json"
     ? { content: source.input, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE }
@@ -86,7 +86,7 @@ async function getReview(source, seat, onProgress = () => {}) {
   }
   let pending = requests.get(seat);
   if (!pending) {
-    pending = { listeners: new Set(), progress: null, promise: null };
+    pending = { listeners: new Set(), progress: null, promise: null, timings: {} };
     requests.set(seat, pending);
     const notify = (percent, message) => {
       pending.progress = [percent, message];
@@ -99,7 +99,7 @@ async function getReview(source, seat, onProgress = () => {}) {
         throw new Error("后端地址已发生变化，请重新分析。");
       }
       const requestBody = seat == null ? body : { ...body, target_actor: seat };
-      const result = await fetchReviewStream(requestBody, notify, url);
+      const result = await fetchReviewStream(requestBody, notify, url, pending.timings);
       requireTrustedReview(result);
       if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
       const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map() };
@@ -119,10 +119,20 @@ async function getReview(source, seat, onProgress = () => {}) {
   pending.listeners.add(onProgress);
   if (pending.progress) onProgress(...pending.progress);
   try {
-    return await pending.promise;
+    const result = await pending.promise;
+    if (timings) timings.completeReceivedAt = pending.timings.completeReceivedAt;
+    return result;
   } finally {
     pending.listeners.delete(onProgress);
   }
+}
+
+function logReviewViewCompletion(timings, version) {
+  if (!Number.isFinite(timings.completeReceivedAt)) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (version !== analysisViewVersion) return;
+    console.info(`[Paipu UX Performance] complete事件接收至页面切换完成=${(performance.now() - timings.completeReceivedAt).toFixed(1)}ms 范围=页面更新后的第二个动画帧（含浏览器调度等待）`);
+  }));
 }
 
 function setPerspectiveLoading(title) {
@@ -171,10 +181,11 @@ async function startAnalysisFromInput(rawInput, seat = null) {
   const version = ++analysisViewVersion;
   updateEngineStatusDisplay();
   setLoading(true, "正在分析牌谱...", "正在使用 Mortal S42 ONNX 神经网络检讨每一手决策");
+  const timings = {};
   try {
     const result = await getReview(source, seat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
-    });
+    }, timings);
     if (version !== analysisViewVersion) return;
     currentReviewSource = source;
     applyPerspective(result, false);
@@ -185,6 +196,7 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     window.history.pushState(null, "", newUrl.toString());
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);
+    logReviewViewCompletion(timings, version);
   } catch (err) {
     if (version !== analysisViewVersion) return;
     showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, seat));
@@ -201,13 +213,15 @@ async function switchSeatPerspective(newSeat) {
   }
   const seatName = getPlayerDisplayName(newSeat);
   setPerspectiveLoading(`正在分析 ${seatName} 的 AI 检讨`);
+  const timings = {};
   try {
     const result = await getReview(source, newSeat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
-    });
+    }, timings);
     if (version !== analysisViewVersion || currentReviewSource !== source) return;
     applyPerspective(result, true);
     setLoading(false);
+    logReviewViewCompletion(timings, version);
   } catch (err) {
     if (version !== analysisViewVersion || currentReviewSource !== source) return;
     setLoading(false);

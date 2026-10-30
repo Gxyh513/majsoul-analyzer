@@ -24,7 +24,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
-from .paipu_performance import measure as _measure, performance as _performance, snapshot as _performance_snapshot
+from .paipu_performance import (
+    measure as _measure, performance as _performance,
+    set_value as _set_performance_value, snapshot as _performance_snapshot,
+)
 from .majsoul.session import SessionLock
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
 from .engine.reviewer import EngineManager, ModelInferenceError, review_game
@@ -46,10 +49,20 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         ("雀魂抓取", "ms", 1, "雀魂下载总耗时"), ("原始牌谱获取总耗时", "ms", 1),
         ("Protobuf解码", "ms", 1), ("Protobuf实际解码", "ms", 1), ("JSON解析", "ms", 1),
         ("MJAI转换", "ms", 1), ("原始数据大小", "KB", 1024), ("MJAI数据大小", "KB", 1024),
+        ("AI模型准备耗时", "ms", 1), ("初始模型准备阶段耗时", "ms", 1), ("模型下载等待耗时", "ms", 1),
+        ("模型加载及初始化耗时", "ms", 1), ("后台模型加载等待耗时", "ms", 1),
+        ("获取已加载模型耗时", "ms", 1), ("模型锁等待耗时", "ms", 1),
+        ("AI推理排队等待", "ms", 1), ("AI推理许可获得时间", "ms", 1),
+        ("AI检讨流程耗时", "ms", 1), ("ONNX实际推理耗时", "ms", 1),
+        ("完成结果序列化耗时", "ms", 1), ("100%事件生成时间", "ms", 1),
+        ("complete事件生成时间", "ms", 1), ("100%至complete事件生成间隔", "ms", 1),
         ("结果返回", "ms", 1),
         ("本地记录检查", "ms", 1), ("本地文件读取", "ms", 1),
         ("并发任务等待", "ms", 1), ("文件锁等待", "ms", 1),
-        ("雀魂连接准备", "ms", 1), ("WebSocket连接", "ms", 1), ("雀魂线路握手", "ms", 1),
+        ("雀魂连接准备", "ms", 1), ("雀魂首页请求耗时", "ms", 1), ("version.json请求耗时", "ms", 1),
+        ("雀魂routes线路请求耗时", "ms", 1), ("Protobuf协议本地缓存读取耗时", "ms", 1),
+        ("Protobuf JSON解析及协议初始化耗时", "ms", 1), ("协议资源索引请求耗时", "ms", 1),
+        ("协议文件下载耗时", "ms", 1), ("WebSocket连接", "ms", 1), ("雀魂线路握手", "ms", 1),
         ("雀魂登录", "ms", 1), ("fetchGameRecord请求", "ms", 1), ("雀魂牌谱请求", "ms", 1),
         ("外部数据下载", "ms", 1), ("原始牌谱保存", "ms", 1),
     )
@@ -65,7 +78,8 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         return f"{name}={value / divisor:.1f}{unit}{'(进行中)' if running else ''}"
 
     details = " ".join(format_field(*field) for field in fields)
-    indicators = ("牌谱获取方式", "牌谱获取结果", "是否命中本地记录", "是否等待文件锁", "雀魂连接结果",
+    indicators = ("AI模型加载次数", "AI模型复用次数", "ONNX推理调用次数",
+                  "牌谱获取方式", "牌谱获取结果", "是否命中本地记录", "是否等待文件锁", "雀魂连接结果",
                   "雀魂连接准备失败次数", "WebSocket连接失败次数", "雀魂线路握手失败次数", "雀魂登录失败次数",
                   "雀魂牌谱请求失败次数", "外部数据下载失败次数", "最近雀魂失败类型", "最后失败阶段")
     def format_indicator(name: str) -> str:
@@ -75,6 +89,20 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         return f"{name}={value if value is not None else 'N/A'}"
 
     details += " " + " ".join(format_indicator(name) for name in indicators)
+    details += " AI模型准备范围=下载状态等待及各次模型获取累计（可能与AI检讨流程重叠，不含线程调度）"
+    details += " 初始模型准备阶段范围=流式请求的下载等待及首次获取（含线程调度）"
+    details += " 模型下载等待范围=下载状态等待（含后台校验加载安装及状态轮询）"
+    details += " 后台模型加载等待范围=请求等待期间与后台模型初始化重叠的时间（包含在模型下载等待内）"
+    details += " 获取已加载模型范围=复用调用累计（含模型锁等待）"
+    details += " AI推理许可及事件生成时间基准=请求开始后（非浏览器接收时间）"
+    details += " AI检讨流程范围=review_game完整调用（含前后处理及模型获取）"
+    details += " ONNX实际推理范围=session.run调用（包含在AI检讨流程内，不含初始化预热）"
+    details += " 完成结果序列化范围=公开结果筛选及complete事件JSON序列化"
+    details += " 100%至complete事件生成间隔范围=服务端事件生成及发送等待"
+    if "雀魂连接准备" in stats or active.get("雀魂连接准备"):
+        details += " 雀魂连接准备范围=prepare完整调用；子项包含在总耗时内，不应重复相加"
+        details += " 雀魂HTTP请求范围=HTTP请求及响应读取（routes为各次尝试累计）"
+        details += " 协议解析范围=JSON解析与协议对象初始化，不含本地读取或网络下载"
     if "原始牌谱获取总耗时" in stats or active.get("原始牌谱获取总耗时"):
         details += " 原始牌谱获取总耗时范围=本地检查至获取返回或中断"
     if "雀魂抓取" in stats or active.get("雀魂抓取"):
@@ -199,15 +227,19 @@ MODEL_URL = f"https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/{MODEL_REVI
 model_download_state = {"status": "idle", "progress_pct": 0.0, "downloaded_bytes": 0,
                         "total_bytes": MODEL_SIZE, "error_msg": None}
 _model_download_lock = threading.Lock()
+_model_download_metrics: dict[str, Any] = {}
 
 
 def _download_model_sync(model_id: str) -> None:
+    global _model_download_metrics
     if model_id != MODEL_ID:
         return
     state = model_download_state
     with _model_download_lock:
         if state["status"] == "downloading":
             return
+        metrics: dict[str, Any] = {}
+        _model_download_metrics = metrics
         state.update(status="downloading", progress_pct=0.0, downloaded_bytes=0,
                      total_bytes=MODEL_SIZE, error_msg=None)
 
@@ -229,7 +261,11 @@ def _download_model_sync(model_id: str) -> None:
             if downloaded != MODEL_SIZE or sha256_file(tmp_path) != MODEL_SHA256:
                 raise ValueError("下载模型大小或 SHA-256 不匹配")
             # The manager validates with OnnxMortal and atomically installs the model.
-            engine_mgr.install_model(tmp_path)
+            token = _performance.set(metrics)
+            try:
+                engine_mgr.install_model(tmp_path)
+            finally:
+                _performance.reset(token)
         state.update(status="ready", progress_pct=100.0, downloaded_bytes=MODEL_SIZE,
                      total_bytes=MODEL_SIZE, error_msg=None)
         log.info("[AI模型就绪] Mortal S42 ONNX 已校验并启用")
@@ -707,7 +743,12 @@ def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
 async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
                             engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
     semaphore = review_semaphore
-    await semaphore.acquire()
+    with _measure("AI推理排队等待"):
+        await semaphore.acquire()
+        permit_acquired = time.perf_counter()
+    stats = _performance.get()
+    if stats is not None and "_started" in stats:
+        stats["AI推理许可获得时间"] = (permit_acquired - stats["_started"]) * 1000
     released = False
 
     def release_once() -> None:
@@ -729,7 +770,8 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
         try:
-            result = review_game(mjai_events, seat, engine_mgr, **kwargs)
+            with _measure("AI检讨流程耗时"):
+                result = review_game(mjai_events, seat, engine_mgr, **kwargs)
         except ModelInferenceError as exc:
             raise HTTPException(status_code=503, detail="AI 模型推理失败，请重新下载模型。") from exc
         if not valid_review_source(result, mortal.weight_sha256):
@@ -739,9 +781,16 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
         result["game_id"] = game_id
         return result
 
+    def measured_worker() -> dict[str, Any]:
+        token = _performance.set(stats)
+        try:
+            return worker()
+        finally:
+            _performance.reset(token)
+
     async def owned_job():
         try:
-            future = asyncio.get_running_loop().run_in_executor(None, worker)
+            future = asyncio.get_running_loop().run_in_executor(None, measured_worker)
             cancelled = False
             while True:
                 try:
@@ -794,12 +843,25 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
     st = model_download_state
     if not st:
         return
-    if st["status"] == "downloading":
-        t0 = time.time()
-        while st["status"] == "downloading":
-            if time.time() - t0 > timeout_s:
-                raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 正在首次下载中，请求等待超时，请稍后重试")
-            await asyncio.sleep(0.5)
+    wait_started = time.perf_counter()
+    download_metrics = _model_download_metrics if st["status"] == "downloading" else None
+    try:
+        with _measure("AI模型准备耗时"), _measure("模型下载等待耗时"):
+            if st["status"] == "downloading":
+                t0 = time.time()
+                while st["status"] == "downloading":
+                    if time.time() - t0 > timeout_s:
+                        raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 正在首次下载中，请求等待超时，请稍后重试")
+                    await asyncio.sleep(0.5)
+    finally:
+        wait_finished = time.perf_counter()
+        if download_metrics is not None and download_metrics is _model_download_metrics:
+            background, _ = _performance_snapshot(download_metrics)
+            init_started = background.get("_model_init_started")
+            if init_started is not None:
+                init_finished = background.get("_model_init_finished", wait_finished)
+                overlap = max(0.0, min(wait_finished, init_finished) - max(wait_started, init_started))
+                _set_performance_value("后台模型加载等待耗时", overlap * 1000)
     if st["status"] == "error":
         # A failed replacement must not make an already verified model unusable.
         try:
@@ -818,8 +880,9 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
             if (await request.receive())["type"] == "http.disconnect":
                 return
 
-    stats: dict[str, Any] = {"mode": "准备中"}
+    stats: dict[str, Any] = {"mode": "准备中", "AI模型加载次数": 0, "AI模型复用次数": 0}
     started = time.perf_counter()
+    stats["_started"] = started
     token = _performance.set(stats)
     work_task = asyncio.create_task(work)
     disconnect_task = asyncio.create_task(watch_disconnect())
@@ -894,7 +957,7 @@ class _ClosingStreamingResponse(StreamingResponse):
 
 
 def _complete_review_event(result: dict[str, Any]) -> str:
-    with _measure("结果返回"):
+    with _measure("结果返回"), _measure("完成结果序列化耗时"):
         return f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(result)}, ensure_ascii=False)}\n\n"
 
 
@@ -924,11 +987,12 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在检查 AI 模型...'}, ensure_ascii=False)}\n\n"
 
             async def prepare_model():
-                await _wait_for_model_download(req.engine)
-                try:
-                    await asyncio.to_thread(engine_mgr.get_mortal, req.engine)
-                except Exception as exc:
-                    raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
+                with _measure("初始模型准备阶段耗时"):
+                    await _wait_for_model_download(req.engine)
+                    try:
+                        await asyncio.to_thread(engine_mgr.get_mortal, req.engine)
+                    except Exception as exc:
+                        raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
 
             model_task = asyncio.create_task(prepare_model())
             async with aclosing(wait_for_phase(model_task, "progress", 5, "正在检查 AI 模型")) as updates:
@@ -1009,8 +1073,15 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                     progress = q.get_nowait()
                     yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
                 res = await asyncio.shield(task)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
-                yield _complete_review_event(res)
+                progress_event = f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
+                progress_generated = time.perf_counter()
+                stats["100%事件生成时间"] = (progress_generated - stats["_started"]) * 1000
+                yield progress_event
+                complete_event = _complete_review_event(res)
+                complete_generated = time.perf_counter()
+                stats["complete事件生成时间"] = (complete_generated - stats["_started"]) * 1000
+                stats["100%至complete事件生成间隔"] = (complete_generated - progress_generated) * 1000
+                yield complete_event
             finally:
                 # The worker may outlive this generator. Drop future progress
                 # notifications instead of accumulating an unconsumed queue.
@@ -1023,8 +1094,9 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             log.error("SSE analyze error (%s)", _safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
     async def measured_stream():
-        stats: dict[str, Any] = {"mode": "准备中"}
+        stats: dict[str, Any] = {"mode": "准备中", "AI模型加载次数": 0, "AI模型复用次数": 0}
         started = time.perf_counter()
+        stats["_started"] = started
         generator = sse_generator(stats)
         try:
             while True:
