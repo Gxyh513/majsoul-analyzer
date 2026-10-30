@@ -63,7 +63,9 @@ def test_riichi_discard_is_a_separate_navigable_step(monkeypatch):
               {"type":"dahai","actor":0,"pai":"1m","tsumogiri":True},
               {"type":"end_kyoku"},{"type":"end_game"}]
     result = reviewer.review_game(events, 0, FakeManager())
+    assert "decisions" not in result
     k = result["kyokus"][0]
+    assert all("actor" not in step and "step_idx" not in step for step in k["steps"])
     turn = next(d for d in k["decisions"] if d["decision_type"] == "self_turn")
     discard = next(d for d in k["decisions"] if d["decision_type"] == "riichi_discard")
     assert discard["step_idx"] == turn["step_idx"] + 1
@@ -108,7 +110,7 @@ def test_candidates_keep_model_scores_without_supplemental_statistics(monkeypatc
     monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
     events = [start_round(), {"type": "tsumo", "actor": 0, "pai": "1m"},
               {"type": "dahai", "actor": 0, "pai": "1m"}, {"type": "end_kyoku"}]
-    decision = reviewer.review_game(events, 0, FakeManager())["decisions"][0]
+    decision = reviewer.review_game(events, 0, FakeManager())["kyokus"][0]["decisions"][0]
     candidates = decision["candidates"]
     assert [c["label"] for c in candidates] == [37, 1, 0]
     assert [c["rank"] for c in candidates] == [1, 2, 3]
@@ -149,7 +151,7 @@ def test_global_summary_is_not_last_round():
     assert summary["match_rate"] == round(100 * summary["total_matches"] / summary["total_reviewed"], 1)
     assert result["match_rate"] == summary["match_rate"]
     # Per-decision rel_score is rounded to one decimal place before display.
-    estimated = (sum(d["rel_score"] / 100 for d in result["decisions"]) / summary["total_reviewed"]) ** 2 * 100
+    estimated = (sum(d["rel_score"] / 100 for k in result["kyokus"] for d in k["decisions"]) / summary["total_reviewed"]) ** 2 * 100
     assert summary["rating"] == pytest.approx(estimated, abs=0.1)
 
 

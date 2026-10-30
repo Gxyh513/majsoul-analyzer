@@ -33,7 +33,7 @@ def test_rating_depends_on_q_gap_not_candidate_range(monkeypatch, loss, expected
     events = [start_round(), {"type": "tsumo", "actor": 0, "pai": "2m"},
               {"type": "dahai", "actor": 0, "pai": "2m"}, {"type": "end_kyoku"}]
     result = reviewer.review_game(events, 0, Manager())
-    decision = result["decisions"][0]
+    decision = result["kyokus"][0]["decisions"][0]
     assert result["summary"]["rating"] == pytest.approx(expected, abs=0.1)
     assert decision["rel_score"] == pytest.approx(max(0, 1 - loss) * 100, abs=0.1)
     assert result["summary"]["total_matches"] == 0
@@ -64,7 +64,7 @@ def test_rating_is_independent_of_additional_low_q_candidate(monkeypatch):
               {"type": "dahai", "actor": 0, "pai": "2m"}, {"type": "end_kyoku"}]
     result = reviewer.review_game(events, 0, Manager())
     assert result["summary"]["rating"] == 81.0
-    assert result["decisions"][0]["rel_score"] == 90.0
+    assert result["kyokus"][0]["decisions"][0]["rel_score"] == 90.0
 
 
 def test_previous_rating_cache_version_is_rejected():

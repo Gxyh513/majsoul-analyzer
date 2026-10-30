@@ -167,77 +167,131 @@ function apiAuthHeaders() {
   return token ? { "X-Api-Token": token } : {};
 }
 
-async function fetchReviewStream(postBody, onProgress) {
-  const serverError = (message) => Object.assign(new Error(message), { serverReported: true });
-  const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
-  const resp = await fetch(url, {
-    method: "POST",
-    credentials: isPagesProxyMode() ? "omit" : "same-origin",
-    redirect: "error",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-      ...apiAuthHeaders(),
-    },
-    body: JSON.stringify(postBody),
-  });
+async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
+  const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      credentials: isPagesProxyMode() ? "omit" : "same-origin",
+      redirect: "error",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...apiAuthHeaders(),
+      },
+      body: JSON.stringify(postBody),
+    });
+  } catch (_) {
+    throw new Error("无法确认分析请求是否送达，服务器可能已开始处理。立即重试可能导致重复推理。");
+  }
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
-    throw new Error(`HTTP ${resp.status}: ${errText || resp.statusText}`);
+    const detail = `HTTP ${resp.status}: ${errText || resp.statusText}`;
+    if (resp.status >= 400 && resp.status < 500 && resp.status !== 408) {
+      throw new Error(`分析请求被拒绝（${detail}）。`);
+    }
+    throw new Error(`分析服务没有正常响应（${detail}）。服务器可能已开始处理，立即重试可能导致重复推理。`);
+  }
+  if (!resp.body) {
+    throw receiveError("无法读取分析响应，服务器可能仍在处理，立即重试可能导致重复推理。");
   }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder("utf-8");
-  let buffer = "";
+  let lineParts = [];
+  let dataLines = [];
+  let eventName = "";
+  let skipLeadingLf = false;
   let finalResult = null;
+  let ended = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop(); // keep last incomplete line in buffer
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const jsonStr = trimmed.slice(5).trim();
-      if (!jsonStr) continue;
-      try {
-        const ev = JSON.parse(jsonStr);
-        if (ev.type === "progress") {
-          onProgress(ev.percent || 0, ev.message || "");
-        } else if (ev.type === "queued") {
-          onProgress(5, ev.message || "服务器正忙，当前正在排队中...");
-        } else if (ev.type === "complete") {
-          finalResult = ev.result;
-        } else if (ev.type === "error") {
-          throw serverError(ev.detail || "分析发生错误");
-        }
-      } catch (err) {
-        if (err.serverReported || (err.message && !err.message.includes("Unexpected token") && !err.message.includes("JSON"))) {
-          throw err;
-        }
-      }
+  function dispatchEvent() {
+    const data = dataLines.join("\n");
+    dataLines = [];
+    const name = eventName;
+    eventName = "";
+    if (!data) return;
+    let ev;
+    try {
+      ev = JSON.parse(data);
+    } catch (_) {
+      throw receiveError("接收的分析数据格式不完整，服务器可能仍在处理，立即重试可能导致重复推理。");
+    }
+    const type = ev.type || name;
+    if (type === "progress" || type === "queued") {
+      const percent = Number(ev.percent);
+      onProgress(Number.isFinite(percent) ? percent : (type === "queued" ? 5 : 0),
+        ev.message || (type === "queued" ? "服务器正忙，当前正在排队中..." : "正在分析牌谱..."));
+    } else if (type === "complete") {
+      finalResult = ev.result;
+      onProgress(100, "分析完成，正在加载回放...");
+    } else if (type === "error") {
+      throw Object.assign(new Error(`服务器分析失败：${ev.detail || "分析发生错误"}`), { serverReported: true });
     }
   }
 
-  if (buffer.trim().startsWith("data:")) {
-    try {
-      const ev = JSON.parse(buffer.trim().slice(5).trim());
-      if (ev.type === "complete") {
-        finalResult = ev.result;
-      } else if (ev.type === "error") throw serverError(ev.detail || "分析发生错误");
-    } catch (e) {
-      if (e.serverReported || (e.message && !e.message.includes("Unexpected token") && !e.message.includes("JSON"))) {
-        throw e;
-      }
+  function processLine(line) {
+    if (!line) {
+      dispatchEvent();
+      return;
     }
+    if (line.startsWith(":")) return;
+    const separator = line.indexOf(":");
+    const field = separator < 0 ? line : line.slice(0, separator);
+    let value = separator < 0 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "data") dataLines.push(value);
+    else if (field === "event") eventName = value;
+  }
+
+  function processText(text) {
+    if (!text) return;
+    let start = 0;
+    if (skipLeadingLf) {
+      if (text[0] === "\n") start = 1;
+      skipLeadingLf = false;
+    }
+    for (let i = start; i < text.length; i++) {
+      if (text[i] !== "\n" && text[i] !== "\r") continue;
+      lineParts.push(text.slice(start, i));
+      processLine(lineParts.join(""));
+      lineParts = [];
+      if (text[i] === "\r") {
+        if (text[i + 1] === "\n") i++;
+        else if (i + 1 === text.length) skipLeadingLf = true;
+      }
+      start = i + 1;
+    }
+    if (start < text.length) lineParts.push(text.slice(start));
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        ended = true;
+        break;
+      }
+      processText(decoder.decode(value, { stream: true }));
+      if (finalResult) break;
+    }
+    if (!finalResult) {
+      processText(decoder.decode());
+      if (lineParts.length) processLine(lineParts.join(""));
+      dispatchEvent();
+    }
+  } catch (err) {
+    if (err?.serverReported || err?.receiveError) throw err;
+    throw receiveError("分析连接中断，服务器可能仍在处理，立即重试可能导致重复推理。");
+  } finally {
+    if (!ended) reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 
   if (!finalResult) {
-    throw new Error("服务端未正常返回分析结果");
+    throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
   }
   return finalResult;
 }

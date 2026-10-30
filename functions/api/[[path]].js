@@ -86,9 +86,10 @@ function safeResponseHeaders(upstream, isStream) {
   const contentType = upstream.headers.get("content-type");
   if (contentType) headers.set("Content-Type", contentType);
 
-  if (isStream) {
+  if (isStream && upstream.ok && /^text\/event-stream\b/i.test(contentType || "")) {
     headers.set("Content-Type", "text/event-stream; charset=utf-8");
     headers.set("Cache-Control", "no-cache, no-transform");
+    headers.set("Content-Encoding", "identity");
     headers.set("X-Accel-Buffering", "no");
   } else {
     headers.set("Cache-Control", "no-store");
@@ -155,6 +156,7 @@ export async function onRequest({ request, env }) {
       method: request.method,
       headers,
       body: request.method === "POST" ? body : undefined,
+      signal: request.signal,
       redirect: "manual",
       cache: "no-store",
     });
