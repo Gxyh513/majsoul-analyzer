@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing, asynccontextmanager, contextmanager
-from contextvars import ContextVar
+from contextlib import aclosing, asynccontextmanager
 import hmac
 import ipaddress
 import re
@@ -25,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
+from .paipu_performance import measure as _measure, performance as _performance
 from .majsoul.session import SessionLock
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
 from .engine.reviewer import EngineManager, ModelInferenceError, review_game
@@ -38,27 +38,33 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("majsoul-analyzer")
-_performance: ContextVar[dict[str, Any] | None] = ContextVar("paipu_performance", default=None)
-
-
-@contextmanager
-def _measure(stage: str):
-    stats = _performance.get()
-    if stats is None:
-        yield
-        return
-    started = time.perf_counter()
-    try:
-        yield
-    finally:
-        stats[stage] = stats.get(stage, 0.0) + (time.perf_counter() - started) * 1000
 
 
 def _log_performance(stats: dict[str, Any], started: float) -> None:
-    stages = ("UUID解析", "雀魂抓取", "原始牌谱读取", "Protobuf解码", "JSON解析", "MJAI转换", "结果返回")
-    details = " ".join(f"{stage}={stats[stage]:.1f}ms" for stage in stages if stage in stats)
+    fields = (
+        ("UUID解析", "ms", 1), ("雀魂抓取", "ms", 1), ("原始牌谱读取", "ms", 1),
+        ("Protobuf解码", "ms", 1), ("Protobuf实际解码", "ms", 1), ("JSON解析", "ms", 1),
+        ("MJAI转换", "ms", 1), ("原始数据大小", "KB", 1024), ("MJAI数据大小", "KB", 1024),
+        ("结果返回", "ms", 1),
+    )
+    details = " ".join(
+        f"{stage}={stats[stage] / divisor:.1f}{unit}" if stage in stats else f"{stage}=N/A"
+        for stage, unit, divisor in fields
+    )
     log.info("[Paipu Performance] %s %s 总耗时=%.1fms", stats.get("mode", "未完成"), details,
              (time.perf_counter() - started) * 1000)
+
+
+async def _record_mjai_size(events: list[dict]) -> None:
+    stats = _performance.get()
+    if stats is not None:
+        try:
+            stats["MJAI数据大小"] = await asyncio.to_thread(
+                lambda: len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
@@ -540,9 +546,12 @@ async def resolve_game_data(
     if content is None and (not raw_input or raw_input == "demo" or raw_input.startswith("demo-")):
         if not DEMO_PATH.is_file():
             raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
-        events = json.loads(DEMO_PATH.read_text(encoding="utf8"))
+        text = DEMO_PATH.read_text(encoding="utf8")
+        with _measure("JSON解析"):
+            events = json.loads(text)
         meta = {"uuid": "demo-241024-majsoul-4p", "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
                 "room": "玉之间·四人南 (内置演示)", "start_time": 1729760000}
+        await _record_mjai_size(events)
         return "demo", events, meta, select_game_seat(meta, target_actor)
 
     if content is None and raw_input.startswith(("{", "[")):
@@ -551,10 +560,12 @@ async def resolve_game_data(
         if isinstance(content, str):
             text = content.strip()
             try:
-                content = json.loads(text)
+                with _measure("JSON解析"):
+                    content = json.loads(text)
             except json.JSONDecodeError:
                 try:
-                    content = [json.loads(line) for line in text.splitlines() if line.strip()]
+                    with _measure("JSON解析"):
+                        content = [json.loads(line) for line in text.splitlines() if line.strip()]
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail="无法解析 JSON / JSONL 格式。") from exc
         try:
@@ -562,8 +573,9 @@ async def resolve_game_data(
                 source_uuid = content.get("head", {}).get("uuid")
                 if source_uuid and (not isinstance(source_uuid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", source_uuid)):
                     raise HTTPException(status_code=400, detail="牌谱 UUID 格式无效")
-                events = to_mjai(content)
-                meta = game_meta(content)
+                with _measure("MJAI转换"):
+                    events = to_mjai(content)
+                    meta = game_meta(content)
                 game_id = "upload-" + uuid.uuid4().hex
             elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
                 events = content
@@ -574,6 +586,7 @@ async def resolve_game_data(
                 raise HTTPException(status_code=400, detail="不支持的 JSON 结构：请上传雀魂原始牌谱 JSON 或 mjai 事件数组/JSONL。")
         except (ConvertError, ValueError, TypeError, KeyError, IndexError) as exc:
             raise HTTPException(status_code=400, detail="牌谱数据无法解析，请检查文件。") from exc
+        await _record_mjai_size(events)
         return game_id, events, meta, select_game_seat(meta, target_actor)
 
     try:
@@ -585,6 +598,9 @@ async def resolve_game_data(
         stored = await get_or_download_record(game_uuid)
     try:
         if isinstance(stored, RawRecord):
+            stats = _performance.get()
+            if stats is not None:
+                stats["原始数据大小"] = len(stored.response) + len(stored.detail)
             with _measure("Protobuf解码"):
                 record = await asyncio.to_thread(ms_client.decode_record, stored, game_uuid)
         else:
@@ -595,6 +611,7 @@ async def resolve_game_data(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (ConvertError, ValueError, TypeError, KeyError, IndexError) as exc:
         raise HTTPException(status_code=400, detail="原始牌谱无法转换，请检查牌谱或协议版本。") from exc
+    await _record_mjai_size(events)
     url_seat = parse_paipu_seat(raw_input)
     seat = target_actor if target_actor is not None else url_seat
     return game_uuid, events, meta, select_game_seat(meta, seat, url_acc_id if url_seat is None else None)

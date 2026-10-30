@@ -13,6 +13,7 @@ Protocol notes (web client):
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import hashlib
 import hmac
 import json
@@ -28,6 +29,7 @@ from pathlib import Path
 import httpx
 import websockets
 
+from ..paipu_performance import measure
 from .proto import LiqiProto
 
 log = logging.getLogger(__name__)
@@ -338,8 +340,9 @@ class MajsoulClient:
             raw = await asyncio.wait_for(fut, timeout)
         finally:
             self._pending.pop(idx, None)
-        _, data = self.proto.unwrap(raw)
-        res = self.proto.decode(res_t, data)
+        with measure("Protobuf实际解码") if return_payload else nullcontext():
+            _, data = self.proto.unwrap(raw)
+            res = self.proto.decode(res_t, data)
         if res.HasField("error") and res.error.code:
             code = int(res.error.code)
             raise MajsoulError(f"雀魂接口 {method} 返回错误码 {code}" + _err_hint(code), code=code)
@@ -456,29 +459,39 @@ class MajsoulClient:
             paths = (self.cache_dir / filename, Path(__file__).resolve().parents[2] / "data" / "cache" / filename)
             try:
                 path = next(path for path in paths if path.is_file())
-                proto = LiqiProto(json.loads(path.read_text(encoding="utf8")))
+                schema = path.read_text(encoding="utf8")
+                with measure("JSON解析"):
+                    schema = json.loads(schema)
+                proto = LiqiProto(schema)
             except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
                 raise MajsoulError("原始牌谱对应的雀魂协议文件不可用，请恢复协议文件。") from exc
             self._record_proto = (record.protocol_version, proto)
         try:
-            res = proto.decode("ResGameRecord", record.response)
+            with measure("Protobuf实际解码"):
+                res = proto.decode("ResGameRecord", record.response)
             data = res.data or record.detail
             if res.head.uuid != game_uuid or not data or (res.HasField("error") and res.error.code):
                 raise ValueError("invalid game response")
-            name, payload = proto.unwrap(data)
+            with measure("Protobuf实际解码"):
+                name, payload = proto.unwrap(data)
             if name not in (".lq.GameDetailRecords", "lq.GameDetailRecords", "GameDetailRecords"):
                 raise ValueError("invalid game detail")
-            detail = proto.decode(name, payload)
+            with measure("Protobuf实际解码"):
+                detail = proto.decode(name, payload)
             actions = []
             if getattr(detail, "version", 0) < 210715 and len(detail.records) > 0:
                 for rec in detail.records:
-                    n, d = proto.unwrap(rec)
-                    actions.append(_to_dict(n, proto.decode(n, d)))
+                    with measure("Protobuf实际解码"):
+                        n, d = proto.unwrap(rec)
+                        message = proto.decode(n, d)
+                    actions.append(_to_dict(n, message))
             else:
                 for act in detail.actions:
                     if act.result:
-                        n, d = proto.unwrap(act.result)
-                        actions.append(_to_dict(n, proto.decode(n, d)))
+                        with measure("Protobuf实际解码"):
+                            n, d = proto.unwrap(act.result)
+                            message = proto.decode(n, d)
+                        actions.append(_to_dict(n, message))
             head = MessageToDict(res.head, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
             return {"head": head, "actions": actions}
         except Exception as exc:

@@ -15,6 +15,8 @@ import weakref
 import zlib
 from typing import Awaitable, Callable
 
+from .paipu_performance import measure
+
 
 _MAGIC = b"MSRAW\x01"
 _HEADER = struct.Struct(">HQQI")
@@ -88,7 +90,8 @@ def read_record(records_dir: Path, game_uuid: str, legacy_dirs: tuple[Path, ...]
             if suffix == ".pb":
                 return _decode(data)
             try:
-                record = json.loads(data)
+                with measure("JSON解析"):
+                    record = json.loads(data)
                 if (not isinstance(record, dict) or not isinstance(record.get("head"), dict)
                         or record["head"].get("uuid") != game_uuid or not isinstance(record.get("actions"), list)):
                     raise ValueError("invalid legacy record")
