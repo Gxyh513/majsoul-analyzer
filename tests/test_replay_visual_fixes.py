@@ -1,12 +1,13 @@
 """Offline regressions for replay seats, winning tiles, calls and settlements."""
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
+from frontend_assets import javascript_source
 
-SOURCE = Path("web/app.js").read_text(encoding="utf8")
+
+SOURCE = javascript_source()
 
 
 def section(start, end):

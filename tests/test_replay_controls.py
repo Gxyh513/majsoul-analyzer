@@ -1,15 +1,16 @@
 """Keyboard and wheel regressions for the visible replay screen."""
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
+
+from frontend_assets import javascript_source
 
 
 def test_replay_keyboard_and_wheel_preserve_native_controls():
     if not shutil.which("node"):
         pytest.skip("Node.js not installed")
-    source = Path("web/app.js").read_text(encoding="utf8")
+    source = javascript_source()
     modal_helpers = source[source.index("function openModal("):source.index("function getRoundDeltas(")]
     score_opener = source[source.index("function openRoundScoresModal("):source.index("// ============================================================================\n// Local Paipu Cache")]
     bindings = source[source.index("function bindEvents()"):source.index("function updateResponsiveZoom()")]
@@ -75,29 +76,41 @@ function wheel(target,extra={}) {
 const boardTarget={closest:s=>s==='#gridMain'?{}:null};
 const pageTarget={closest:()=>null};
 const dialogTarget={closest:s=>s.includes('#infoThisRoundModal')?dialog:null};
+const formTarget={closest:s=>s==='#gridMain'?{}:s.includes('input')?{}:null};
 
 // A loaded review must not hijack keyboard or mouse while the home page is visible.
-assert(!wheel(boardTarget,{altKey:true}).defaultPrevented);
+assert(!wheel(boardTarget).defaultPrevented);
 assert(!key('ArrowRight').defaultPrevented);
 assert(!key('s').defaultPrevented);
 assert.deepStrictEqual(counts.steps,[]);assert.deepStrictEqual(counts.fast,[]);
 assert(score.classList.contains('hidden'));
 
-// In review mode, ordinary scrolling stays native; explicit Alt+wheel steps only over the board.
+// Ordinary vertical wheel events step only over the board; browser gestures stay native.
 tier.classList.remove('hidden');
-assert(!wheel(boardTarget).defaultPrevented);
-assert(!wheel(pageTarget,{altKey:true}).defaultPrevented);
-assert(!wheel(boardTarget,{altKey:true,ctrlKey:true}).defaultPrevented);
-assert(wheel(boardTarget,{altKey:true}).defaultPrevented);
-assert(wheel(boardTarget,{altKey:true,deltaY:-10}).defaultPrevented);
+assert(!wheel(pageTarget).defaultPrevented);
+assert(!wheel(formTarget).defaultPrevented);
+for (const modifier of ['altKey','ctrlKey','metaKey','shiftKey']) {
+  assert(!wheel(boardTarget,{[modifier]:true}).defaultPrevented);
+}
+assert(!wheel(boardTarget,{deltaY:0}).defaultPrevented);
+assert(wheel(boardTarget).defaultPrevented);
+assert(wheel(boardTarget,{deltaY:-10}).defaultPrevented);
 assert.deepStrictEqual(counts.steps,[1,-1]);
+const alreadyHandled=wheel(boardTarget,{defaultPrevented:true});
+assert(alreadyHandled.defaultPrevented);assert.deepStrictEqual(counts.steps,[1,-1]);
+
+// Custom modals retain their own scrolling, even over a board event target.
+openModal('roundModal');
+assert(!wheel(boardTarget).defaultPrevented);
+assert.deepStrictEqual(counts.steps,[1,-1]);
+closeModal('roundModal');
 
 // The native dialog retains its inside scroll and opening guard.
 dialog.showModal();dialog.dataset.openedAt=String(Date.now());
-assert(!wheel(dialogTarget,{altKey:true}).defaultPrevented);assert(dialog.open);
-assert(wheel(boardTarget,{altKey:true}).defaultPrevented);assert(dialog.open);
+assert(!wheel(dialogTarget).defaultPrevented);assert(dialog.open);
+assert(wheel(boardTarget).defaultPrevented);assert(dialog.open);
 dialog.dataset.openedAt=String(Date.now()-1000);
-assert(wheel(boardTarget,{altKey:true}).defaultPrevented);assert(!dialog.open);
+assert(wheel(boardTarget).defaultPrevented);assert(!dialog.open);
 assert.deepStrictEqual(counts.steps,[1,-1,1]);
 
 // Focused controls keep their native keys; focus on the replay background retains shortcuts.

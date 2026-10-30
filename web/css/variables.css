@@ -1,0 +1,125 @@
+:root {
+  --zoom: 1.0;
+  --media-break: 900px;
+  --zoom-tiles: calc(((34 * var(--zoom)) - 4) / (34 - 4));
+  --tile-img-width: calc(var(--zoom-tiles) * 30px);
+  --tile-img-height: calc(var(--tile-img-width) * 4 / 3);
+  --tile-width: calc(var(--tile-img-width) + 4px);
+  --tile-height: calc(var(--tile-img-height) + 4px);
+}
+
+@media (max-width: 680px) {
+  :root {
+    /* --zoom is a unitless scale set from the available viewport width in JS. */
+    --zoom-tiles: var(--zoom);
+    --tile-img-width: calc(var(--zoom) * 30px);
+    --tile-img-height: calc(var(--tile-img-width) * 4 / 3);
+    --tile-width: calc(var(--zoom) * 34px);
+    --tile-height: calc(var(--zoom) * 44px);
+  }
+}
+
+:root {
+
+  /* Apple iOS / macOS HIG Dark Mode Palette */
+  --color-main: #000000;
+  --color-accent: #161618;
+  --color-accent2: #1c1c1e;
+  --color-accent3: #2c2c2e;
+  --color-hover: rgba(255, 255, 255, 0.08);
+  --color-text: rgba(235, 235, 245, 0.65);
+  --color-text-bright: #ffffff;
+  --color-text-tertiary: rgba(235, 235, 245, 0.38);
+
+  /* Apple System Accent Colors */
+  --apple-blue: #0a84ff;
+  --apple-blue-hover: #0071e3;
+  --apple-green: #30d158;
+  --apple-green-hover: #34c759;
+  --apple-red: #ff453a;
+  --apple-orange: #ff9f0a;
+
+  /* AI Recommendation / Engine colors mapped to Apple HIG */
+  --color-bar-mortal: #30d158;
+  --color-bar-mortal-bright: #34c759;
+  --color-mismatch: #ff453a;
+
+  /* Discard tsumogiri shading & tiles */
+  --color-tsumogiri: #d1d1d6;
+  --brightness-tsumogiri: 82%;
+  --color-tile-bg: #f2f2f7;
+  --opacity-called: 0.32;
+
+  /* Apple Material, Borders & Shadows */
+  --apple-border: 1px solid rgba(255, 255, 255, 0.12);
+  --apple-border-subtle: 1px solid rgba(255, 255, 255, 0.08);
+  --apple-border-strong: 1px solid rgba(255, 255, 255, 0.2);
+  --apple-card-bg: rgba(28, 28, 30, 0.72);
+  --apple-card-elevated: rgba(44, 44, 46, 0.75);
+  --apple-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --apple-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.6);
+  --apple-blur: blur(20px);
+  --color-bg-gradient: radial-gradient(ellipse at 50% 15%, #1c1c24 0%, #08080a 75%);
+  --color-table-bg: linear-gradient(135deg, #18181b 0%, #202025 100%);
+  --color-table-border: rgba(255, 255, 255, 0.14);
+  --color-table-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --color-text-secondary: rgba(235, 235, 245, 0.65);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+html, body {
+  overflow-y: scroll;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--color-text);
+  line-height: 1.5;
+  background-color: var(--color-main);
+  background-image: var(--color-bg-gradient);
+  background-attachment: fixed;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+a {
+  color: var(--apple-blue);
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+a:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+button, select, option, input {
+  font: inherit;
+  outline: none;
+}
+
+button {
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.hidden {
+  display: none !important;
+}

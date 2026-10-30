@@ -1,10 +1,11 @@
 """Browser-independent checks for replay rendering and navigation."""
 import shutil
 import subprocess
-from pathlib import Path
 import pytest
 
-SOURCE = Path('web/app.js').read_text(encoding='utf8')
+from frontend_assets import javascript_source
+
+SOURCE = javascript_source()
 
 def section(start, end):
     return SOURCE[SOURCE.index(start):SOURCE.index(end)]

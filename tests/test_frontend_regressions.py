@@ -2,9 +2,10 @@
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
+
+from frontend_assets import javascript_source, stylesheet_source
 
 
 def run_js(script):
@@ -14,7 +15,7 @@ def run_js(script):
 
 
 def source_between(start, end):
-    text = Path("web/app.js").read_text(encoding="utf8")
+    text = javascript_source()
     return text[text.index(start):text.index(end)]
 
 
@@ -230,7 +231,7 @@ kyoku.end_summaries=['A 自摸 累计役满 40符13番 +32000'];
 assert.strictEqual(correctedRoundSummaries(kyoku)[0],kyoku.end_summaries[0]);
 '''
     run_js(script)
-    assert 'summaries.map(escapeHtml).join("<br>")' in Path('web/app.js').read_text(encoding='utf8')
+    assert 'summaries.map(escapeHtml).join("<br>")' in javascript_source()
 
 
 def test_round_summary_anonymization_does_not_replace_yaku_names_or_html():
@@ -374,14 +375,14 @@ for(const [width,scrollbar] of [[320,0],[956,0],[440,0],[320,17],[956,17],[440,1
 }
 '''
     run_js(script)
-    css = Path('web/styles.css').read_text(encoding='utf8')
+    css = stylesheet_source()
     assert 'width: calc(var(--zoom) * 655px) !important' in css
     assert 'margin-left: calc(var(--zoom) * 20px) !important' in css
     assert '--zoom: calc(' not in css
 
 
 def test_board_center_rivers_and_tiles_scale_together():
-    css = Path('web/styles.css').read_text(encoding='utf8')
+    css = stylesheet_source()
 
     def declarations(selector):
         match = re.search(r'(?m)^' + re.escape(selector) + r'\s*\{([^}]*)\}', css)
@@ -593,11 +594,9 @@ const wheelTarget={closest:selector=>selector.includes('#infoThisRoundModal') ? 
 const wheel={target:wheelTarget,deltaY:50,preventDefault(){prevented=true}};
 listeners.wheel(wheel); if(!prevented) scrolled+=wheel.deltaY;
 assert.strictEqual(scrolled,50); assert(dialog.open); assert.deepStrictEqual(steps,[]);
-// Ordinary wheel remains native, while Alt+wheel over the board keeps the opening guard.
-const background={target:{closest:selector=>selector==='#gridMain'?{}:null},deltaY:20,altKey:false,preventDefault(){prevented=true}};
+// Ordinary wheel over the board keeps the settlement opening guard.
+const background={target:{closest:selector=>selector==='#gridMain'?{}:null},deltaY:20,preventDefault(){prevented=true}};
 prevented=false; listeners.wheel(background);
-assert(!prevented); assert(dialog.open); assert.deepStrictEqual(steps,[]);
-background.altKey=true; prevented=false; listeners.wheel(background);
 assert(prevented); assert(dialog.open); assert.deepStrictEqual(steps,[]);
 dialog.dataset.openedAt=String(Date.now()-1000);
 prevented=false; listeners.wheel(background);

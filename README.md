@@ -132,12 +132,14 @@ docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_
 
 ## 开发验证
 
+前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为普通脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
+
 ```bash
 python -m pytest tests -q
 ```
 
 ```bash
-node --check web/app.js
+for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
 ```
 
 部分测试需要已安装的原生扩展、Node.js 或指定模型权重；符号链接测试还依赖系统权限。
