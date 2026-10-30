@@ -86,6 +86,7 @@ def _without_credentials(value: Any) -> Any:
 
 
 def _save_record(records_dir: Path, game_uuid: str, record: dict) -> None:
+    """Atomically persist a validated record; propagate any local write error."""
     record = _without_credentials(record)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid) or not _valid_record(record, game_uuid):
         raise ValueError("invalid record")
@@ -438,8 +439,10 @@ async def fetch_record_with_failover(
     - Distinguishes 540 rate limits, auth/login failures, and network errors
     - Raises HTTP 429 ONLY if ALL actually attempted accounts returned 540
     - Keeps per-account diagnostics in server logs, not public error messages
-    - Closes connection cleanly upon failure to prevent connection state leaking
-    - Never writes or modifies local paipu cache upon failure
+    - Closes failed login or fetch connections before trying another account
+    - Atomically saves fetched records; local persistence failures return an explicit error
+    - Does not switch accounts, refetch, or close a valid connection after a local save failure
+    - Does not replace the previous record when an atomic cache write fails
     """
     import server.app as server_app
     if client is None:

@@ -128,11 +128,12 @@ async def test_cached_review_uses_disk_record_without_fetch(monkeypatch, tmp_pat
     fetch = AsyncMock()
     monkeypatch.setattr(app, "fetch_record_with_failover", fetch)
     monkeypatch.setattr(app, "resolve_engine_cache_info", lambda engine: ("mortal", "weight_hash"))
-    monkeypatch.setattr(app, "_valid_cached_review", lambda key, weight: {"cached": True})
+    cached = {"cached": True, "game_id": U1, "target_actor": 1}
+    monkeypatch.setattr(app, "_valid_cached_review", lambda key, weight: cached)
     start = AsyncMock()
     monkeypatch.setattr(app, "_start_review_job", start)
     game_id, events, meta, seat = await app.resolve_game_data(paipu=U1, target_actor=1)
-    assert await app._run_review_with_cache(game_id, events, meta, seat, "mortal", 0.0) == {"cached": True}
+    assert await app._run_review_with_cache(game_id, events, meta, seat, "mortal", 0.0) == cached
     fetch.assert_not_called()
     start.assert_not_called()
 

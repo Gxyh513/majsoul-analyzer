@@ -116,7 +116,7 @@ def test_same_uuid_different_upload_events_do_not_reuse_review(monkeypatch):
     monkeypatch.setattr(app, 'save_cached_review', lambda k, v: cache.__setitem__(k, v.copy()))
     def fake_review(events, seat, mgr, **kwargs):
         calls.append(events)
-        return {'events': events, 'engine': {}, 'summary': {'match_rate': 0, 'rating': 0}}
+        return {'events': events, 'target_actor': seat, 'engine': {}, 'summary': {'match_rate': 0, 'rating': 0}}
     monkeypatch.setattr(app, 'review_game', fake_review)
     async def run():
         first = await app._run_review_with_cache('same-uuid', [{'type':'first'}], {'names':['A']}, 0, 'akagi', 0.1)

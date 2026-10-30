@@ -5,22 +5,29 @@ import pytest
 from server.cache_paths import cache_paths
 
 
+def mock_workspace(monkeypatch, present):
+    original = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda self: present if self == Path("/mnt/workspace") else original(self))
+
+
 def test_default_cache_paths_keep_existing_local_layout(monkeypatch, tmp_path):
     monkeypatch.delenv("MAJSOUL_CACHE_ROOT", raising=False)
+    mock_workspace(monkeypatch, False)
     assert cache_paths(tmp_path) == (tmp_path / "cache", tmp_path / "records", tmp_path / "reviews")
 
 
 def test_workspace_is_default_when_present(monkeypatch, tmp_path):
     monkeypatch.delenv("MAJSOUL_CACHE_ROOT", raising=False)
-    original = Path.is_dir
-    monkeypatch.setattr(Path, "is_dir", lambda self: True if self == Path("/mnt/workspace") else original(self))
+    mock_workspace(monkeypatch, True)
     root = Path("/mnt/workspace/majsoul-analyzer")
     assert cache_paths(tmp_path) == (root / "cache", root / "records", root / "reviews")
 
 
-def test_explicit_cache_root_keeps_caches_together(monkeypatch, tmp_path):
+@pytest.mark.parametrize("workspace_present", [False, True])
+def test_explicit_cache_root_keeps_caches_together(monkeypatch, tmp_path, workspace_present):
     root = tmp_path / "mounted storage"
     monkeypatch.setenv("MAJSOUL_CACHE_ROOT", str(root))
+    mock_workspace(monkeypatch, workspace_present)
     assert cache_paths(tmp_path / "local") == (root / "cache", root / "records", root / "reviews")
 
 
@@ -32,7 +39,15 @@ def test_relative_cache_root_is_rejected(monkeypatch, tmp_path):
 
 def test_empty_cache_root_uses_local_paths(monkeypatch, tmp_path):
     monkeypatch.setenv("MAJSOUL_CACHE_ROOT", "  ")
+    mock_workspace(monkeypatch, False)
     assert cache_paths(tmp_path) == (tmp_path / "cache", tmp_path / "records", tmp_path / "reviews")
+
+
+def test_empty_cache_root_uses_workspace_when_present(monkeypatch, tmp_path):
+    monkeypatch.setenv("MAJSOUL_CACHE_ROOT", "  ")
+    mock_workspace(monkeypatch, True)
+    root = Path("/mnt/workspace/majsoul-analyzer")
+    assert cache_paths(tmp_path) == (root / "cache", root / "records", root / "reviews")
 
 
 def test_backend_uses_configured_cache_root_in_new_process(monkeypatch, tmp_path):
@@ -56,8 +71,8 @@ def test_backend_uses_configured_cache_root_in_new_process(monkeypatch, tmp_path
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_lifespan_cleanup_requires_explicit_opt_in(monkeypatch, tmp_path, enabled):
+@pytest.mark.parametrize(("setting", "enabled"), [(None, False), ("0", False), ("true", False), ("yes", False), ("1", True)])
+async def test_lifespan_cleanup_requires_explicit_opt_in(monkeypatch, tmp_path, setting, enabled):
     import asyncio
     import os
     import time
@@ -72,10 +87,10 @@ async def test_lifespan_cleanup_requires_explicit_opt_in(monkeypatch, tmp_path, 
     old_record.write_text("{}", encoding="utf8")
     old = time.time() - 8 * 86400
     os.utime(old_record, (old, old))
-    if enabled:
-        monkeypatch.setenv("MAJSOUL_CACHE_AUTO_CLEANUP", "1")
-    else:
+    if setting is None:
         monkeypatch.delenv("MAJSOUL_CACHE_AUTO_CLEANUP", raising=False)
+    else:
+        monkeypatch.setenv("MAJSOUL_CACHE_AUTO_CLEANUP", setting)
     login = AsyncMock()
     monkeypatch.setattr(app, "ensure_ms_logged_in", login)
     async with app.lifespan(app.app):

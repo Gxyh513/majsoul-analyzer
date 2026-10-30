@@ -120,6 +120,8 @@ docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_
 | GET | `/api/records/local` | 列出后端本地牌谱 |
 | POST | `/api/login` | 配置雀魂账号登录 |
 
+分析成功与检讨文件持久化是两个独立状态。非流式分析接口通过响应头 `X-Review-Cache-Persisted: true/false` 报告检讨文件是否已成功写入并验证；SSE 的 `complete` 事件通过同名含义的布尔字段 `cache_persisted` 报告，`result` 内容保持不变。为 `false` 时，分析结果仍然有效，但服务重启后可能需要重新分析。此状态不表示快速查找索引也已写入；索引写入失败时仍可通过原始牌谱查找已保存的检讨。
+
 ## 数据与安全
 
 本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；牌谱和分析结果也可能保存在浏览器缓存与后端缓存目录中，请按部署环境保护并清理。后端路径和持久卷注意事项见 [缓存存储配置](CACHE_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。

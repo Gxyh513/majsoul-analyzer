@@ -38,6 +38,7 @@ def valid_result(sha=SHA):
             "review_schema": REVIEW_SCHEMA,
         },
         "summary": {},
+        "target_actor": 0,
     }
 
 
@@ -220,7 +221,7 @@ def test_slow_cache_read_does_not_block_event_loop(review_environment, monkeypat
         release = threading.Event()
         loop = asyncio.get_running_loop()
         calls = []
-        result = valid_result()
+        result = {**valid_result(), "game_id": "first"}
 
         def read_cache(_key):
             calls.append(True)
@@ -661,6 +662,7 @@ def test_old_yakuman_review_cache_is_invalidated(review_environment, monkeypatch
         assert server_app.review_cache_key("first", ordinary, meta, 0, MODEL_ID, 0.1, weight_sig) == "review-" + hashlib.sha256(ordinary_payload.encode("utf8")).hexdigest()
 
         stale = valid_result()
+        stale["game_id"] = "first"
         stale["kyokus"] = [{"end_summaries": [f"A 荣和 B {old_summary} +32000"]}]
         server_app.save_cached_review(old_key, stale)
         calls = []
