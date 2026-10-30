@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from server import app
 from server import record_store
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256
 from server.majsoul.client import MajsoulClient, MajsoulError
 from server.majsoul.proto import LiqiProto
 from server.majsoul.session import SessionLock
@@ -60,8 +61,8 @@ def isolated_app(monkeypatch, tmp_path):
 
 
 def fake_review(seat):
-    return {"target_actor": seat, "engine": {"type": "mortal", "id": "akagi", "weight_file": "mortal_582500.pth",
-            "weight_sha256": "a" * 64, "version": 4, "steps": 582500, "q_source": "neural_network",
+    return {"target_actor": seat, "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
+            "weight_sha256": MODEL_SHA256, "revision": MODEL_REVISION, "version": 4, "steps": None, "q_source": "neural_network",
             "review_schema": app.REVIEW_SCHEMA}}
 
 
@@ -70,7 +71,7 @@ def test_real_model_api_reanalyses_without_persisting_results(monkeypatch, tmp_p
     from server.engine.reviewer import EngineManager
 
     models = app.DATA_DIR / "models"
-    if not (models / "mortal_582500.pth").is_file():
+    if not (models / MODEL_FILE).is_file():
         pytest.skip("published model not present")
     monkeypatch.setattr(app, "engine_mgr", EngineManager(models))
     monkeypatch.setattr(app, "RECORDS_DIR", tmp_path)
@@ -83,8 +84,16 @@ def test_real_model_api_reanalyses_without_persisting_results(monkeypatch, tmp_p
     first = client.post("/api/analyze/demo", json={"target_actor": 0})
     second = client.post("/api/analyze/stream", json={"paipu": "demo", "target_actor": 0})
     assert first.status_code == second.status_code == 200
-    assert first.json()["engine"]["q_source"] == "neural_network"
-    assert '"type": "complete"' in second.text and '"cache_persisted"' not in second.text
+    engine = first.json()["engine"]
+    assert engine["q_source"] == "neural_network"
+    assert engine["id"] == MODEL_ID and engine["weight_file"] == MODEL_FILE
+    assert engine["revision"] == MODEL_REVISION and engine["weight_sha256"] == MODEL_SHA256
+    assert engine["version"] == 4 and engine["steps"] is None
+    assert engine["review_schema"] == app.REVIEW_SCHEMA
+    complete = next(json.loads(line.removeprefix("data: ")) for line in second.text.splitlines()
+                    if line.startswith("data: ") and json.loads(line.removeprefix("data: ")).get("type") == "complete")
+    assert complete["result"]["engine"] == engine
+    assert '"cache_persisted"' not in second.text
     assert "X-Review-Cache-Persisted" not in first.headers
     assert reviewer.call_count == 2
     assert not list(tmp_path.iterdir())
@@ -95,7 +104,7 @@ def test_raw_protobuf_to_real_model_api_twice(monkeypatch, tmp_path, proto):
     from server.engine.reviewer import EngineManager
 
     models = app.DATA_DIR / "models"
-    if not (models / "mortal_582500.pth").is_file():
+    if not (models / MODEL_FILE).is_file():
         pytest.skip("published model not present")
     source = raw_record(proto, U1)
     response = proto.decode("ResGameRecord", source.response)
@@ -151,14 +160,14 @@ async def test_first_and_second_analysis_redecode_and_reanalyse(monkeypatch, iso
     converter = Mock(wraps=app.to_mjai)
     monkeypatch.setattr(isolated_app, "decode_record", decoder)
     monkeypatch.setattr(app, "to_mjai", converter)
-    monkeypatch.setattr(app, "engine_mgr", SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256="a" * 64), "akagi", None)))
+    monkeypatch.setattr(app, "engine_mgr", SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256=MODEL_SHA256), MODEL_ID, None)))
     monkeypatch.setattr(app, "review_semaphore", asyncio.Semaphore(1))
     reviewer = Mock(side_effect=lambda events, seat, manager, **kw: fake_review(seat))
     monkeypatch.setattr(app, "review_game", reviewer)
 
     for seat in (0, 1):
         game_id, events, meta, selected = await app.resolve_game_data(paipu=U1, target_actor=seat)
-        result = await app._run_review(game_id, events, meta, selected, "akagi", 0.1)
+        result = await app._run_review(game_id, events, meta, selected, MODEL_ID, 0.1)
         assert result["target_actor"] == seat
     fetch.assert_awaited_once_with(U1)
     assert (tmp_path / f"{U1}.pb").is_file()

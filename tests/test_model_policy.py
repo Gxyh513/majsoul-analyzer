@@ -1,4 +1,4 @@
-"""Regression tests for the single-checkpoint review contract."""
+"""Contract tests for the pinned ONNX model and review provenance."""
 import asyncio
 from types import SimpleNamespace
 
@@ -6,44 +6,78 @@ import pytest
 from starlette.testclient import TestClient
 
 from server import app as server_app
-from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA, valid_review_source
+from server.engine import reviewer
+from server.engine.model_policy import (
+    MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, MODEL_STEPS,
+    MODEL_VERSION, REVIEW_SCHEMA, normalize_model_id, valid_review_source,
+)
 from server.engine.reviewer import EngineManager
 
 
-def review(sha="a" * 64):
-    return {"target_actor": 0, "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
-        "weight_sha256": sha, "version": 4, "steps": 582500,
-        "q_source": "neural_network", "review_schema": REVIEW_SCHEMA}}
+def review():
+    return {"target_actor": 0, "engine": {
+        "type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
+        "weight_sha256": MODEL_SHA256, "revision": MODEL_REVISION,
+        "version": MODEL_VERSION, "steps": MODEL_STEPS,
+        "q_source": "neural_network", "review_schema": REVIEW_SCHEMA,
+    }}
+
+
+def test_pinned_model_identity():
+    assert MODEL_ID == "mortal-s42-onnx"
+    assert MODEL_FILE == "model.onnx"
+    assert MODEL_REVISION == "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a"
+    assert MODEL_SHA256 == "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4"
+    assert REVIEW_SCHEMA == "mortal-onnx-2f7ad48-v1"
+    assert MODEL_VERSION == 4 and MODEL_STEPS is None
+    for alias in (None, "", "auto", MODEL_ID):
+        assert normalize_model_id(alias) == MODEL_ID
+    for alias in ("akagi", "builtin", "mortal", "custom"):
+        with pytest.raises(ValueError):
+            normalize_model_id(alias)
 
 
 def test_review_source_requires_full_provenance():
-    sha = "a" * 64
-    assert valid_review_source(review(), sha)
-    for key, value in (("type", "builtin"), ("weight_file", "akagi.pth"),
-                       ("weight_sha256", "b" * 64), ("version", 3),
-                       ("steps", 298000), ("q_source", "heuristic"),
+    assert valid_review_source(review(), MODEL_SHA256)
+    for key, value in (("type", "builtin"), ("id", "akagi"), ("weight_file", "akagi.pth"),
+                       ("weight_sha256", "b" * 64), ("revision", "wrong"),
+                       ("version", 3), ("steps", 582500), ("q_source", "heuristic"),
                        ("review_schema", "old")):
         result = review()
         result["engine"][key] = value
-        assert not valid_review_source(result, sha)
-    assert not valid_review_source({"engine": {"type": "mortal", "id": MODEL_ID}}, sha)
+        assert not valid_review_source(result, MODEL_SHA256)
+    for key in review()["engine"]:
+        result = review()
+        del result["engine"][key]
+        assert not valid_review_source(result, MODEL_SHA256)
+    assert not valid_review_source(review(), "a" * 64)
+    assert not valid_review_source(None, MODEL_SHA256)
 
 
-def test_missing_checkpoint_cannot_be_bypassed_by_alias(tmp_path):
-    (tmp_path / "akagi.pth").write_bytes(b"alias")
+def test_missing_model_never_falls_back(tmp_path):
+    (tmp_path / "akagi.pth").write_bytes(b"old model")
     mgr = EngineManager(tmp_path)
-    mgr.custom_pth = tmp_path / "akagi.pth"
-    with pytest.raises(FileNotFoundError):
-        mgr.get_mortal("akagi")
-    for forbidden in ("builtin", "mortal", "custom"):
+    for alias in ("auto", MODEL_ID):
+        with pytest.raises((FileNotFoundError, RuntimeError)):
+            mgr.get_mortal(alias)
+    for alias in ("akagi", "builtin", "mortal", "custom"):
         with pytest.raises(ValueError):
-            mgr.get_mortal(forbidden)
+            mgr.get_mortal(alias)
+    status = mgr.status()
+    assert not status["has_mortal_weights"] and status["active_engine"] == "unavailable"
+
+
+def test_corrupt_model_blocks_analysis_before_session(tmp_path, monkeypatch):
+    import onnxruntime
+    (tmp_path / MODEL_FILE).write_bytes(b"corrupt")
+    monkeypatch.setattr(onnxruntime, "InferenceSession", lambda *a, **k: pytest.fail("unverified model parsed"))
+    with pytest.raises((ValueError, RuntimeError)):
+        EngineManager(tmp_path).get_mortal(MODEL_ID)
 
 
 @pytest.mark.parametrize("invalid_field", ["type", "weight_sha256", "version", "target_actor"])
 def test_nonstream_rejects_invalid_inference_and_releases_permit(monkeypatch, invalid_field):
-    sha = "a" * 64
-    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(get_mortal=lambda _id: (SimpleNamespace(weight_sha256=sha), MODEL_ID, None)))
+    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(get_mortal=lambda _id: (SimpleNamespace(weight_sha256=MODEL_SHA256), MODEL_ID, None)))
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
     invalid = review()
@@ -64,7 +98,7 @@ def test_nonstream_rejects_invalid_inference_and_releases_permit(monkeypatch, in
             await server_app._run_review("test", [], {}, 0, MODEL_ID, 0.1)
         assert not server_app.review_semaphore.locked()
         result = await server_app._run_review("test", [], {}, 0, MODEL_ID, 0.1)
-        assert valid_review_source(result, sha) and result["target_actor"] == 0
+        assert valid_review_source(result, MODEL_SHA256) and result["target_actor"] == 0
         assert calls == [True, True]
         assert not server_app._review_tasks
 
@@ -72,10 +106,9 @@ def test_nonstream_rejects_invalid_inference_and_releases_permit(monkeypatch, in
 
 
 def test_stream_rejects_builtin_inference(monkeypatch):
-    sha = "a" * 64
     monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
-    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(get_mortal=lambda _id: (SimpleNamespace(weight_sha256=sha), MODEL_ID, None)))
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
+    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(get_mortal=lambda _id: (SimpleNamespace(weight_sha256=MODEL_SHA256), MODEL_ID, None)))
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
 
@@ -99,13 +132,3 @@ def test_api_rejects_builtin_before_fetch(monkeypatch):
     monkeypatch.setattr(server_app, "resolve_game_data", unexpected)
     response = TestClient(server_app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345)).post("/api/analyze/paipu", json={"paipu": "test", "engine": "builtin"})
     assert response.status_code == 400
-
-
-def test_mismatched_sha_blocks_loading_before_deserialization(tmp_path, monkeypatch):
-    from server.engine import reviewer
-    (tmp_path / MODEL_FILE).write_bytes(b"not-the-published-model")
-    def forbidden_load(*args, **kwargs):
-        raise AssertionError("unverified checkpoint must not be deserialized")
-    monkeypatch.setattr(reviewer, "LoadedMortal", forbidden_load)
-    with pytest.raises(RuntimeError, match="SHA-256"):
-        EngineManager(tmp_path).get_mortal("akagi")

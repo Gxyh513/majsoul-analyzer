@@ -5,26 +5,22 @@ function bindEvents() {
   // Local File Dropzone & File Input
   initLocalFileDropzone();
 
-  // Tier 1 Model: Mortal-V4-582500 (Single, Dedicated Model)
-  state.selectedModel = "akagi";
-  const landingModel = $("landingModelCard");
-  landingModel?.addEventListener("click", () => {
-    state.selectedModel = "akagi";
-    if ($("engineSelect")) $("engineSelect").value = "akagi";
-    updateEngineStatusDisplay("akagi");
+  $("landingModelCard")?.addEventListener("click", async () => {
+    openModal("engineModal");
+    await refreshServerStatus();
   });
 
   // Tier 1 Submit
   $("btnHomeAnalyze")?.addEventListener("click", () => {
     const val = $("homePaipuInput")?.value.trim();
-    startAnalysisFromInput(val, state.selectedModel);
+    startAnalysisFromInput(val);
   });
-  $("btnDemoAnalyze")?.addEventListener("click", () => startAnalysisFromInput("demo", state.selectedModel));
+  $("btnDemoAnalyze")?.addEventListener("click", () => startAnalysisFromInput("demo"));
   $("homePaipuInput")?.addEventListener("input", () => $("homeInputError")?.classList.add("hidden"));
   $("homePaipuInput")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const val = $("homePaipuInput")?.value.trim();
-      startAnalysisFromInput(val, state.selectedModel);
+      startAnalysisFromInput(val);
     }
   });
 
@@ -182,39 +178,19 @@ function bindEvents() {
   });
   $("engineModalClose")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnCancelEngineModal")?.addEventListener("click", () => closeModal("engineModal"));
-  $("btnSaveEngineConfig")?.addEventListener("click", async () => {
-    if (isPagesProxyMode()) {
-      const statusMsg = $("engineModalStatusMsg");
-      if (statusMsg) {
-        statusMsg.style.color = "#ff9f0a";
-        statusMsg.textContent = "公开页面使用固定的 Mortal-V4-582500 引擎，不支持修改共享服务配置。";
-      }
-      return;
-    }
-    const model = $("engineSelect")?.value || "akagi";
-    ++analysisViewVersion;
-    setLoading(false);
-    state.selectedModel = model;
-    updateEngineStatusDisplay(model);
+  $("btnRetryModelDownload")?.addEventListener("click", async (e) => {
+    const button = e.currentTarget;
     const statusMsg = $("engineModalStatusMsg");
-    if (statusMsg) {
-      statusMsg.style.color = "#30d158";
-      statusMsg.textContent = "正在同步配置并重新检讨...";
-    }
+    button.disabled = true;
+    if (statusMsg) statusMsg.textContent = "正在请求下载模型...";
     try {
-      await apiFetch("/api/engine/config", {
-        method: "POST",
-        body: JSON.stringify({ selected_model: model }),
-      });
-      closeModal("engineModal");
-      if (state.reviewData && state.gameId) {
-        await startAnalysisFromInput(currentReviewSource?.input || state.gameId, model, state.targetActor);
-      }
-    } catch (e) {
-      if (statusMsg) {
-        statusMsg.style.color = "#ff453a";
-        statusMsg.textContent = `切换失败: ${e.message || "请求异常"}`;
-      }
+      await apiFetch("/api/engine/download", { method: "POST" });
+      if (statusMsg) statusMsg.textContent = "已请求下载，请稍后重新打开查看状态。";
+      await refreshServerStatus();
+    } catch (err) {
+      if (statusMsg) statusMsg.textContent = `下载请求失败：${err.message || "请求异常"}`;
+    } finally {
+      updateTopbarStatus(state.serverStatus || {});
     }
   });
 

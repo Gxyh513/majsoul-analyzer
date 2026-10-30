@@ -13,25 +13,25 @@ Majsoul Analyzer 将雀魂四人麻将牌谱转换为 MJAI 事件，使用 Morta
 - 在四家视角之间切换，查看牌河、立直、副露、杠、手切/摸切及结算。
 - 显示各合法动作的 Mortal Q 值、候选排序和概率，以及整场和各局的检讨统计。
 - 向听、进张、危险度及其他标签是独立的辅助统计，**不是 Mortal 的 Q 值**。
-- 支持时间轴、播放速度、快捷键和 SSE 分析进度；永久保存已下载的雀魂原始牌谱。
+- 支持时间轴、播放速度、快捷键和 SSE 分析事件；为确保推理失败返回 HTTP 503，进度事件在分析完成后发送。永久保存已下载的雀魂原始牌谱。
 
 ## 模型与结果来源
 
-当前分析引擎**只使用** `data/models/mortal_582500.pth`。加载时检查 Mortal V4、40 个残差块、192 通道、训练步数 582500、严格网络结构，以及发布文件的 SHA-256：
+分析引擎迁移为只使用 `data/models/model.onnx`，即 [Mortal S42 ONNX](https://huggingface.co/xzhe121/Mortal-S42-onnx/tree/2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a) 固定 revision `2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a`。文件 SHA-256：
 
 ```text
-738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20
+30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4
 ```
 
 权重缺失、损坏或校验失败时，分析会报错，**不会回退到内置启发式引擎或其他模型**。动作概率由模型 Q 值经温度 softmax 得到，并非模型的胜率或校准置信度。每次请求都会重新分析，后端和浏览器不会持久化检讨结果。
 
 Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - (最佳 Q - 实际 Q))`，整场 Rating 为相对分平均值的平方乘 100。最佳动作得满分，差距越小得分越接近满分，差距达到 1 时该手得 0 分。此分数是基于模型 Q 值的启发式指标，不代表胜率；它与旧版本的候选范围归一化分数不可直接比较。无法判定具体杠牌的决策不计入 Rating。
 
-权重发布源：[Yuchen1457/mortal-582500](https://huggingface.co/Yuchen1457/mortal-582500)。
+模型发布源：[xzhe121/Mortal-S42-onnx](https://huggingface.co/xzhe121/Mortal-S42-onnx)。ONNX 文件本身不能证明训练步数。
 
 ## 本地运行
 
-项目需要 Python 3.10+、PyTorch 和 `libriichi` 原生扩展。仓库中的 `server/engine/libriichi.pyd` 面向 Windows；Linux 需要编译兼容当前 Python 的 `libriichi.so`，可参考 Dockerfile 或 Colab 启动器。CUDA 可用时使用 GPU，否则使用 CPU。
+项目需要 Python 3.10+、ONNX Runtime 和 `libriichi` 原生扩展。默认依赖安装 CPU 版本的 ONNX Runtime；Docker 和 Colab 从 Mortal 上游固定提交 `0cff2b52982be5b1163aa9a62fb01f03ce91e0d2` 编译兼容当前 Python 的 `libriichi.so`。本地使用的原生扩展也须与该版本及 Python 环境兼容。
 
 1. 克隆仓库并安装依赖：
 
@@ -41,7 +41,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
    pip install -r requirements.txt
    ```
 
-2. 将上述发布源中的权重保存为 `data/models/mortal_582500.pth`。路径和文件名必须完全一致；启动后可通过 `/api/status` 查看校验状态。不要提交权重文件。
+2. 从[固定版本下载 model.onnx](https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a/model.onnx)，校验上述 SHA-256，并保存为 `data/models/model.onnx`。路径和文件名必须完全一致；启动后可通过 `/api/status` 查看校验状态。不要提交模型文件。
 3. 如果需要通过雀魂账号拉取牌谱，将 `data/config.example.json` 复制为 `data/config.local.json`，再按需填写账号、密码或访问令牌。也可直接导入本地牌谱。
 4. 启动服务：
 

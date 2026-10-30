@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import server.app as app
-from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA
 
 
 UUID = "241026-11111111-2222-3333-4444-555555555555"
-SHA = "a" * 64
+SHA = MODEL_SHA256
 
 
 def test_changed_legacy_record_is_read_and_reanalysed(monkeypatch, tmp_path):
@@ -32,7 +32,7 @@ def test_changed_legacy_record_is_read_and_reanalysed(monkeypatch, tmp_path):
         inference = Mock(side_effect=lambda events, seat, manager, **kwargs: {
             "target_actor": seat, "meta": kwargs["meta"],
             "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
-                       "weight_sha256": SHA, "version": 4, "steps": 582500,
+                       "weight_sha256": SHA, "version": 4, "steps": None, "revision": MODEL_REVISION,
                        "q_source": "neural_network", "review_schema": REVIEW_SCHEMA},
         })
         monkeypatch.setattr(app, "review_game", inference)

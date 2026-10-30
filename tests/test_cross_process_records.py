@@ -8,12 +8,14 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from server.engine.model_policy import MODEL_ID, MODEL_SHA256
 UUID = "241026-11111111-2222-3333-4444-555555555555"
 SEAT = 1
 TEMPERATURE = 0.0
-WEIGHT_SHA = "a" * 64
+WEIGHT_SHA = MODEL_SHA256
 VERSION = "0.11.252.w"
 PROTOCOL_DIR = ROOT / "data" / "cache"
 HAND = ["1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m", "1p", "2p", "3p", "4p"]
@@ -50,7 +52,7 @@ def raw_fixture():
 
 
 def configure(app, stage):
-    from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA
+    from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA
     from server.majsoul.client import MajsoulClient
 
     source = raw_fixture()
@@ -62,7 +64,7 @@ def configure(app, stage):
     app.engine_mgr = SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256=WEIGHT_SHA), MODEL_ID, None))
     app.review_semaphore = asyncio.Semaphore(1)
     app._review_tasks = set()
-    app.models_download_state = {MODEL_ID: {"status": "idle"}}
+    app.model_download_state = {"status": "idle"}
     decoder = Mock(wraps=MajsoulClient(PROTOCOL_DIR).decode_record)
     client = SimpleNamespace(
         logged_in=True, _ws=SimpleNamespace(closed=False), account_id=11,
@@ -87,7 +89,7 @@ def configure(app, stage):
         return {
             "target_actor": seat,
             "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
-                       "weight_sha256": WEIGHT_SHA, "version": 4, "steps": 582500,
+                       "weight_sha256": WEIGHT_SHA, "version": 4, "steps": None, "revision": MODEL_REVISION,
                        "q_source": "neural_network", "review_schema": REVIEW_SCHEMA},
             "summary": {"total_reviewed": 1, "match_rate": 100.0},
             "kyokus": [{"steps": [{"event": events[2]}], "notes": ["完整检讨"]}],
@@ -102,8 +104,8 @@ def configure(app, stage):
 
 async def analyze(app):
     response = await app.api_analyze_stream(app.AnalyzeStreamReq(
-        paipu=f"https://game.maj-soul.com/?paipu={UUID}_22", engine="akagi", temperature=TEMPERATURE,
-    ))
+        paipu=f"https://game.maj-soul.com/?paipu={UUID}_22", engine=MODEL_ID, temperature=TEMPERATURE,
+    ), None)
     messages = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
     assert not [message for message in messages if message["type"] == "error"], messages
     complete = [message for message in messages if message["type"] == "complete"]

@@ -1,12 +1,14 @@
 """Core review + replay builder for Mahjong Soul 4-player logs.
 
-Uses only Mortal-V4-582500 for action Q values and replay decisions.
+Uses Mortal S42 ONNX for action Q values and replay decisions.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,8 +20,8 @@ if str(_ENGINE_DIR) not in sys.path:
 
 import libriichi.state as lstate  # noqa: E402
 
-from .mortal_model import LoadedMortal  # noqa: E402
-from .model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file  # noqa: E402
+from .onnx_mortal import OnnxMortal  # noqa: E402
+from .model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, REVIEW_SCHEMA, normalize_model_id  # noqa: E402
 from .tiles import (  # noqa: E402
     action_idx_of_tile,
     deaka,
@@ -85,92 +87,97 @@ def _hora_score_description(event: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Model Manager (hot-loads mortal.pth if present)
+# Single-model manager
 # ---------------------------------------------------------------------------
+class ModelInferenceError(RuntimeError):
+    pass
+
+
 class EngineManager:
     def __init__(self, models_dir: Path):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.custom_pth: Path | None = None
-        self.selected_model: str = "auto"
-        self._loaded_models: dict[str, tuple[LoadedMortal, tuple[int, int, int]]] = {}
-        self._load_error: str | None = None
+        self._lock = threading.RLock()
+        self._model = None
+        self._identity = None
+        self._load_error = None
+        self._inference_failed = False
 
-    def list_available_models(self) -> list[dict[str, str]]:
-        p = self.models_dir / MODEL_FILE
-        return [{"id": MODEL_ID, "name": "Mortal-V4-582500", "path": str(p)}] if p.is_file() else []
+    @staticmethod
+    def _file_identity(path: Path):
+        stat = path.stat()
+        return (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
-    def resolve_model_path(self, model_id: str | None = None) -> tuple[Path | None, str]:
+    def get_mortal(self, model_id: str | None = None):
         normalize_model_id(model_id)
-        p = self.models_dir / MODEL_FILE
-        return (p if p.is_file() else None), MODEL_ID
+        path = self.models_dir / MODEL_FILE
+        with self._lock:
+            if self._inference_failed:
+                raise RuntimeError(f'Mortal S42 ONNX 推理失败: {self._load_error}')
+            try:
+                identity = self._file_identity(path)
+                if self._model is not None and self._identity == identity:
+                    return self._model, MODEL_ID, path
+                self._model = None
+                self._identity = None
+                model = OnnxMortal(path)
+                if identity != self._file_identity(path):
+                    raise RuntimeError('模型权重在加载时发生变化')
+                self._model, self._identity, self._load_error = model, identity, None
+                return model, MODEL_ID, path
+            except Exception as exc:
+                self._model = None
+                self._identity = None
+                self._load_error = str(exc)
+                raise RuntimeError(f'Mortal S42 ONNX 不可用: {exc}') from exc
 
-    def find_pth(self, model_id: str | None = None) -> Path | None:
-        return self.resolve_model_path(model_id)[0]
-
-    def get_mortal(self, model_id: str | None = None) -> tuple[LoadedMortal, str, Path]:
-        pth, resolved_id = self.resolve_model_path(model_id)
-        if pth is None:
-            self._loaded_models.clear()
-            self._load_error = f"Mortal-V4-582500 真实模型权重文件缺失: {self.models_dir / MODEL_FILE}；严禁自动降级到其他引擎。"
-            raise FileNotFoundError(self._load_error)
-        key = str(pth.resolve())
-        stat = pth.stat()
-        identity = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-        if key in self._loaded_models:
-            loaded, cached_identity = self._loaded_models[key]
-            if cached_identity == identity:
-                return loaded, resolved_id, pth
-        try:
-            digest = sha256_file(pth)
-            if digest != MODEL_SHA256:
-                raise ValueError("权重 SHA-256 与已发布的 mortal_582500.pth 不一致")
-            loaded = LoadedMortal(pth, enforce_v4_582500=True)
-            stat_after = pth.stat()
-            if identity != (stat_after.st_size, stat_after.st_mtime_ns, stat_after.st_ctime_ns):
-                raise RuntimeError("模型权重在加载时发生变化，请重试")
-            loaded.weight_sha256 = digest
-            self._loaded_models = {key: (loaded, identity)}
+    def install_model(self, temporary_path: Path):
+        path = self.models_dir / MODEL_FILE
+        with self._lock:
+            identity = self._file_identity(temporary_path)
+            model = OnnxMortal(temporary_path)
+            if identity != self._file_identity(temporary_path):
+                raise RuntimeError('模型权重在校验时发生变化')
+            os.replace(temporary_path, path)
+            model.model_path = path
+            self._model = model
+            self._identity = self._file_identity(path)
+            if self._identity[0] != identity[0]:
+                self._model = None
+                self._identity = None
+                raise RuntimeError('模型文件替换失败')
             self._load_error = None
-            return loaded, resolved_id, pth
-        except Exception as e:
-            self._loaded_models.clear()
-            self._load_error = str(e)
-            raise RuntimeError(f"载入或校验 Mortal-V4-582500 权重 {MODEL_FILE} 失败: {e}") from e
+            self._inference_failed = False
+            return model
+
+    def invalidate(self, model, error: Exception):
+        with self._lock:
+            if self._model is model:
+                self._model = None
+                self._identity = None
+                self._load_error = str(error)
+                self._inference_failed = True
 
     def status(self) -> dict[str, Any]:
-        """Returns real-time status of the model manager, purging any stale cache."""
-        # Purge deleted files from cache
-        stale_keys = [k for k in self._loaded_models if not Path(k).is_file()]
-        for k in stale_keys:
-            self._loaded_models.pop(k, None)
-
-        pth, resolved_id = self.resolve_model_path(MODEL_ID)
-        mortal = None
-        if pth is not None and pth.is_file():
-            try:
-                mortal, _, _ = self.get_mortal(MODEL_ID)
-                self._load_error = None
-            except Exception as e:
-                self._load_error = str(e)
-        else:
-            expected_pth = self.models_dir / "mortal_582500.pth"
-            self._load_error = f"权重文件缺失: {expected_pth}"
-
+        path = self.models_dir / MODEL_FILE
+        try:
+            model, _, _ = self.get_mortal()
+        except Exception:
+            model = None
         return {
-            "has_mortal_weights": mortal is not None,
-            "active_engine": "mortal" if mortal is not None else "unavailable",
-            "model_name": "Mortal-V4-582500" if mortal is not None else "Mortal-V4-582500 (不可用)",
-            "model_id": resolved_id,
-            "model_tag": mortal.tag if mortal is not None else "Mortal-V4-582500 (未加载)",
-            "weight_sha256": mortal.weight_sha256 if mortal is not None else None,
-            "review_schema": REVIEW_SCHEMA,
-            "model_path": str(pth) if pth else str(self.models_dir / "mortal_582500.pth"),
-            "models_dir": str(self.models_dir),
-            "device": str(mortal.device).upper() if mortal is not None else "N/A",
-            "selected_model": self.selected_model,
-            "available_models": self.list_available_models(),
-            "load_error": self._load_error,
+            'model_ready': model is not None,
+            'has_mortal_weights': model is not None,
+            'active_engine': 'mortal' if model is not None else 'unavailable',
+            'model_name': 'Mortal S42 ONNX',
+            'model_id': MODEL_ID,
+            'model_tag': model.tag if model else None,
+            'model_revision': MODEL_REVISION,
+            'weight_sha256': model.weight_sha256 if model else None,
+            'review_schema': REVIEW_SCHEMA,
+            'model_path': str(path),
+            'models_dir': str(self.models_dir),
+            'device': str(model.device).upper() if model else 'N/A',
+            'load_error': self._load_error,
         }
 
 
@@ -727,12 +734,16 @@ def review_game(
     # Run Mortal neural network batch inference if mortal is active
     if mortal is not None:
         if progress_callback:
-            progress_callback(82.0, f"正在运行 Mortal-V4-582500 神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
-        mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
-        if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
-            raise RuntimeError("Mortal-V4-582500 神经网络推理输出与待评决策数不匹配，已终止分析。")
-        if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):
-            raise RuntimeError("Mortal 神经网络输出包含无效的合法动作权重，已终止分析。")
+            progress_callback(82.0, f"正在运行 Mortal S42 ONNX 神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
+        try:
+            mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
+            if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
+                raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
+            if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):
+                raise RuntimeError("Mortal S42 ONNX 合法动作输出无效")
+        except Exception as exc:
+            engine_mgr.invalidate(mortal, exc)
+            raise ModelInferenceError(f"Mortal S42 ONNX 推理失败，已终止分析: {exc}") from exc
     else:
         mortal_q_batch = None
 
@@ -946,6 +957,7 @@ def review_game(
             "weight_sha256": mortal.weight_sha256,
             "version": mortal.version,
             "steps": mortal.steps,
+            "revision": MODEL_REVISION,
             "q_source": "neural_network",
             "review_schema": REVIEW_SCHEMA,
             "device": str(mortal.device).upper() if mortal is not None else "CPU",

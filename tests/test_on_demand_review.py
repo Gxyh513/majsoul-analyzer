@@ -16,7 +16,7 @@ def test_on_demand_perspectives_and_races():
     code = source[source.index("let analysisViewVersion = 0;"):source.index("function handWind(")]
     script = r'''
 const assert = require('assert');
-const state = {selectedModel:'akagi', targetActor:0, kyokuIdx:1, stepIdx:3};
+const state = {selectedModel:'mortal-s42-onnx', targetActor:0, kyokuIdx:1, stepIdx:3};
 let calls = [], pending = [], errors = [], loads = [], progressEvents = [];
 const requireModelStatus = async () => {};
 const isTrustedReview = r => !!r && r.trusted === true;
@@ -40,10 +40,10 @@ const window={location:{href:'https://example.test/'},history:{pushState(){}}};
 const watchdog = setTimeout(()=>{console.error('async test timed out'); process.exit(1)}, 5000);
 (async () => {
   // Even overlapping identical user requests make separate backend calls.
-  const a = startAnalysisFromInput('game-one', 'akagi', 0);
-  const aDuplicate = startAnalysisFromInput('game-one', 'akagi', 0);
+  const a = startAnalysisFromInput('game-one', 0);
+  const aDuplicate = startAnalysisFromInput('game-one', 0);
   await wait(); assert.strictEqual(calls.length, 2);
-  assert.deepStrictEqual(calls[0], {paipu:'game-one',engine:'akagi',target_actor:0});
+  assert.deepStrictEqual(calls[0], {paipu:'game-one',target_actor:0});
   assert.deepStrictEqual(calls[1], calls[0]);
   const first = result(0), second = result(0);
   const [oldRequest, newRequest] = pending.splice(0);
@@ -74,7 +74,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   const revisit = switchSeatPerspective(1); await wait();
   assert.strictEqual(calls.length,8); assert.strictEqual(pending[0].body.target_actor,1);
   pending.shift().resolve(result(1)); await revisit;
-  const repeat = startAnalysisFromInput('game-one','akagi',0); await wait();
+  const repeat = startAnalysisFromInput('game-one',0); await wait();
   assert.strictEqual(calls.length,9); pending.shift().resolve(result(0)); await repeat;
 
   // Returning to the displayed seat invalidates an older in-flight switch.
@@ -98,7 +98,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.strictEqual(state.targetActor,1);
 
   const json='  \r\n{"type":"start_game"}\n{"type":"end_game"}\n  ';
-  const upload=startAnalysisFromInput(json,'akagi',0); await wait();
+  const upload=startAnalysisFromInput(json,0); await wait();
   assert.strictEqual(pending[0].body.content,json); pending.shift().resolve(result(0)); await upload;
   const uploadB=switchSeatPerspective(1); await wait();
   assert.strictEqual(pending[0].body.content,json); assert.strictEqual(pending[0].body.target_actor,1);
@@ -115,7 +115,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   pending.shift().resolve(result(2)); await uploadRetry;
 
   const stale=switchSeatPerspective(3); await wait();
-  const next=startAnalysisFromInput('game-two','akagi',0); await wait();
+  const next=startAnalysisFromInput('game-two',0); await wait();
   const staleWork=pending.splice(0);
   staleWork.find(x=>x.body.paipu==='game-two').resolve(result(0)); await next;
   staleWork.find(x=>x.body.content===json).resolve(result(3)); await stale;
@@ -124,12 +124,10 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert(errors.at(-1).message.includes('座位不匹配')); assert.strictEqual(state.targetActor,0);
   const untrusted=switchSeatPerspective(2); await wait(); pending.shift().resolve(result(2,false)); await untrusted;
   assert(errors.at(-1).message.includes('untrusted')); assert.strictEqual(state.targetActor,0);
-  const staleModel=switchSeatPerspective(3); await wait(); state.selectedModel='different';
-  pending.shift().resolve(result(3)); await staleModel; assert.strictEqual(state.targetActor,0);
 
   // URL-based paipu analysis and subsequent switches send the parsed UUID.
   const url='https://game.maj-soul.com/?paipu=240101-abc123&other=value';
-  const byUrl=startAnalysisFromInput(url,'akagi',0); await wait();
+  const byUrl=startAnalysisFromInput(url,0); await wait();
   assert.strictEqual(pending[0].body.paipu,'240101-abc123');
   pending.shift().resolve(result(0)); await byUrl;
   const urlSeat=switchSeatPerspective(1); await wait();
@@ -138,7 +136,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   pending.shift().resolve(result(1)); await urlSeat;
 })().then(()=>clearTimeout(watchdog)).catch(e=>{console.error(e);process.exit(1)});
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=30)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -171,34 +169,34 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
 (async () => {
   const source = {kind:'paipu',identity:'game',input:'https://example.test/?paipu=game'};
   const progress=[];
-  const first = getReview(source, 'akagi', 0, (...args)=>progress.push(args));
-  const concurrent = getReview(source, 'akagi', 0, ()=>{});
+  const first = getReview(source, 0, (...args)=>progress.push(args));
+  const concurrent = getReview(source, 0, ()=>{});
   assert.strictEqual(statusCalls,2); assert.strictEqual(requests.length,0);
   releaseStatus();
   assert.strictEqual(await first, response); assert.strictEqual(await concurrent, response);
   assert.deepStrictEqual(progress,[[42,'working']]);
   assert.strictEqual(requests.length,2);
-  assert.strictEqual(await getReview(source, 'akagi', 0), response);
+  assert.strictEqual(await getReview(source, 0), response);
   assert.strictEqual(requests.length,3); assert.strictEqual(statusCalls,3);
 
   failStream = true;
-  assert.strictEqual(await getReview(source, 'akagi', 0), response);
+  assert.strictEqual(await getReview(source, 0), response);
   const json = '{"type":"start_game"}\n{"type":"end_game"}';
-  assert.strictEqual(await getReview({kind:'json',identity:json,input:json}, 'akagi', 0), response);
+  assert.strictEqual(await getReview({kind:'json',identity:json,input:json}, 0), response);
   assert.deepStrictEqual(fallbackCalls, [
-    {endpoint:'/api/analyze/paipu',body:{paipu:'game',engine:'akagi',target_actor:0}},
-    {endpoint:'/api/analyze/json',body:{content:json,engine:'akagi',target_actor:0}},
+    {endpoint:'/api/analyze/paipu',body:{paipu:'game',target_actor:0}},
+    {endpoint:'/api/analyze/json',body:{content:json,target_actor:0}},
   ]);
   const reported = Object.assign(new Error('保存失败'), {serverReported:true});
   failStream = false;
   const original = fetchReviewStream;
   fetchReviewStream = async () => { throw reported; };
-  await assert.rejects(getReview(source, 'akagi', 0), /保存失败/);
+  await assert.rejects(getReview(source, 0), /保存失败/);
   assert.strictEqual(fallbackCalls.length, 2);
   fetchReviewStream = original;
 })().then(()=>clearTimeout(watchdog)).catch(e => { console.error(e); process.exit(1); });
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -217,7 +215,7 @@ def test_uploaded_file_is_passed_without_trimming():
     start = source.index("function readAndAnalyzeFile(")
     code = source[start:source.index("\n// ===", start)]
     script = r'''const assert = require('assert');
-const state={selectedModel:'akagi'}, notices=[];
+const state={selectedModel:'mortal-s42-onnx'}, notices=[];
 let observed;
 const showToast=(...args)=>notices.push(args);
 const startAnalysisFromInput=(content,model)=>{observed={content,model};};
@@ -230,10 +228,10 @@ class FileReader {
 ''' + code + r'''
 const content=' \r\n{"type":"start_game"}\n{"type":"end_game"}\n  ';
 readAndAnalyzeFile({name:'original.json',content});
-assert.deepStrictEqual(observed,{content,model:'akagi'});
+assert.deepStrictEqual(observed,{content,model:undefined});
 assert(notices.some(args=>args[0].includes('original.json')));
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -272,5 +270,34 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   await assert.rejects(fetchReviewStream({},()=>{}), error => error.serverReported && /bad JSON analysis/.test(error.message));
 })().then(()=>clearTimeout(watchdog)).catch(e=>{console.error(e);process.exit(1)});
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_frontend_requires_complete_onnx_attestation():
+    if not shutil.which("node"):
+        pytest.skip("Node.js not installed")
+    source = javascript_source()
+    code = source[source.index("const REVIEW_SCHEMA ="):source.index("// Only the latest request")]
+    script = r"""const assert=require('assert');
+const state={serverStatus:{engine:{has_mortal_weights:true,active_engine:'mortal',
+  model_revision:'2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a',
+  weight_sha256:'30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4',
+  review_schema:'mortal-onnx-2f7ad48-v1'}}};
+const refreshServerStatus=async()=>{};
+""" + code + r"""
+const engine={type:'mortal',id:'mortal-s42-onnx',weight_file:'model.onnx',version:4,steps:null,
+ revision:MODEL_REVISION,weight_sha256:MODEL_SHA256,q_source:'neural_network',review_schema:REVIEW_SCHEMA};
+assert(isTrustedReview({engine}));
+for (const [key,value] of Object.entries({type:'builtin',id:'akagi',weight_file:'old.pth',version:3,
+ steps:582500,revision:'bad',weight_sha256:'bad',q_source:'heuristic',review_schema:'old'})) {
+  assert(!isTrustedReview({engine:{...engine,[key]:value}}),key);
+  const missing={...engine}; delete missing[key]; assert(!isTrustedReview({engine:missing}),key);
+}
+for (const key of ['has_mortal_weights','active_engine','model_revision','weight_sha256','review_schema']) {
+ const old=state.serverStatus.engine[key]; state.serverStatus.engine[key]=null;
+ assert(!isTrustedReview({engine}),key); state.serverStatus.engine[key]=old;
+}
+"""
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr

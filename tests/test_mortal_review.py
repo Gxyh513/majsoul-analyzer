@@ -6,10 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 
 from frontend_assets import javascript_source
-from server.engine.mortal_model import Brain, DQN, LoadedMortal
+from server.engine.model_policy import MODEL_FILE, MODEL_ID
 from server.engine.reviewer import EngineManager, review_game, softmax
 from server.engine.tiles import action_idx_of_tile, tid, tile_of_action_idx
 
@@ -112,50 +111,6 @@ def test_temperature_invariance_on_q_ordering():
 # ---------------------------------------------------------------------------
 # 3. Model Resolution and EngineManager Tests
 # ---------------------------------------------------------------------------
-def test_engine_manager_resolution(tmp_path: Path):
-    """Verify EngineManager resolves model paths accurately without silent substitutions."""
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    mgr = EngineManager(models_dir)
-
-    # 1. No files exist: 'auto' strictly resolves to 'akagi' (Mortal-V4-582500), never falls back to builtin
-    pth, resolved_id = mgr.resolve_model_path("auto")
-    assert pth is None
-    assert resolved_id == "akagi"
-
-    # 2. When weights are missing, get_mortal('auto') strictly raises FileNotFoundError without silent fallback
-    with pytest.raises(FileNotFoundError) as exc_info:
-        mgr.get_mortal("auto")
-    assert "Mortal-V4-582500" in str(exc_info.value)
-
-    with pytest.raises(FileNotFoundError) as exc_info:
-        mgr.get_mortal("akagi")
-    assert "Mortal-V4-582500" in str(exc_info.value)
-
-    # 3. Create mock mortal_582500.pth (for path resolution verification only)
-    fake_pth = models_dir / "mortal_582500.pth"
-    fake_pth.write_bytes(b"dummy")
-
-    pth, resolved_id = mgr.resolve_model_path("auto")
-    assert pth == fake_pth
-    assert resolved_id == "akagi"
-
-    pth, resolved_id = mgr.resolve_model_path("akagi")
-    assert pth == fake_pth
-    assert resolved_id == "akagi"
-
-    # Other engines cannot be selected, even explicitly.
-    for engine in ("builtin", "mortal", "custom"):
-        with pytest.raises(ValueError):
-            mgr.resolve_model_path(engine)
-
-
-# ---------------------------------------------------------------------------
-# 4. Cache Key and Isolation Tests
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# 5. Full Review Flow Test with Builtin Engine (Regression Test)
-# ---------------------------------------------------------------------------
 def test_review_game_rejects_builtin_engine(tmp_path: Path):
     events = json.loads(DEMO_PATH.read_text(encoding="utf-8"))
     mgr = EngineManager(tmp_path / "models")
@@ -163,119 +118,6 @@ def test_review_game_rejects_builtin_engine(tmp_path: Path):
         review_game(events, 0, mgr, force_engine="builtin")
 
 
-# ---------------------------------------------------------------------------
-# 6. Simulated Neural Network Model (Mock Test)
-# ---------------------------------------------------------------------------
-def test_simulated_mortal_v4_model(tmp_path: Path):
-    """[MOCK TEST] Create synthetic Mortal v4 weights and verify neural forward pass and eval_batch."""
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-
-    # Construct minimal Brain and DQN for version 4 (1 block, 32 conv channels)
-    conv_channels = 32
-    num_blocks = 1
-    brain = Brain(version=4, num_blocks=num_blocks, conv_channels=conv_channels)
-    dqn = DQN(version=4)
-
-    mock_state = {
-        "config": {
-            "control": {"version": 4},
-            "resnet": {"num_blocks": num_blocks, "conv_channels": conv_channels},
-        },
-        "tag": "mock-mortal-v4-test",
-        "mortal": brain.state_dict(),
-        "current_dqn": dqn.state_dict(),
-    }
-
-    mock_pth = models_dir / "akagi.pth"
-    torch.save(mock_state, mock_pth)
-
-    # Load with LoadedMortal (Explicitly marked as mock test with enforce_v4_582500=False)
-    loaded = LoadedMortal(mock_pth, device="cpu", enforce_v4_582500=False)
-    assert loaded.version == 4
-    assert loaded.tag == "mock-mortal-v4-test"
-
-    # Test eval_batch on synthetic batch of (obs, mask)
-    batch_size = 3
-    # v4 obs shape is (1012, 34)
-    obs_batch = [np.random.randn(1012, 34).astype(np.float32) for _ in range(batch_size)]
-    # Random legal masks (46,)
-    mask_batch = []
-    for _ in range(batch_size):
-        m = np.zeros(46, dtype=bool)
-        m[np.random.choice(46, size=5, replace=False)] = True
-        mask_batch.append(m)
-
-    q_batch = loaded.eval_batch(obs_batch, mask_batch)
-    assert q_batch.shape == (batch_size, 46)
-
-    # For masked out actions, Q must be -inf
-    for b in range(batch_size):
-        for a in range(46):
-            if not mask_batch[b][a]:
-                assert np.isneginf(q_batch[b, a])
-            else:
-                assert np.isfinite(q_batch[b, a])
-
-    # Mock checkpoints are never accepted through the production manager.
-    mgr = EngineManager(models_dir)
-    with pytest.raises(FileNotFoundError):
-        mgr.get_mortal("akagi")
-
-
-def test_real_mortal_582500_weights():
-    """Verify loading real mortal_582500.pth weights, running forward pass, and checking numerical validity."""
-    real_pth = ROOT_DIR / "data" / "models" / "mortal_582500.pth"
-    if not real_pth.is_file():
-        pytest.skip("mortal_582500.pth is not present in data/models")
-
-    loaded = LoadedMortal(real_pth)
-    assert loaded.version == 4
-    assert "mortal-v4" in loaded.tag
-
-    obs = np.random.randn(1012, 34).astype(np.float32)
-    mask = np.zeros(46, dtype=bool)
-    mask[:14] = True
-
-    q = loaded.eval_batch([obs], [mask])
-    assert q.shape == (1, 46)
-    # Check no NaN
-    assert not np.isnan(q).any()
-    # Check legal values are finite
-    assert np.isfinite(q[0, :14]).all()
-    # Check masked are -inf
-    assert np.isneginf(q[0, 14:]).all()
-
-    # End-to-end review with EngineManager resolving mortal_582500.pth
-    mgr = EngineManager(real_pth.parent)
-    mortal, resolved_id, pth = mgr.get_mortal("akagi")
-    assert mortal is not None
-    assert resolved_id == "akagi"
-    assert pth == real_pth
-
-    events = json.loads(DEMO_PATH.read_text(encoding="utf-8"))
-    recorded = []
-    original_eval = mortal.eval_batch
-    def capture_eval(obs, masks):
-        result = original_eval(obs, masks)
-        recorded.append(result.copy())
-        return result
-    mortal.eval_batch = capture_eval
-    res = review_game(events, 0, mgr, force_engine="akagi")
-    assert recorded and len(recorded[0]) == len(res["decisions"])
-    for i, decision in enumerate(res["decisions"]):
-        for candidate in decision["candidates"]:
-            assert candidate["raw_q"] == pytest.approx(float(recorded[0][i][candidate["label"]]))
-    assert res["engine"]["q_source"] == "neural_network"
-    assert res["engine"]["weight_sha256"] == mortal.weight_sha256
-    assert res["engine"]["type"] == "mortal"
-    assert res["engine"]["id"] == "akagi"
-    assert res["engine"]["weight_file"] == "mortal_582500.pth"
-
-
-# ---------------------------------------------------------------------------
-# 7. API Endpoints Compatibility Tests
-# ---------------------------------------------------------------------------
 def test_api_status_endpoint():
     """Verify /api/status endpoint response schema and fields."""
     from starlette.testclient import TestClient
@@ -288,7 +130,7 @@ def test_api_status_endpoint():
     assert data["ok"] is True
     assert "engine" in data
     assert "active_engine" in data["engine"]
-    assert "selected_model" in data["engine"]
+    assert data["engine"]["model_id"] == MODEL_ID
     assert "model_name" in data["engine"]
 
 
@@ -298,10 +140,9 @@ def test_api_engine_config_and_invalid_path():
     from server.app import app
 
     client = TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
-    # Non-existent file path should return HTTP 400
-    resp = client.post("/api/engine/config", json={"model_path": "non_existent_weights.pth"})
-    assert resp.status_code == 400
-    assert "mortal_582500.pth" in resp.json()["detail"]
+    # Arbitrary model paths cannot be configured through the API.
+    resp = client.post("/api/engine/config", json={"model_path": "non_existent_model.onnx"})
+    assert resp.status_code in (400, 404, 405)
 
 
 # ---------------------------------------------------------------------------
@@ -312,41 +153,25 @@ def test_no_download_on_module_import():
     from server import app as server_app
 
     # Ensure none of the models are stuck in 'downloading' state immediately on import
-    for model_id, st in server_app.models_download_state.items():
-        assert st["status"] != "downloading", f"Model {model_id} unexpectedly marked downloading on import"
+    assert server_app.model_download_state["status"] != "downloading"
 
     # Verify no .tmp files were created in models dir as a result of importing
     tmp_files = list(server_app.MODELS_DIR.glob("*.tmp"))
     assert len(tmp_files) == 0, f"Unexpected .tmp download files found: {tmp_files}"
 
 
-def test_model_download_state_isolation():
-    """Verify download states for akagi and mortal are completely independent."""
-    from server import app as server_app
-
-    # Modifying akagi state must not bleed into mortal state
-    server_app.models_download_state["akagi"]["progress_pct"] = 42.0
-    server_app.models_download_state["mortal"]["progress_pct"] = 0.0
-
-    assert server_app.models_download_state["akagi"]["progress_pct"] == 42.0
-    assert server_app.models_download_state["mortal"]["progress_pct"] == 0.0
-
-    # Reset
-    server_app.models_download_state["akagi"]["progress_pct"] = 0.0
-
-
 def test_duplicate_download_protection():
     """Verify calling _download_model_sync when state is already downloading exits immediately."""
     from server import app as server_app
 
-    orig_status = server_app.models_download_state["mortal"]["status"]
+    orig_status = server_app.model_download_state["status"]
     try:
-        server_app.models_download_state["mortal"]["status"] = "downloading"
+        server_app.model_download_state["status"] = "downloading"
         # Should return immediately without attempting network
-        server_app._download_model_sync("mortal")
-        assert server_app.models_download_state["mortal"]["status"] == "downloading"
+        server_app._download_model_sync(MODEL_ID)
+        assert server_app.model_download_state["status"] == "downloading"
     finally:
-        server_app.models_download_state["mortal"]["status"] = orig_status
+        server_app.model_download_state["status"] = orig_status
 
 
 def test_failed_download_cleans_up_tmp_file(tmp_path: Path, monkeypatch):
@@ -363,23 +188,22 @@ def test_failed_download_cleans_up_tmp_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
     # Reset state for test
-    server_app.models_download_state["mortal"] = {
+    monkeypatch.setattr(server_app, "model_download_state", {
         "status": "idle",
         "progress_pct": 0.0,
         "downloaded_bytes": 0,
         "total_bytes": 0,
         "error_msg": None,
-    }
+    })
 
-    server_app._download_model_sync("mortal")
+    server_app._download_model_sync(MODEL_ID)
 
     # State must be error
-    assert server_app.models_download_state["mortal"]["status"] == "error"
-    assert "Mock network failure" in server_app.models_download_state["mortal"]["error_msg"]
+    assert server_app.model_download_state["status"] == "error"
+    assert server_app.model_download_state["error_msg"]
 
     # No leftover .tmp file
-    assert not (tmp_path / "mortal.pth.tmp").exists()
-    assert not (tmp_path / "mortal.pth").exists()
+    assert not list(tmp_path.iterdir())
 
 
 def test_config_local_isolation_and_credentials_protection(tmp_path: Path, monkeypatch):
@@ -437,7 +261,7 @@ def test_frontend_engine_status_mapping():
     from server import app as server_app
     source = javascript_source()
     assert "系统已自动回退为内置引擎" not in source
-    assert "无法分析，不会回退到其他引擎" in source
+    assert "无法验证 Mortal S42 ONNX" in source
     assert "requireTrustedReview(result)" in source
     status = server_app.engine_mgr.status()
     assert status["active_engine"] in ("mortal", "unavailable")
@@ -677,85 +501,3 @@ def test_api_records_local(tmp_path, monkeypatch):
     assert rec["uuid"] == dummy_uuid
     assert "TestUser" in rec["names"]
     assert rec["file_size"] > 0
-
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# 8. Strict Verification & Anti-Silent-Fallback Test Suite (Phase 2 Auditing)
-# ---------------------------------------------------------------------------
-def test_missing_weights_strictly_blocks_analysis(tmp_path: Path):
-    """[ISOLATED TEST] Verify missing weights immediately raises FileNotFoundError and aborts review without falling back to builtin."""
-    models_dir = tmp_path / "empty_models"
-    models_dir.mkdir()
-    mgr = EngineManager(models_dir)
-
-    # Status must clearly report unavailable, not builtin
-    st = mgr.status()
-    assert st["has_mortal_weights"] is False
-    assert st["active_engine"] == "unavailable"
-    assert "权重文件缺失" in st["load_error"]
-
-    events = json.loads(DEMO_PATH.read_text(encoding="utf-8"))
-
-    # Both explicit 'auto' and 'akagi' must raise FileNotFoundError
-    with pytest.raises(FileNotFoundError) as exc_info:
-        review_game(events, 0, mgr, force_engine="auto")
-    assert "Mortal-V4-582500 真实模型权重文件缺失" in str(exc_info.value)
-    assert "严禁自动降级" in str(exc_info.value)
-
-    with pytest.raises(FileNotFoundError) as exc_info:
-        review_game(events, 0, mgr, force_engine="akagi")
-    assert "Mortal-V4-582500 真实模型权重文件缺失" in str(exc_info.value)
-
-
-def test_corrupted_weights_strictly_blocks_analysis(tmp_path: Path):
-    """[ISOLATED TEST] Verify corrupted/truncated checkpoint file is rejected and aborts review without falling back."""
-    models_dir = tmp_path / "corrupted_models"
-    models_dir.mkdir()
-    corrupt_pth = models_dir / "mortal_582500.pth"
-    # Write a truncated/garbage file
-    corrupt_pth.write_bytes(b"PK\x03\x04" + b"\x00" * 1024)
-
-    mgr = EngineManager(models_dir)
-    st = mgr.status()
-    assert st["has_mortal_weights"] is False
-    assert st["active_engine"] == "unavailable"
-    assert st["load_error"] is not None
-
-    events = json.loads(DEMO_PATH.read_text(encoding="utf-8"))
-    with pytest.raises(RuntimeError) as exc_info:
-        review_game(events, 0, mgr, force_engine="auto")
-    assert "载入或校验 Mortal-V4-582500 权重" in str(exc_info.value)
-
-
-def test_mismatched_architecture_strictly_rejected(tmp_path: Path):
-    """[ISOLATED TEST] Verify a checkpoint with non-582500 architecture (e.g. 20 blocks or version 3) is strictly rejected by enforce_v4_582500."""
-    models_dir = tmp_path / "fake_models"
-    models_dir.mkdir()
-    fake_pth = models_dir / "mortal_582500.pth"
-
-    # Construct checkpoint pretending to be v4 but wrong blocks (20 instead of 40)
-    conv_channels = 192
-    num_blocks = 20
-    brain = Brain(version=4, num_blocks=num_blocks, conv_channels=conv_channels)
-    dqn = DQN(version=4)
-
-    fake_state = {
-        "config": {
-            "control": {"version": 4},
-            "resnet": {"num_blocks": num_blocks, "conv_channels": conv_channels},
-        },
-        "steps": 100000,  # Wrong steps!
-        "mortal": brain.state_dict(),
-        "current_dqn": dqn.state_dict(),
-    }
-    torch.save(fake_state, fake_pth)
-
-    # Must raise ValueError when enforce_v4_582500 is True
-    with pytest.raises(ValueError) as exc_info:
-        LoadedMortal(fake_pth, device="cpu", enforce_v4_582500=True)
-    assert "结构不匹配" in str(exc_info.value) or "体积异常" in str(exc_info.value) or "步数不匹配" in str(exc_info.value)

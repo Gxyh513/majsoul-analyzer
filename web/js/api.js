@@ -28,7 +28,7 @@ function setLoading(visible, title = "AI 牌谱智能检讨", sub = null) {
 
     let effectiveSub = sub;
     if (!effectiveSub) {
-      effectiveSub = "Mortal-V4-582500 神经网络正在检讨每一手决策";
+      effectiveSub = "Mortal S42 ONNX 神经网络正在检讨每一手决策";
     }
     if ($("loadingSub")) $("loadingSub").textContent = effectiveSub;
     updateAnalysisProgress(0, "正在连接检讨引擎...");
@@ -363,95 +363,49 @@ async function refreshServerStatus() {
   } catch (err) {
     console.warn("Backend offline or unreachable:", err);
     state.serverStatus = { ok: false, offline: true };
+    updateTopbarStatus(state.serverStatus);
   }
 }
 
-function formatModelDisplayName(rawName) {
-  if (!rawName) return "Mortal-V4-582500 (进攻强化)";
-  let name = String(rawName);
-  name = name.replace(/赤木\s*Akagi/gi, "Mortal-V4-582500")
-             .replace(/赤木/g, "Mortal-V4-582500")
-             .replace(/Akagi/gi, "Mortal-V4-582500")
-             .replace(/v4\s*582k步\s*/gi, "")
-             .replace(/mortal-v4-b40c192-26082106/gi, "")
-             .trim();
-  if (name.includes("Mortal-V4-582500") && !name.includes("进攻强化")) {
-    name = "Mortal-V4-582500 (进攻强化)";
-  }
-  return name;
-}
-
-function updateEngineStatusDisplay(modelId, device, activeEngine, hasWeights) {
-  const dev = device || state.serverStatus?.engine?.device || "CPU";
+function updateEngineStatusDisplay() {
   const eng = state.serverStatus?.engine || {};
-  const actualActive = activeEngine !== undefined ? activeEngine : (eng.active_engine || (eng.has_mortal_weights ? "mortal" : "unavailable"));
-  const weightsAvailable = hasWeights !== undefined ? hasWeights : Boolean(eng.has_mortal_weights);
-
-  const targetModel = (modelId || state.selectedModel || eng.selected_model || "akagi").toLowerCase();
-  let friendlyName = "";
-
-  if (targetModel === "builtin" || actualActive === "builtin" || (!weightsAvailable && targetModel !== "custom")) {
-    friendlyName = "Mortal-V4-582500（不可用）";
-  } else if (targetModel.includes("akagi") || targetModel.includes("582500") || targetModel.includes("v4")) {
-    friendlyName = "Mortal-V4-582500";
-  } else if (targetModel.includes("mortal") || targetModel.includes("v3")) {
-    friendlyName = "Mortal (v3)";
-  } else {
-    const available = eng.available_models || [];
-    const found = available.find((m) => m.id && m.id.toLowerCase() === targetModel);
-    if (found && found.name) {
-      friendlyName = formatModelDisplayName(found.name).split("(")[0].trim() || found.name;
-    } else {
-      friendlyName = modelId || state.selectedModel || "Mortal";
-    }
-  }
-
-  const btn = $("engineStatusText");
-  if (btn) {
-    btn.textContent = `${friendlyName} · ${dev}`;
-  }
-  const landingDev = $("landingModelDevice");
-  if (landingDev) {
-    landingDev.textContent = `${dev} 就绪`;
+  const ready = eng.has_mortal_weights === true && eng.active_engine === "mortal";
+  const device = typeof eng.device === "string" && eng.device ? eng.device : "未知";
+  const label = `${ready ? "READY" : "NOT READY"} · ${device}`;
+  const topbar = $("engineStatusText");
+  if (topbar) topbar.textContent = `Mortal S42 ONNX · ${label}`;
+  const landing = $("landingModelDevice");
+  if (landing) landing.textContent = label;
+  const badge = landing?.parentElement;
+  if (badge) {
+    badge.style.color = ready ? "#30d158" : "#ff9f0a";
+    const dot = badge.querySelector(".kd-single-model-dot");
+    if (dot) dot.style.background = ready ? "#30d158" : "#ff9f0a";
   }
 }
 
 function updateTopbarStatus(st) {
   const eng = st.engine || {};
-  const hasWeights = Boolean(eng.has_mortal_weights);
-  const activeEngine = eng.active_engine || (hasWeights ? "mortal" : "unavailable");
-  updateEngineStatusDisplay(state.selectedModel || eng.selected_model, eng.device, activeEngine, hasWeights);
-
-  const sel = $("engineSelect");
-  if (sel) {
-    const models = (eng.available_models && eng.available_models.length > 0)
-      ? eng.available_models
-      : [{ id: "akagi", name: "Mortal-V4-582500 (进攻强化)" }];
-    sel.innerHTML = models
-      .map((m) => `<option value="${m.id}">${escapeHtml(formatModelDisplayName(m.name))}</option>`)
-      .join("");
-    if (state.selectedModel) {
-      sel.value = state.selectedModel;
-    } else if (eng.selected_model) {
-      sel.value = eng.selected_model;
-    }
-  }
-
+  const ready = eng.has_mortal_weights === true && eng.active_engine === "mortal";
+  const value = (v) => escapeHtml(typeof v === "string" && v ? v : "未知");
+  updateEngineStatusDisplay();
   const detail = $("engineModalDetail");
   if (detail) {
-    const modelName = formatModelDisplayName(eng.model_name || "Mortal-V4-582500");
-    const weightFile = eng.model_path ? eng.model_path.split(/[\\/]/).pop() : "mortal_582500.pth";
-    const statusNotice = (!hasWeights && (state.selectedModel || eng.selected_model) !== "builtin")
-      ? `<div style="color: #ff9f0a; margin-top: 8px; font-size: 12px; padding: 6px 10px; background: rgba(255,159,10,0.12); border-radius: 6px;">⚠️ 未检测到有效神经网络权重文件，无法分析，不会回退到其他引擎。</div>`
-      : "";
     detail.innerHTML = `
-      <div style="display:flex; flex-direction:column; gap:6px;">
-        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">当前运行模型：</span><strong style="color:#ffffff;">${escapeHtml(modelName)}</strong></div>
-        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">当前计算硬件：</span><span style="color:#30d158; font-weight:600;">${escapeHtml(eng.device || "CPU")}</span></div>
-        <div style="display:flex; justify-content:space-between;"><span style="color:rgba(235,235,245,0.6);">生效权重文件：</span><code style="color:rgba(235,235,245,0.85); font-size:11.5px;">${escapeHtml(weightFile)}</code></div>
-        ${statusNotice}
-      </div>
-    `;
+      <div style="display:flex; flex-direction:column; gap:6px; overflow-wrap:anywhere;">
+        <div>模型：<strong>Mortal S42 ONNX</strong></div>
+        <div>状态：<strong>${ready ? "READY" : "NOT READY"}</strong></div>
+        <div>模型 revision：<code>${value(eng.model_revision)}</code></div>
+        <div>权重 SHA-256：<code>${value(eng.weight_sha256)}</code></div>
+        <div>推理设备：<span>${value(eng.device)}</span></div>
+      </div>`;
+  }
+  const retry = $("btnRetryModelDownload");
+  if (retry) {
+    const downloading = (eng.model_download || st.model_download)?.status === "downloading";
+    retry.classList.toggle("hidden", ready || isPagesProxyMode() || st.offline);
+    retry.disabled = downloading;
+    retry.textContent = downloading ? "模型下载中" : "重试下载模型";
   }
 }
 

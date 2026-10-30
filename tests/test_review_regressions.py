@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from server.engine import reviewer
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256
 
 
 class FakePlayerState:
@@ -36,17 +37,17 @@ class FakePlayerState:
 
 class FakeModel:
     version = 4
-    steps = 582500
+    steps = None
     tag = "test"
     device = "cpu"
-    weight_sha256 = "a" * 64
+    weight_sha256 = MODEL_SHA256
     def eval_batch(self, obs, masks):
         return np.array([np.arange(46, dtype=np.float32) for _ in obs])
 
 
 class FakeManager:
     def get_mortal(self, model):
-        return FakeModel(), "akagi", Path("mortal_582500.pth")
+        return FakeModel(), MODEL_ID, Path(MODEL_FILE)
 
 
 def start_round():
@@ -140,7 +141,7 @@ def test_round_without_decisions_has_valid_overall_summary(monkeypatch):
 
 
 def test_global_summary_is_not_last_round():
-    path = Path("data/models/mortal_582500.pth")
+    path = Path(__file__).resolve().parents[1] / "data" / "models" / MODEL_FILE
     if not path.is_file(): pytest.skip("published model not present")
     events = json.loads(Path("data/demo_mjai.json").read_text(encoding="utf8"))
     result = reviewer.review_game(events, 0, reviewer.EngineManager(path.parent))

@@ -6,7 +6,6 @@ function showTier(tierNum) {
   const t2 = $("tier2Screen");
   if (tierNum === 1) {
     if (state.isPlaying) togglePlay(false);
-    state.selectedModel = "akagi";
     t1.classList.remove("hidden");
     t2.classList.add("hidden");
     const input = $("homePaipuInput");
@@ -20,25 +19,30 @@ function showTier(tierNum) {
   }
 }
 
-const REVIEW_SCHEMA = "mortal-582500-only-v4";
+const REVIEW_SCHEMA = "mortal-onnx-2f7ad48-v1";
+const MODEL_REVISION = "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a";
+const MODEL_SHA256 = "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4";
 
 function isTrustedReview(result) {
   const status = state.serverStatus?.engine;
   const engine = result?.engine;
-  return Boolean(status?.has_mortal_weights && status.active_engine === "mortal" &&
-    status.weight_sha256 && engine?.type === "mortal" && engine.id === "akagi" &&
-    engine.weight_file === "mortal_582500.pth" && engine.version === 4 &&
-    engine.steps === 582500 && engine.q_source === "neural_network" &&
-    engine.review_schema === REVIEW_SCHEMA && engine.weight_sha256 === status.weight_sha256);
+  return Boolean(status?.has_mortal_weights === true && status.active_engine === "mortal" &&
+    status.model_revision === MODEL_REVISION && status.weight_sha256 === MODEL_SHA256 &&
+    status.review_schema === REVIEW_SCHEMA && engine?.type === "mortal" &&
+    engine.id === "mortal-s42-onnx" && engine.weight_file === "model.onnx" &&
+    engine.version === 4 && engine.steps === null && engine.revision === MODEL_REVISION &&
+    engine.q_source === "neural_network" && engine.review_schema === REVIEW_SCHEMA &&
+    engine.weight_sha256 === MODEL_SHA256);
 }
 
 async function requireModelStatus() {
   await refreshServerStatus();
-  if (!state.serverStatus?.engine?.has_mortal_weights ||
+  if (state.serverStatus?.engine?.has_mortal_weights !== true ||
       state.serverStatus.engine.active_engine !== "mortal" ||
-      !state.serverStatus.engine.weight_sha256 ||
+      state.serverStatus.engine.weight_sha256 !== MODEL_SHA256 ||
+      state.serverStatus.engine.model_revision !== MODEL_REVISION ||
       state.serverStatus.engine.review_schema !== REVIEW_SCHEMA) {
-    throw new Error("无法验证 mortal_582500.pth，请启动已更新的后端并检查模型状态。");
+    throw new Error("无法验证 Mortal S42 ONNX，请检查模型状态和后端版本。");
   }
 }
 
@@ -55,11 +59,11 @@ function matchesReview(result, seat) {
     (seat == null || result.target_actor === seat);
 }
 
-async function getReview(source, model, seat, onProgress) {
+async function getReview(source, seat, onProgress) {
   await requireModelStatus();
   const body = source.kind === "json"
-    ? { content: source.input, engine: model }
-    : { paipu: source.identity, engine: model };
+    ? { content: source.input }
+    : { paipu: source.identity };
   if (seat != null) body.target_actor = seat;
   let result;
   try {
@@ -106,7 +110,7 @@ function applyPerspective(result, preservePosition) {
   if ($("roundModal") && !$("roundModal").classList.contains("hidden")) renderKyokuTable();
 }
 
-async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
+async function startAnalysisFromInput(rawInput, seat = null) {
   const originalInput = rawInput || "";
   const input = originalInput.trim();
   if (!input) {
@@ -119,14 +123,13 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   const source = { kind: isJson ? "json" : "paipu", input: isJson ? originalInput : input,
     identity: isJson ? input : parsePaipuUuid(input) };
   const version = ++analysisViewVersion;
-  state.selectedModel = model;
-  updateEngineStatusDisplay(model);
-  setLoading(true, "正在分析牌谱...", "正在使用 Mortal-V4-582500 神经网络检讨每一手决策");
+  updateEngineStatusDisplay();
+  setLoading(true, "正在分析牌谱...", "正在使用 Mortal S42 ONNX 神经网络检讨每一手决策");
   try {
-    const result = await getReview(source, model, seat, (pct, msg) => {
+    const result = await getReview(source, seat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
     });
-    if (version !== analysisViewVersion || state.selectedModel !== model) return;
+    if (version !== analysisViewVersion) return;
     currentReviewSource = source;
     applyPerspective(result, false);
     showTier(2);
@@ -137,8 +140,8 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);
   } catch (err) {
-    if (version !== analysisViewVersion || state.selectedModel !== model) return;
-    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, model, seat));
+    if (version !== analysisViewVersion) return;
+    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, seat));
   }
 }
 
@@ -146,7 +149,6 @@ async function switchSeatPerspective(newSeat) {
   if (!state.reviewData || !currentReviewSource) return;
   const version = ++analysisViewVersion;
   const source = currentReviewSource;
-  const model = state.selectedModel;
   if (newSeat === state.targetActor) {
     setLoading(false);
     return;
@@ -154,14 +156,14 @@ async function switchSeatPerspective(newSeat) {
   const seatName = getPlayerDisplayName(newSeat);
   setPerspectiveLoading(`正在分析 ${seatName} 的 AI 检讨`);
   try {
-    const result = await getReview(source, model, newSeat, (pct, msg) => {
+    const result = await getReview(source, newSeat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
     });
-    if (version !== analysisViewVersion || currentReviewSource !== source || state.selectedModel !== model) return;
+    if (version !== analysisViewVersion || currentReviewSource !== source) return;
     applyPerspective(result, true);
     setLoading(false);
   } catch (err) {
-    if (version !== analysisViewVersion || currentReviewSource !== source || state.selectedModel !== model) return;
+    if (version !== analysisViewVersion || currentReviewSource !== source) return;
     setLoading(false);
     showAnalysisError(`切换视角失败：${err.message}`, () => switchSeatPerspective(newSeat));
   }

@@ -16,11 +16,11 @@ import pytest
 from starlette.testclient import TestClient
 
 from server import app as server_app
-from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA, valid_review_source
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA, valid_review_source
 from server.majsoul.client import MajsoulError
 
 
-SHA = "a" * 64
+SHA = MODEL_SHA256
 
 
 def valid_result(sha=SHA):
@@ -31,7 +31,7 @@ def valid_result(sha=SHA):
             "weight_file": MODEL_FILE,
             "weight_sha256": sha,
             "version": 4,
-            "steps": 582500,
+            "steps": None, "revision": MODEL_REVISION,
             "q_source": "neural_network",
             "review_schema": REVIEW_SCHEMA,
         },
@@ -82,7 +82,7 @@ class ControlledReviews:
 def review_environment(monkeypatch):
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
         status=lambda: {}, selected_model=MODEL_ID,
@@ -133,35 +133,21 @@ async def assert_queued_and_finish(control, owner):
         assert owner.cancelled()
 
 
-@pytest.mark.parametrize("disconnect_at", ["startup_yield", "queue_wait", "progress_yield"])
-def test_stream_disconnect_keeps_permit_until_worker_finishes(review_environment, monkeypatch, disconnect_at):
+def test_stream_disconnect_keeps_permit_until_worker_finishes(review_environment, monkeypatch):
     async def scenario():
-        control = ControlledReviews(asyncio.get_running_loop(), emit_progress=disconnect_at == "progress_yield")
+        control = ControlledReviews(asyncio.get_running_loop(), emit_progress=True)
         monkeypatch.setattr(server_app, "review_game", control.review)
+        monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
         try:
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-            stream = response.body_iterator
-            assert event_from_chunk(await anext(stream))["percent"] == 5
-            assert event_from_chunk(await anext(stream))["percent"] == 15
+            request = MemoryASGIRequest("/api/analyze/stream", {"paipu": "first"})
+            task = request.start()
             await wait_started(control, "first")
-
-            if disconnect_at == "queue_wait":
-                waiting = asyncio.create_task(anext(stream))
-                await asyncio.sleep(0.03)
-                assert not waiting.done()
-                waiting.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await waiting
-            elif disconnect_at == "progress_yield":
-                assert event_from_chunk(await asyncio.wait_for(anext(stream), timeout=2))["percent"] == 35
-                await stream.aclose()
-            else:
-                await stream.aclose()
-
+            assert not request.sent
+            request.disconnect()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
             await assert_queued_and_finish(control, None)
         finally:
             control.release_all()
-
     asyncio.run(scenario())
 
 
@@ -171,26 +157,23 @@ def test_disconnect_during_asgi_send_closes_listener_but_not_worker(review_envir
         monkeypatch.setattr(server_app, "review_game", control.review)
         blocked_send = asyncio.Event()
         try:
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-
+            task = asyncio.create_task(server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first")))
+            await wait_started(control, "first")
+            control.release["first"].set()
+            response = await asyncio.wait_for(task, 2)
             async def send(message):
                 if message["type"] == "http.response.body" and message.get("body"):
-                    event = event_from_chunk(message["body"].decode())
-                    if event.get("percent") == 15:
-                        blocked_send.set()
-                        await asyncio.Event().wait()
-
+                    blocked_send.set()
+                    await asyncio.Event().wait()
             sender = asyncio.create_task(response.stream_response(send))
-            await asyncio.wait_for(blocked_send.wait(), timeout=2)
-            await wait_started(control, "first")
+            await asyncio.wait_for(blocked_send.wait(), 2)
             sender.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await sender
             assert response.body_iterator.ag_frame is None
-            await assert_queued_and_finish(control, None)
+            assert not server_app._review_tasks and not server_app.review_semaphore.locked()
         finally:
             control.release_all()
-
     asyncio.run(scenario())
 
 
@@ -220,14 +203,13 @@ def test_stream_and_nonstream_complete_normally(review_environment, monkeypatch)
         control = ControlledReviews(asyncio.get_running_loop(), emit_progress=True)
         monkeypatch.setattr(server_app, "review_game", control.review)
         try:
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-            stream = response.body_iterator
-            assert event_from_chunk(await anext(stream))["percent"] == 5
-            assert event_from_chunk(await anext(stream))["percent"] == 15
+            pending = asyncio.create_task(server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first")))
             await wait_started(control, "first")
-            assert event_from_chunk(await asyncio.wait_for(anext(stream), timeout=2))["percent"] == 35
+            assert not pending.done()
             control.release["first"].set()
-            messages = [event_from_chunk(chunk) async for chunk in stream]
+            response = await asyncio.wait_for(pending, 2)
+            messages = [event_from_chunk(chunk) async for chunk in response.body_iterator]
+            assert any(event.get("percent") == 35 for event in messages)
             assert next(event["result"] for event in messages if event["type"] == "complete")["game_id"] == "first"
             assert (await nonstream("first"))["game_id"] == "first"
             assert control.calls == ["first", "first"]
@@ -235,7 +217,6 @@ def test_stream_and_nonstream_complete_normally(review_environment, monkeypatch)
             assert not server_app._review_tasks
         finally:
             control.release_all()
-
     asyncio.run(scenario())
 
 
@@ -243,27 +224,22 @@ def test_cancelling_queued_stream_never_starts_job(review_environment, monkeypat
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
+        monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
         try:
             owner = asyncio.create_task(nonstream("first"))
             await wait_started(control, "first")
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="other"))
-            stream = response.body_iterator
-            assert event_from_chunk(await anext(stream))["percent"] == 5
-            assert event_from_chunk(await anext(stream))["type"] == "queued"
-            waiter = asyncio.create_task(anext(stream))
+            request = MemoryASGIRequest("/api/analyze/stream", {"paipu": "other"})
+            waiter = request.start()
             await asyncio.sleep(0.03)
-            assert not waiter.done()
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
+            assert not waiter.done() and not control.started["other"].is_set()
+            request.disconnect()
+            await asyncio.wait_for(asyncio.gather(waiter, return_exceptions=True), 2)
             control.release["first"].set()
-            await asyncio.wait_for(owner, timeout=2)
+            await asyncio.wait_for(owner, 2)
             await asyncio.sleep(0)
-            assert control.calls == ["first"]
-            assert not server_app._review_tasks
+            assert control.calls == ["first"] and not server_app._review_tasks
         finally:
             control.release_all()
-
     asyncio.run(scenario())
 
 
@@ -349,7 +325,7 @@ def test_asgi_nonstream_disconnect_while_queued_does_not_start_review(review_env
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+        monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
         monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
         entered = asyncio.Event()
 
@@ -385,7 +361,7 @@ def test_asgi_nonstream_disconnect_while_queued_does_not_start_review(review_env
 def test_asgi_nonstream_disconnect_during_download_wait_stops_preparation(review_environment, monkeypatch):
     async def scenario():
         monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "downloading"}})
+        monkeypatch.setattr(server_app, "model_download_state", {"status": "downloading"})
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
         async def waiting(_engine):
@@ -412,7 +388,7 @@ def test_asgi_nonstream_disconnect_after_start_preserves_worker(review_environme
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+        monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
         monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
         try:
             request = MemoryASGIRequest("/api/analyze/paipu", {"paipu": "first"})
@@ -431,7 +407,7 @@ def test_asgi_nonstream_success_stops_disconnect_watcher(review_environment, mon
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+        monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
         monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
         try:
             request = MemoryASGIRequest("/api/analyze/paipu", {"paipu": "first"})
@@ -489,18 +465,19 @@ def test_worker_cancelled_error_does_not_spin_or_leak():
         original_is_file = pathlib.Path.is_file
         pathlib.Path.is_file = lambda self: False if self.name in ('config.json', 'config.local.json') else original_is_file(self)
         from server import app
+        from server.engine.model_policy import MODEL_ID, MODEL_SHA256 as SHA
         pathlib.Path.is_file = original_is_file
 
         app.review_semaphore = asyncio.Semaphore(1)
         app._review_tasks = set()
-        app.engine_mgr = SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256='a' * 64), 'akagi', None))
+        app.engine_mgr = SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None))
         def cancelled_worker(*args, **kwargs):
             raise asyncio.CancelledError('worker failed')
         app.review_game = cancelled_worker
 
         async def scenario():
             try:
-                await asyncio.wait_for(app._run_review('game', [], {}, 0, 'akagi', 0.1), 3)
+                await asyncio.wait_for(app._run_review('game', [], {}, 0, MODEL_ID, 0.1), 3)
             except asyncio.CancelledError:
                 pass
             else:
@@ -552,7 +529,7 @@ def test_mjai_disconnect_retry_reanalyses_without_inventing_start_time(monkeypat
         monkeypatch.setattr(server_app.time, "time", lambda: now[0])
         monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
         monkeypatch.setattr(server_app, "_review_tasks", set())
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+        monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
         monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
             get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
         ))
@@ -571,13 +548,12 @@ def test_mjai_disconnect_retry_reanalyses_without_inventing_start_time(monkeypat
 
         monkeypatch.setattr(server_app, "review_game", review)
         try:
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(content=events))
-            stream = response.body_iterator
-            assert event_from_chunk(await anext(stream))["percent"] == 5
-            assert event_from_chunk(await anext(stream))["percent"] == 15
+            request = MemoryASGIRequest("/api/analyze/stream", {"content": events})
+            owner = request.start()
             await asyncio.wait_for(started.wait(), 2)
             first_job = next(iter(server_app._review_tasks))
-            await stream.aclose()
+            request.disconnect()
+            await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 2)
             now[0] = 2000
             game_id, retry_events, meta, seat = await server_app.resolve_game_data(content=events)
             assert meta["start_time"] is None
@@ -637,7 +613,7 @@ def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypat
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://majsoul.ccwu.cc")
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
     ))
@@ -709,7 +685,7 @@ def test_public_status_excludes_private_state_and_retains_model_attestation(monk
     }
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(status=lambda: copy.deepcopy(engine), selected_model=MODEL_ID))
     monkeypatch.setattr(server_app, "get_all_configured_accounts", lambda: [{}, {}])
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "error", "error_msg": "synthetic-password /private/synthetic"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "error", "error_msg": "synthetic-password /private/synthetic"})
     remote = TestClient(server_app.app, base_url="http://api.example", client=("203.0.113.5", 12345))
     public = remote.get("/api/status")
     assert public.status_code == 200
@@ -722,7 +698,7 @@ def test_public_status_excludes_private_state_and_retains_model_attestation(monk
     assert status["engine"]["weight_sha256"] == SHA
     assert status["engine"]["review_schema"] == REVIEW_SCHEMA
     assert status["engine"]["device"] == "CUDA:0"
-    assert all("path" not in model for model in status["engine"]["available_models"])
+    assert "available_models" not in status["engine"]
     for forbidden in ("/private/", "synthetic-password", "account_pool_count", "logged_in", "load_error", "model_download"):
         assert forbidden not in public.text
 
@@ -783,7 +759,7 @@ def test_mixed_account_failures_are_private_in_json_and_sse(monkeypatch, tmp_pat
     monkeypatch.setattr(server_app, "get_all_configured_accounts", lambda: accounts)
     monkeypatch.setattr(server_app, "login_with_account_spec", login)
     monkeypatch.setattr(server_app, "is_client_logged_in_as", lambda acc: fake.logged_in and fake.account_id == acc["account_id"])
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     client = TestClient(server_app.app, base_url="http://api.example", client=("203.0.113.5", 12345))
     headers = {"X-Api-Token": "synthetic-api-token"}
     game_id = "241026-11111111-2222-3333-4444-555555555555"
@@ -852,21 +828,19 @@ def test_download_failures_do_not_echo_internal_error(monkeypatch):
 
     async def scenario():
         state = {"status": "downloading", "progress_pct": 5, "error_msg": None}
-        monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: state})
-        response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-        stream = response.body_iterator
-        assert event_from_chunk(await anext(stream))["type"] == "progress"
-        waiting = asyncio.create_task(server_app._wait_for_model_download(MODEL_ID))
+        monkeypatch.setattr(server_app, "model_download_state", state)
+        def unavailable(_):
+            raise RuntimeError("synthetic-token /private/model.onnx")
+        monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(get_mortal=unavailable))
+        waiting = asyncio.create_task(server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"), None))
         await asyncio.sleep(0)
-        state.update(status="error", error_msg="synthetic-token /private/model.pth")
-        error_event = event_from_chunk(await asyncio.wait_for(anext(stream), timeout=2))
+        assert not waiting.done()
+        state.update(status="error", error_msg="synthetic-token /private/model.onnx")
         with pytest.raises(HTTPException) as error:
-            await asyncio.wait_for(waiting, timeout=2)
-        assert error_event["type"] == "error"
-        for detail in (error_event["detail"], error.value.detail):
-            assert "下载失败" in detail
-            assert "synthetic-token" not in detail and "/private/" not in detail
-        await stream.aclose()
+            await asyncio.wait_for(waiting, timeout=3)
+        assert error.value.status_code == 503
+        assert "下载失败" in error.value.detail
+        assert "synthetic-token" not in error.value.detail and "/private/" not in error.value.detail
 
     asyncio.run(scenario())
 
@@ -891,7 +865,7 @@ def test_safe_error_context_records_fixed_location_and_code_without_message():
 
 def test_invalid_paipu_does_not_echo_sensitive_input(monkeypatch, caplog):
     monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     client = TestClient(server_app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     sensitive = "synthetic-user-token-in-invalid-paipu"
     for route in ("paipu", "stream"):
@@ -906,7 +880,7 @@ def test_unexpected_stream_error_does_not_echo_exception(monkeypatch, caplog):
         raise RuntimeError("private-user synthetic-password /private/path")
 
     monkeypatch.setattr(server_app, "resolve_game_data", broken)
-    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     client = TestClient(server_app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
     response = client.post("/api/analyze/stream", json={"paipu": "demo"})
