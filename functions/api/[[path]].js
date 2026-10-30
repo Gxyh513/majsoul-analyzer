@@ -64,28 +64,19 @@ async function readBodyLimited(request) {
 
 function publicStatus(payload) {
   const engine = payload?.engine || {};
-  const availableModels = Array.isArray(engine.available_models)
-    ? engine.available_models
-        .filter((model) => model && typeof model.id === "string")
-        .map((model) => ({
-          id: model.id,
-          name: typeof model.name === "string" ? model.name : model.id,
-        }))
-    : [];
-
   return {
     ok: payload?.ok === true,
     engine: {
       has_mortal_weights: Boolean(engine.has_mortal_weights),
       active_engine: engine.active_engine || "unavailable",
-      model_name: typeof engine.model_name === "string" ? engine.model_name : "Mortal-V4-582500",
-      model_id: typeof engine.model_id === "string" ? engine.model_id : "akagi",
+      model_ready: engine.model_ready === true,
+      model_name: typeof engine.model_name === "string" ? engine.model_name : "Mortal S42 ONNX",
+      model_id: typeof engine.model_id === "string" ? engine.model_id : "mortal-s42-onnx",
+      model_revision: typeof engine.model_revision === "string" ? engine.model_revision : null,
       model_tag: typeof engine.model_tag === "string" ? engine.model_tag : "",
       weight_sha256: typeof engine.weight_sha256 === "string" ? engine.weight_sha256 : null,
       review_schema: typeof engine.review_schema === "string" ? engine.review_schema : null,
       device: typeof engine.device === "string" ? engine.device : "N/A",
-      selected_model: typeof engine.selected_model === "string" ? engine.selected_model : "akagi",
-      available_models: availableModels,
     },
   };
 }

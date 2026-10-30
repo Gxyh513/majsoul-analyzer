@@ -16,7 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN git clone --depth 1 https://github.com/Equim-chan/Mortal.git ./vendor/Mortal
+RUN git init ./vendor/Mortal && \
+    git -C ./vendor/Mortal remote add origin https://github.com/Equim-chan/Mortal.git && \
+    git -C ./vendor/Mortal fetch --depth 1 origin 0cff2b52982be5b1163aa9a62fb01f03ce91e0d2 && \
+    git -C ./vendor/Mortal checkout --detach FETCH_HEAD
 
 WORKDIR /build/vendor/Mortal
 RUN cargo build -p libriichi --lib --release
@@ -34,10 +37,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight CPU-optimized PyTorch first (~180MB instead of 2.8GB CUDA), then requirements
+# Install CPU ONNX Runtime and the application dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all project files
 COPY . .
@@ -49,8 +51,11 @@ COPY --from=builder /build/vendor/Mortal/target/release/libriichi.so /app/server
 # Ensure data directories exist
 RUN mkdir -p data/models data/records data/cache
 
-# Download and verify the only supported checkpoint.
-RUN curl -fSL --retry 3 -o data/models/mortal_582500.pth       https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth &&     echo "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20  data/models/mortal_582500.pth" | sha256sum -c -
+# Download and verify the fixed S42 ONNX artifact.
+RUN curl -fSL --retry 3 -o data/models/model.onnx \
+    https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a/model.onnx && \
+    echo "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4  data/models/model.onnx" | sha256sum -c - && \
+    python -c "from server.engine.onnx_mortal import OnnxMortal; OnnxMortal('data/models/model.onnx')"
 
 ENV HOST=0.0.0.0
 ENV PORT=7860

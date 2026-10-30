@@ -1,5 +1,5 @@
-"""Google Colab / 云端 Linux GPU 一键启动脚本
-在 Google Colab (选择 T4 GPU 运行时) 中执行：
+"""Google Colab / 云端 Linux 一键启动脚本（ONNX Runtime CPU）
+在 Google Colab 中执行：
 !curl -sSL https://raw.githubusercontent.com/Gxyh513/majsoul-analyzer/main/colab_launcher.py | python
 """
 import os
@@ -12,7 +12,7 @@ import sys
 import time
 
 print("=" * 65)
-print(" 🚀 正在初始化 雀魂牌谱 AI 检讨系统 (云端 GPU 加速环境)...")
+print(" 🚀 正在初始化 雀魂牌谱 AI 检讨系统 (云端 CPU 环境)...")
 print("=" * 65)
 
 # 1. Determine project directory
@@ -38,37 +38,29 @@ if cargo_bin not in os.environ.get("PATH", ""):
     os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
 
 so_path = os.path.join(root_dir, "server", "engine", "libriichi.so")
-if not os.path.isfile(so_path):
-    mortal_cargo = os.path.join(root_dir, "vendor", "Mortal", "Cargo.toml")
-    if not os.path.isfile(mortal_cargo):
-        print("📦 拉取 Mortal 核心源码库...")
-        shutil.rmtree(os.path.join(root_dir, "vendor", "Mortal"), ignore_errors=True)
-        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/Equim-chan/Mortal.git", os.path.join(root_dir, "vendor", "Mortal")], check=True)
+mortal_dir = os.path.join(root_dir, "vendor", "Mortal")
+mortal_commit = "0cff2b52982be5b1163aa9a62fb01f03ce91e0d2"
+if not os.path.isdir(os.path.join(mortal_dir, ".git")):
+    print("📦 拉取 Mortal 核心源码库...")
+    subprocess.run(["git", "init", mortal_dir], check=True)
+subprocess.run(["git", "-C", mortal_dir, "fetch", "--depth", "1",
+                "https://github.com/Equim-chan/Mortal.git", mortal_commit], check=True)
+subprocess.run(["git", "-C", mortal_dir, "checkout", "--detach", "FETCH_HEAD"], check=True)
+# Do not build a locally modified checkout as if it were the pinned source.
+subprocess.run(["git", "-C", mortal_dir, "diff", "--quiet"], check=True)
+subprocess.run(["git", "-C", mortal_dir, "diff", "--cached", "--quiet"], check=True)
 
-    if shutil.which("cargo") is None:
-        print("🦀 安装 Rust/Cargo 编译工具链...")
-        subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q", shell=True, check=True)
-        if cargo_bin not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
+if shutil.which("cargo") is None:
+    print("🦀 安装 Rust/Cargo 编译工具链...")
+    subprocess.run("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y -q", shell=True, check=True)
+    if cargo_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
 
-    print("⚙️ 编译 Linux libriichi 核心计算库 (使用 Rust)...")
-    env = os.environ.copy()
-    env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
-    try:
-        subprocess.run(["cargo", "build", "-p", "libriichi", "--lib", "--release"], cwd=os.path.join(root_dir, "vendor", "Mortal"), env=env, check=True)
-        found = False
-        for root, dirs, files in os.walk(os.path.join(root_dir, "vendor", "Mortal", "target", "release")):
-            for f in files:
-                if f.endswith(".so") and "riichi" in f:
-                    src = os.path.join(root, f)
-                    shutil.copyfile(src, so_path)
-                    print(f"✅ {f} -> {so_path} 拷贝成功！")
-                    found = True
-                    break
-            if found:
-                break
-    except Exception as e:
-        print(f"⚠️ Cargo 编译提示: {e}")
+print("⚙️ 编译 Linux libriichi 核心计算库 (使用 Rust)...")
+env = os.environ.copy()
+env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
+subprocess.run(["cargo", "build", "-p", "libriichi", "--lib", "--release"], cwd=mortal_dir, env=env, check=True)
+shutil.copyfile(os.path.join(mortal_dir, "target", "release", "libriichi.so"), so_path)
 
 # Verify libriichi import
 try:
@@ -79,8 +71,8 @@ except Exception:
 # 4. Download AI weights if missing
 models_dir = os.path.join("data", "models")
 os.makedirs(models_dir, exist_ok=True)
-model_path = os.path.join(models_dir, "mortal_582500.pth")
-expected_sha = "738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20"
+model_path = os.path.join(models_dir, "model.onnx")
+expected_sha = "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4"
 def model_sha256(path):
     digest = hashlib.sha256()
     with open(path, "rb") as f:
@@ -89,13 +81,14 @@ def model_sha256(path):
     return digest.hexdigest()
 
 if not os.path.isfile(model_path) or model_sha256(model_path) != expected_sha:
-    print("🧠 下载并校验 Mortal-V4-582500 权重...")
+    print("🧠 下载并校验 Mortal S42 ONNX 模型...")
     temp_path = model_path + ".tmp"
     try:
         subprocess.run(["curl", "-fSL", "--retry", "3", "-o", temp_path,
-                        "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth"], check=True)
+                        "https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a/model.onnx"], check=True)
         if model_sha256(temp_path) != expected_sha:
             raise RuntimeError("模型权重 SHA-256 校验失败")
+        subprocess.run([sys.executable, "-c", "import sys; from server.engine.onnx_mortal import OnnxMortal; OnnxMortal(sys.argv[1])", temp_path], check=True)
         os.replace(temp_path, model_path)
     finally:
         if os.path.isfile(temp_path):
@@ -131,7 +124,7 @@ while time.time() - start_t < 30:
 if tunnel_url:
     web_url = f"https://majsoul-analyzer.pages.dev/?backend={tunnel_url}#api_token={api_token}"
     print("\n" + "=" * 65)
-    print(" 🎉 云端 GPU AI 引擎已成功启动！")
+    print(" 🎉 云端 AI 引擎正在启动！")
     print(f" 👉 您的云端 API 服务地址为:  {tunnel_url}")
     print("\n 🔗 点击直接进入复盘网页 (已自动连接):")
     print(f"    👉 {web_url}")

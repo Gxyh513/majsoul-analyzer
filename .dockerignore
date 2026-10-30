@@ -8,8 +8,8 @@ data/config.json
 data/records/
 data/reviews/
 data/metadata/
-data/models/*.pth
-data/models/*.tmp
+data/models/
+
 .env
 .env.*
 vendor/

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from server.engine import reviewer
-from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA, valid_review_source
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA, valid_review_source
 from server.majsoul.convert import to_mjai
 from test_review_regressions import FakeManager, FakeModel, FakePlayerState, start_round
 
@@ -27,7 +27,7 @@ def test_rating_depends_on_q_gap_not_candidate_range(monkeypatch, loss, expected
 
     class Manager(FakeManager):
         def get_mortal(self, model):
-            return Model(), "akagi", Path(MODEL_FILE)
+            return Model(), MODEL_ID, Path(MODEL_FILE)
 
     monkeypatch.setattr(reviewer.lstate, "PlayerState", TwoChoiceState)
     events = [start_round(), {"type": "tsumo", "actor": 0, "pai": "2m"},
@@ -57,7 +57,7 @@ def test_rating_is_independent_of_additional_low_q_candidate(monkeypatch):
 
     class Manager(FakeManager):
         def get_mortal(self, model):
-            return Model(), "akagi", Path(MODEL_FILE)
+            return Model(), MODEL_ID, Path(MODEL_FILE)
 
     monkeypatch.setattr(reviewer.lstate, "PlayerState", ThreeChoiceState)
     events = [start_round(), {"type": "tsumo", "actor": 0, "pai": "2m"},
@@ -69,10 +69,10 @@ def test_rating_is_independent_of_additional_low_q_candidate(monkeypatch):
 
 def test_previous_rating_cache_version_is_rejected():
     engine = {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
-              "weight_sha256": "a" * 64, "version": 4, "steps": 582500,
+              "weight_sha256": MODEL_SHA256, "version": 4, "steps": None, "revision": MODEL_REVISION,
               "q_source": "neural_network", "review_schema": REVIEW_SCHEMA}
-    assert valid_review_source({"engine": engine}, "a" * 64)
-    assert not valid_review_source({"engine": {**engine, "review_schema": "mortal-582500-only-v3"}}, "a" * 64)
+    assert valid_review_source({"engine": engine}, MODEL_SHA256)
+    assert not valid_review_source({"engine": {**engine, "review_schema": "mortal-582500-only-v3"}}, MODEL_SHA256)
 
 
 @pytest.mark.parametrize("suit,index", [("m", 0), ("p", 1), ("s", 2)])

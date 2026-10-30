@@ -11,7 +11,6 @@ const state = window.state = {
   stepIdx: 0,
   openHands: true,
   soundEnabled: localStorage.getItem("majsoul_sound") !== "0",
-  selectedModel: "akagi",
   serverStatus: null,
   isPlaying: false,
   playTimer: null,

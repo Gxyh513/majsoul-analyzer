@@ -59,7 +59,7 @@ async function loadLocalCachedRecords() {
       el.addEventListener("click", () => {
         const uuid = el.getAttribute("data-uuid");
         if (uuid) {
-          startAnalysisFromInput(uuid, state.selectedModel);
+          startAnalysisFromInput(uuid);
         }
       });
     });
@@ -117,7 +117,7 @@ function readAndAnalyzeFile(file) {
       return;
     }
     showToast(`正在载入本地牌谱文件: ${file.name}`, "info");
-    startAnalysisFromInput(content, state.selectedModel);
+    startAnalysisFromInput(content);
   };
   reader.onerror = () => {
     showToast(`读取文件失败: ${file.name}`, "error");

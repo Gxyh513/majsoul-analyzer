@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import tempfile
 import time
 import urllib.request
 import uuid
@@ -26,7 +27,7 @@ from pydantic import BaseModel
 from .storage_paths import storage_paths
 from .majsoul.session import SessionLock
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
-from .engine.reviewer import EngineManager, review_game
+from .engine.reviewer import EngineManager, ModelInferenceError, review_game
 from .engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file, valid_review_source
 from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
@@ -150,224 +151,60 @@ def save_config(cfg: dict[str, Any], *, clear_local_credentials: bool = False):
 
 
 engine_mgr = EngineManager(MODELS_DIR)
-_cfg = load_config()
-# Legacy configuration cannot select another checkpoint or an internal engine.
-engine_mgr.selected_model = MODEL_ID
 
 
-# Whitelisted official model download definitions (no arbitrary URLs)
-SUPPORTED_DOWNLOAD_MODELS: dict[str, dict[str, Any]] = {
-    "akagi": {
-        "name": "Mortal-V4-582500",
-        "file": "mortal_582500.pth",
-        "min_size": 100_000_000,
-        "expected_size": 130_786_031,
-        "urls": [
-            "https://hf-mirror.com/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
-            "https://huggingface.co/Yuchen1457/mortal-582500/resolve/main/mortal_582500.pth",
-        ],
-    },
-    "mortal": {
-        "name": "Mortal (v3)",
-        "file": "mortal.pth",
-        "min_size": 100_000_000,
-        "expected_size": 130_774_416,
-        "urls": [
-            "https://hf-mirror.com/VoidShine/mortal-298k/resolve/main/mortal_298k.pth",
-            "https://huggingface.co/VoidShine/mortal-298k/resolve/main/mortal_298k.pth",
-        ],
-    },
-}
-
-
-def _create_initial_download_state(model_id: str) -> dict[str, Any]:
-    meta = SUPPORTED_DOWNLOAD_MODELS.get(model_id, {})
-    target_file = MODELS_DIR / meta.get("file", f"{model_id}.pth")
-    if not target_file.is_file() and model_id == "akagi":
-        alt_file = MODELS_DIR / "mortal_582500.pth"
-        if alt_file.is_file():
-            target_file = alt_file
-    if target_file.is_file() and target_file.stat().st_size > meta.get("min_size", 100_000_000):
-        sz = target_file.stat().st_size
-        return {
-            "status": "ready",
-            "progress_pct": 100.0,
-            "downloaded_bytes": sz,
-            "total_bytes": sz,
-            "error_msg": None,
-        }
-    return {
-        "status": "idle",
-        "progress_pct": 0.0,
-        "downloaded_bytes": 0,
-        "total_bytes": 0,
-        "error_msg": None,
-    }
-
-
-models_download_state: dict[str, dict[str, Any]] = {
-    m_id: _create_initial_download_state(m_id)
-    for m_id in SUPPORTED_DOWNLOAD_MODELS
-}
-
-_model_download_locks: dict[str, threading.Lock] = {
-    m_id: threading.Lock()
-    for m_id in SUPPORTED_DOWNLOAD_MODELS
-}
-
-# Compatibility alias for code referencing model_download_state
-model_download_state: dict[str, Any] = models_download_state["akagi"]
-
-
-def get_current_model_download_state(model_id: str | None = None) -> dict[str, Any]:
-    m = model_id or engine_mgr.selected_model or "akagi"
-    if m in models_download_state:
-        return models_download_state[m]
-    return models_download_state.get("akagi", {
-        "status": "idle",
-        "progress_pct": 0.0,
-        "downloaded_bytes": 0,
-        "total_bytes": 0,
-        "error_msg": None,
-    })
+# One immutable, independently verified model; never accept a user-supplied URL.
+MODEL_SIZE = 43_673_425
+MODEL_REVISION = "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a"
+MODEL_URL = f"https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/{MODEL_REVISION}/model.onnx"
+model_download_state = {"status": "idle", "progress_pct": 0.0, "downloaded_bytes": 0,
+                        "total_bytes": MODEL_SIZE, "error_msg": None}
+_model_download_lock = threading.Lock()
 
 
 def _download_model_sync(model_id: str) -> None:
-    if model_id not in SUPPORTED_DOWNLOAD_MODELS:
-        log.warning("[AI模型下载] 请求了不受支持的模型 ID: %s", model_id)
+    if model_id != MODEL_ID:
         return
-
-    meta = SUPPORTED_DOWNLOAD_MODELS[model_id]
-    target_path = MODELS_DIR / meta["file"]
-    if not target_path.is_file() and model_id == "akagi":
-        alt_file = MODELS_DIR / "mortal_582500.pth"
-        if alt_file.is_file():
-            target_path = alt_file
-    min_size = meta["min_size"]
-    state = models_download_state[model_id]
-
-    with _model_download_locks[model_id]:
+    state = model_download_state
+    with _model_download_lock:
         if state["status"] == "downloading":
             return
-        if target_path.is_file() and target_path.stat().st_size > min_size:
-            sz = target_path.stat().st_size
-            state.update({
-                "status": "ready",
-                "progress_pct": 100.0,
-                "downloaded_bytes": sz,
-                "total_bytes": sz,
-                "error_msg": None,
-            })
-            log.info("[AI模型就绪] %s 权重文件完好 (大小: %.1f MB)，随时可执行深度推理", meta["name"], sz / (1024 * 1024))
-            return
-        state.update({
-            "status": "downloading",
-            "progress_pct": 0.0,
-            "downloaded_bytes": 0,
-            "total_bytes": 0,
-            "error_msg": None,
-        })
+        state.update(status="downloading", progress_pct=0.0, downloaded_bytes=0,
+                     total_bytes=MODEL_SIZE, error_msg=None)
 
-    tmp_path = MODELS_DIR / f"{meta['file']}.tmp"
-    if tmp_path.is_file():
-        try:
-            tmp_path.unlink()
-        except Exception:
-            pass
-
-    download_success = False
-    last_error = None
     try:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        log.info("[AI模型下载] 本地缺失 %s 权重，开始在后台从官方镜像下载...", meta["name"])
-        for url in meta["urls"]:
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=300) as resp, open(tmp_path, "wb") as f:
-                    cl = resp.headers.get("Content-Length")
-                    total_bytes = int(cl) if cl and cl.isdigit() else meta["expected_size"]
-                    state["total_bytes"] = total_bytes
-                    downloaded = 0
-                    while True:
-                        chunk = resp.read(1024 * 512)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        state["downloaded_bytes"] = downloaded
-                        pct = (downloaded / total_bytes) * 100.0 if total_bytes > 0 else 0.0
-                        state["progress_pct"] = min(99.0, round(pct, 1))
-
-                if tmp_path.is_file() and tmp_path.stat().st_size > min_size:
-                    try:
-                        from .engine.mortal_model import LoadedMortal
-                        if model_id == MODEL_ID:
-                            digest = sha256_file(tmp_path)
-                            if digest != MODEL_SHA256:
-                                raise ValueError("下载权重 SHA-256 与已发布模型不一致")
-                        LoadedMortal(tmp_path, enforce_v4_582500=True)
-                    except Exception as verify_err:
-                        log.error("[AI模型校验失败] 下载权重未通过 Mortal-V4-582500 架构严格核验: %s", verify_err)
-                        raise ValueError(f"模型权重结构或元数据核验未通过: {verify_err}") from verify_err
-                    tmp_path.replace(target_path)
-                    sz = target_path.stat().st_size
-                    state.update({
-                        "status": "ready",
-                        "progress_pct": 100.0,
-                        "downloaded_bytes": sz,
-                        "total_bytes": sz,
-                        "error_msg": None,
-                    })
-                    log.info("[AI模型就绪] %s 权重文件下载并就绪！大小: %.1f MB", meta["name"], sz / (1024 * 1024))
-                    download_success = True
-                    break
-                else:
-                    if tmp_path.is_file():
-                        try:
-                            tmp_path.unlink()
-                        except Exception:
-                            pass
-            except Exception as e:
-                last_error = str(e)
-                log.warning("[AI模型下载警告] 从镜像 %s 下载 %s 失败，尝试备用源... (原因: %s)", url, meta["name"], e)
-                if tmp_path.is_file():
-                    try:
-                        tmp_path.unlink()
-                    except Exception:
-                        pass
-
-        if not download_success:
-            state.update({
-                "status": "error",
-                "error_msg": last_error or "所有官方权重镜像均无法连接",
-            })
-    except Exception as e:
-        state.update({
-            "status": "error",
-            "error_msg": str(e),
-        })
-    finally:
-        if not download_success and tmp_path.is_file():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
+        # Use a unique directory on the same filesystem so replacement is atomic.
+        with tempfile.TemporaryDirectory(prefix=".model-download-", dir=MODELS_DIR) as tmp_dir:
+            tmp_path = Path(tmp_dir) / MODEL_FILE
+            req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=300) as resp, tmp_path.open("wb") as output:
+                downloaded = 0
+                while chunk := resp.read(512 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > MODEL_SIZE:
+                        raise ValueError("下载模型大小超过预期")
+                    output.write(chunk)
+                    state.update(downloaded_bytes=downloaded,
+                                 progress_pct=min(99.0, round(downloaded / MODEL_SIZE * 100, 1)))
+            if downloaded != MODEL_SIZE or sha256_file(tmp_path) != MODEL_SHA256:
+                raise ValueError("下载模型大小或 SHA-256 不匹配")
+            # The manager validates with OnnxMortal and atomically installs the model.
+            engine_mgr.install_model(tmp_path)
+        state.update(status="ready", progress_pct=100.0, downloaded_bytes=MODEL_SIZE,
+                     total_bytes=MODEL_SIZE, error_msg=None)
+        log.info("[AI模型就绪] Mortal S42 ONNX 已校验并启用")
+    except Exception as exc:
+        log.warning("[AI模型下载失败] %s", _safe_error_context(exc))
+        state.update(status="error", error_msg="模型下载或校验失败，请查看服务端日志。")
 
 
 def trigger_model_download(model_id: str) -> bool:
-    if model_id not in SUPPORTED_DOWNLOAD_MODELS:
+    if model_id != MODEL_ID:
         return False
-    th = threading.Thread(target=_download_model_sync, args=(model_id,), daemon=True)
-    th.start()
+    threading.Thread(target=_download_model_sync, args=(MODEL_ID,), daemon=True).start()
     return True
 
-
-def _download_akagi_if_missing():
-    _download_model_sync("akagi")
-
-
-def _download_mortal_if_missing():
-    _download_model_sync("mortal")
 
 ms_client = MajsoulClient(CACHE_DIR)
 _ms_client_lock = SessionLock()
@@ -390,7 +227,7 @@ async def lifespan(app: FastAPI):
     log.info("==================================================================")
     log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
     st = engine_mgr.status()
-    log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), engine_mgr.selected_model)
+    log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), MODEL_ID)
     log.info("原始牌谱存储目录: %s", RECORDS_DIR)
     try:
         yield
@@ -521,16 +358,16 @@ class AnalyzeDemoReq(BaseModel):
     temperature: float = 0.1
 
 
-class EngineConfigReq(BaseModel):
-    selected_model: str | None = None
-    model_path: str | None = None
-
-
 # ---------------------------------------------------------------------------
 # API Routes
 # ---------------------------------------------------------------------------
 def _build_api_status(*, trusted: bool) -> dict[str, Any]:
     eng_status = engine_mgr.status()
+    eng_status["model_revision"] = MODEL_REVISION
+    state = model_download_state
+    if state and state.get("status") == "idle" and eng_status.get("has_mortal_weights"):
+        state.update(status="ready", progress_pct=100.0, downloaded_bytes=MODEL_SIZE,
+                     total_bytes=MODEL_SIZE, error_msg=None)
     if not trusted:
         # Public status carries only the fixed model identity and attestation
         # needed by the frontend, never account state, paths or raw errors.
@@ -541,15 +378,15 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         return {
             "ok": True,
             "engine": {
+                "model_ready": has_weights,
                 "has_mortal_weights": has_weights,
                 "active_engine": "mortal" if has_weights and eng_status.get("active_engine") == "mortal" else "unavailable",
-                "model_name": "Mortal-V4-582500" if has_weights else "Mortal-V4-582500 (不可用)",
+                "model_name": "Mortal S42 ONNX" if has_weights else "Mortal S42 ONNX (不可用)",
                 "model_id": MODEL_ID,
+                "model_revision": MODEL_REVISION,
                 "weight_sha256": sha if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha) else None,
                 "review_schema": schema if schema == REVIEW_SCHEMA else None,
-                "device": device if isinstance(device, str) and re.fullmatch(r"(?:CPU|CUDA(?::[0-9]+)?|MPS|N/A)", device) else "N/A",
-                "selected_model": MODEL_ID,
-                "available_models": [{"id": MODEL_ID, "name": "Mortal-V4-582500"}] if has_weights else [],
+                "device": device if isinstance(device, str) and re.fullmatch(r"(?:CPU|CUDA(?::[0-9]+)?|MPS|N/A|CPUEXECUTIONPROVIDER|CUDAEXECUTIONPROVIDER)", device) else "N/A",
             },
         }
 
@@ -563,11 +400,8 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
     # which can contain credentials or signed network URLs.
     if eng_status.get("load_error"):
         eng_status["load_error"] = "模型权重不可用，请查看服务端日志。"
-    selected_id = engine_mgr.selected_model or "akagi"
-    cur_dl = safe_download_state(get_current_model_download_state(selected_id))
-    all_dl = {k: safe_download_state(v) for k, v in models_download_state.items()}
+    cur_dl = safe_download_state(model_download_state)
     eng_status["model_download"] = dict(cur_dl)
-    eng_status["models_download"] = all_dl
     return {
         "ok": True,
         "majsoul": {
@@ -576,13 +410,12 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
-        "models_download": all_dl,
     }
 
 
 @app.get("/api/status")
 async def api_status(request: Request):
-    return _build_api_status(trusted=request.state.trusted_api)
+    return await asyncio.to_thread(_build_api_status, trusted=request.state.trusted_api)
 
 
 @app.post("/api/login")
@@ -796,7 +629,7 @@ def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
         return dict(result)
     public_engine = {
         key: engine[key]
-        for key in ("type", "id", "tag", "weight_file", "weight_sha256", "version", "steps", "q_source", "review_schema", "device")
+        for key in ("type", "id", "tag", "weight_file", "weight_sha256", "revision", "version", "steps", "q_source", "review_schema", "device")
         if key in engine
     }
     return {**result, "engine": public_engine}
@@ -815,11 +648,21 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             semaphore.release()
 
     def worker() -> dict[str, Any]:
-        mortal, _, _ = engine_mgr.get_mortal(engine)
+        try:
+            normalize_model_id(engine)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            mortal, _, _ = engine_mgr.get_mortal(engine)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
         kwargs = {"meta": meta, "temperature": temperature, "force_engine": engine}
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
-        result = review_game(mjai_events, seat, engine_mgr, **kwargs)
+        try:
+            result = review_game(mjai_events, seat, engine_mgr, **kwargs)
+        except ModelInferenceError as exc:
+            raise HTTPException(status_code=503, detail="AI 模型推理失败，请重新下载模型。") from exc
         if not valid_review_source(result, mortal.weight_sha256):
             raise RuntimeError("模型权重或检讨结果来源不匹配，请重试。")
         if result.get("target_actor") != seat:
@@ -874,12 +717,12 @@ async def _run_review(game_id: str, mjai_events: list[dict], meta: dict, seat: i
 
 
 async def _wait_for_model_download(model_id: str | None = None, timeout_s: float = 300.0) -> None:
-    target_id = model_id or engine_mgr.selected_model or "akagi"
+    target_id = model_id or MODEL_ID
     try:
         normalize_model_id(target_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    st = models_download_state.get(MODEL_ID)
+    st = model_download_state
     if not st:
         return
     if st["status"] == "downloading":
@@ -888,8 +731,12 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
             if time.time() - t0 > timeout_s:
                 raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 正在首次下载中，请求等待超时，请稍后重试")
             await asyncio.sleep(0.5)
-        if st["status"] == "error":
-            raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 下载失败，请稍后重试。")
+    if st["status"] == "error":
+        # A failed replacement must not make an already verified model unusable.
+        try:
+            await asyncio.to_thread(engine_mgr.get_mortal, target_id)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"AI 模型 ({target_id}) 下载失败，请稍后重试。") from exc
 
 
 async def _run_nonstream_until_disconnect(request: Request, response: Response, work) -> dict[str, Any]:
@@ -966,28 +813,10 @@ def _complete_review_event(result: dict[str, Any]) -> str:
 
 
 @app.post("/api/analyze/stream")
-async def api_analyze_stream(req: AnalyzeStreamReq):
+async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
     async def sse_generator(stats: dict[str, Any]):
         try:
-            # Module 1 / 方案四: Model download progress stream sensing
-            resolved_engine = normalize_model_id(req.engine)
-            dl_state = models_download_state.get(resolved_engine)
-            if dl_state and dl_state["status"] == "downloading":
-                log.info("[AI首次同步感知] 模型 %s 正在下载中，平滑向 SSE 客户端推送实时下载进度...", resolved_engine)
-                while dl_state["status"] == "downloading":
-                    pct = dl_state["progress_pct"]
-                    msg = f"AI 核心权重 ({resolved_engine}) 正在首次同步下载中 ({pct:.1f}%)... 下载完成后将自动开始复盘"
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': round(pct, 1), 'message': msg}, ensure_ascii=False)}\n\n"
-                    await asyncio.sleep(0.5)
-
-                if dl_state["status"] == "error":
-                    err_detail = f"AI 核心权重 ({resolved_engine}) 下载失败，请稍后重试"
-                    yield f"data: {json.dumps({'type': 'error', 'detail': err_detail}, ensure_ascii=False)}\n\n"
-                    return
-
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 10, 'message': 'AI 核心权重下载就绪，正在准备牌谱数据...'}, ensure_ascii=False)}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
 
             try:
                 game_id, mjai_events, meta, seat = await resolve_game_data(
@@ -1052,6 +881,11 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 # notifications instead of accumulating an unconsumed queue.
                 listening.clear()
 
+        except HTTPException as e:
+            if e.status_code == 503:
+                raise
+            log.error("SSE analyze error (%s)", _safe_error_context(e))
+            yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
         except Exception as e:
             log.error("SSE analyze error (%s)", _safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
@@ -1073,8 +907,52 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
             await generator.aclose()
             _log_performance(stats, started)
 
+    # Delay response headers until inference finishes, so model failures can
+    # still produce HTTP 503. A disconnected client stops waiting, while an
+    # already-started review retains its permit until its worker finishes.
+    async def buffer_stream():
+        try:
+            normalize_model_id(req.engine)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await _wait_for_model_download(req.engine)
+        try:
+            await asyncio.to_thread(engine_mgr.get_mortal, req.engine)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
+        chunks = []
+        async with aclosing(measured_stream()) as stream:
+            async for chunk in stream:
+                chunks.append(chunk)
+        return chunks
+
+    async def watch_disconnect():
+        while True:
+            if (await request.receive())["type"] == "http.disconnect":
+                return
+
+    buffer_task = asyncio.create_task(buffer_stream())
+    disconnect_task = asyncio.create_task(watch_disconnect()) if request is not None else None
+    try:
+        if disconnect_task is not None:
+            done, _ = await asyncio.wait((buffer_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                disconnect_task.result()
+                raise asyncio.CancelledError
+        chunks = await buffer_task
+    finally:
+        tasks = (buffer_task, disconnect_task) if disconnect_task is not None else (buffer_task,)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def buffered_stream():
+        for chunk in chunks:
+            yield chunk
+
     return _ClosingStreamingResponse(
-        measured_stream(),
+        buffered_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1084,32 +962,10 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
     )
 
 
-@app.post("/api/engine/config")
-async def api_engine_config(req: EngineConfigReq):
-    try:
-        normalize_model_id(req.selected_model)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if req.model_path and Path(req.model_path.strip().strip('"')).resolve() != (MODELS_DIR / MODEL_FILE).resolve():
-        raise HTTPException(status_code=400, detail=f"只允许使用 {MODEL_FILE}")
-    cfg = load_config()
-    cfg["selected_model"] = MODEL_ID
-    cfg.pop("model_path", None)
-    engine_mgr.selected_model = MODEL_ID
-    engine_mgr.custom_pth = None
-    save_config(cfg)
-    st = engine_mgr.status()
-    selected_id = engine_mgr.selected_model or "akagi"
-    st["model_download"] = dict(get_current_model_download_state(selected_id))
-    st["models_download"] = {k: dict(v) for k, v in models_download_state.items()}
-    return st
-
-
-@app.post("/api/engine/download_akagi")
-@app.post("/api/engine/download_mortal")
+@app.post("/api/engine/download")
 async def api_download_mortal_model():
-    trigger_model_download("akagi")
-    return {"status": "started", "message": "已在后台启动 Mortal-V4-582500 权重下载"}
+    trigger_model_download(MODEL_ID)
+    return {"status": "started", "message": "已在后台启动 Mortal S42 ONNX 模型下载"}
 
 
 app.mount("/tiles", StaticFiles(directory=str(WEB_DIR / "tiles")), name="tiles")

@@ -21,7 +21,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (paipuParam) {
     const input = $("homePaipuInput");
     if (input) input.value = paipuParam;
-    await startAnalysisFromInput(paipuParam, "akagi", null);
+    await startAnalysisFromInput(paipuParam);
   } else {
     const input = $("homePaipuInput");
     if (input) input.value = "";

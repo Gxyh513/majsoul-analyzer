@@ -108,9 +108,9 @@ def test_same_uuid_different_upload_events_are_reanalysed(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     from server import app
-    from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA
+    from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA
 
-    sha = 'a' * 64
+    sha = MODEL_SHA256
     calls = []
     monkeypatch.setattr(app, 'review_semaphore', asyncio.Semaphore(1))
     monkeypatch.setattr(app, '_review_tasks', set())
@@ -122,7 +122,7 @@ def test_same_uuid_different_upload_events_are_reanalysed(monkeypatch):
         calls.append(events)
         return {'events': events, 'target_actor': seat, 'summary': {'match_rate': 0, 'rating': 0},
                 'engine': {'type': 'mortal', 'id': MODEL_ID, 'weight_file': MODEL_FILE,
-                           'weight_sha256': sha, 'version': 4, 'steps': 582500,
+                           'weight_sha256': sha, 'version': 4, 'steps': None, 'revision': MODEL_REVISION,
                            'q_source': 'neural_network', 'review_schema': REVIEW_SCHEMA}}
 
     monkeypatch.setattr(app, 'review_game', fake_review)

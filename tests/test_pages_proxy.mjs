@@ -13,11 +13,12 @@ test("status is public but sanitized and pinned to the upstream", async () => {
       ok: true,
       majsoul: { logged_in: true, account_pool_count: 9 },
       engine: {
-        has_mortal_weights: true, active_engine: "mortal", model_name: "Mortal",
-        model_id: "akagi", model_tag: "v4", weight_sha256: "abc",
-        review_schema: "mortal-582500-only-v3", device: "CPU", selected_model: "akagi",
-        model_path: "/private/model.pth", models_dir: "/private/models", load_error: "private error",
-        available_models: [{ id: "akagi", name: "Mortal", path: "/private/model.pth" }],
+        has_mortal_weights: true, model_ready: true, active_engine: "mortal", model_name: "Mortal S42 ONNX",
+        model_id: "mortal-s42-onnx", model_revision: "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a",
+        model_tag: "v4", weight_sha256: "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4",
+        review_schema: "mortal-onnx-2f7ad48-v1", device: "CPU", selected_model: "mortal-s42-onnx",
+        model_path: "/private/model.onnx", models_dir: "/private/models", load_error: "private error",
+        available_models: [{ id: "mortal-s42-onnx", name: "Mortal", path: "/private/model.onnx" }],
       },
     }), { status: 200, headers: { "Content-Type": "application/json", "Set-Cookie": "secret=hidden" } });
   };
@@ -31,8 +32,12 @@ test("status is public but sanitized and pinned to the upstream", async () => {
     assert.equal(new Headers(observed.init.headers).has("X-Api-Token"), false);
     assert.equal(new Headers(observed.init.headers).get("User-Agent"), "majsoul-analyzer-pages/1.0");
     const body = await res.json();
-    assert.equal(body.engine.review_schema, "mortal-582500-only-v3");
-    assert.deepEqual(body.engine.available_models, [{ id: "akagi", name: "Mortal" }]);
+    assert.equal(body.engine.review_schema, "mortal-onnx-2f7ad48-v1");
+    assert.equal(body.engine.model_id, "mortal-s42-onnx");
+    assert.equal(body.engine.model_revision, "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a");
+    assert.equal(body.engine.weight_sha256, "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4");
+    assert.equal(body.engine.model_ready, true);
+    assert.equal(body.engine.available_models, undefined);
     assert.equal(JSON.stringify(body).includes("/private"), false);
     assert.equal(JSON.stringify(body).includes("account_pool_count"), false);
     assert.equal(res.headers.get("set-cookie"), null);

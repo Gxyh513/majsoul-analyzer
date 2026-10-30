@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>牌谱检讨 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20261030-frontend-split-1" />
+  <link rel="stylesheet" href="/styles.css?v=20261030-s42-onnx-1" />
 </head>
 <body>
   <!-- ========================================================================
@@ -42,7 +42,7 @@
           </div>
         </div>
 
-        <div class="kd-single-model-card" id="landingModelCard" data-model="akagi" title="唯一启用模型：Mortal-V4-582500 深度强化学习引擎">
+        <button type="button" class="kd-single-model-card" id="landingModelCard" title="查看模型状态">
           <div class="kd-single-model-left">
             <div class="kd-single-model-icon">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -51,17 +51,16 @@
             </div>
             <div class="kd-single-model-text">
               <div class="kd-single-model-title-line">
-                <span class="kd-single-model-name">Mortal-V4-582500</span>
-                <span class="kd-single-model-subtag">582k步 进攻强化</span>
+                <span class="kd-single-model-name">Mortal S42 ONNX</span>
               </div>
-              <div class="kd-single-model-desc">本地权重已加载 · 唯一启用分析引擎</div>
+              <div class="kd-single-model-desc">点击查看模型详情</div>
             </div>
           </div>
           <div class="kd-single-model-badge">
             <span class="kd-single-model-dot"></span>
-            <span id="landingModelDevice">CUDA 就绪</span>
+            <span id="landingModelDevice">NOT READY</span>
           </div>
-        </div>
+        </button>
 
         <p id="homeInputError" class="kd-input-error hidden" role="alert">请输入雀魂牌谱链接或牌谱号，或导入本地牌谱文件。</p>
         <button id="btnHomeAnalyze" class="kd-landing-submit">开始分析</button>
@@ -239,25 +238,21 @@
     </div>
   </div>
 
-  <!-- Modal: Engine Switcher -->
+  <!-- Modal: Engine Status -->
   <div id="engineModalBackdrop" class="modal-backdrop hidden"></div>
   <div id="engineModal" class="modal hidden" style="max-width:480px;">
     <div class="modal-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">
       <h3 style="font-size:16px; font-weight:700; display:flex; align-items:center; gap:8px; margin:0;">
-        <span>🤖 AI 推理引擎与模型管理</span>
+        <span>🤖 AI 推理引擎状态</span>
       </h3>
       <button id="engineModalClose" class="close" style="background:none; border:none; color:rgba(235,235,245,0.6); font-size:22px; cursor:pointer; line-height:1;">&times;</button>
     </div>
     <div id="engineModalDetail" style="font-size:12.5px; line-height:1.7; margin-bottom:16px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.08); padding:12px 14px; border-radius:10px;"></div>
     <div style="display:flex; flex-direction:column; gap:12px; font-size:13px;">
-      <label>
-        <div style="font-weight:600; margin-bottom:6px; color:#ffffff;">选择切换模型：</div>
-        <select id="engineSelect" style="width:100%; padding:8px 10px; background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.18); border-radius:8px; color:#ffffff; font-size:13px; outline:none;"></select>
-      </label>
       <div id="engineModalStatusMsg" style="font-size:12px; color:#30d158; min-height:18px;"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:4px;">
-        <button id="btnCancelEngineModal" class="kd-chip-btn" style="padding:6px 14px;">取消</button>
-        <button id="btnSaveEngineConfig" class="kd-back-btn" style="background:#0a84ff; padding:6px 16px; font-weight:600;">保存并重新检讨</button>
+        <button id="btnCancelEngineModal" class="kd-chip-btn" style="padding:6px 14px;">关闭</button>
+        <button id="btnRetryModelDownload" class="kd-back-btn hidden" style="background:#0a84ff; padding:6px 16px; font-weight:600;">重试下载模型</button>
       </div>
     </div>
   </div>
@@ -324,17 +319,17 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <script src="/js/replay-state.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/api.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/review.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/summary-renderer.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/replay-controls.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/board-renderer.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/decision-renderer.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/replay-navigation.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/modal-manager.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/import.js?v=20261030-no-review-cache-1"></script>
-  <script src="/js/events.js?v=20261030-no-review-cache-1"></script>
-  <script src="/app.js?v=20261030-no-review-cache-1"></script>
+  <script src="/js/replay-state.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/api.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/review.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/summary-renderer.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/replay-controls.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/board-renderer.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/decision-renderer.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/replay-navigation.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/modal-manager.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/import.js?v=20261030-s42-onnx-1"></script>
+  <script src="/js/events.js?v=20261030-s42-onnx-1"></script>
+  <script src="/app.js?v=20261030-s42-onnx-1"></script>
 </body>
 </html>

@@ -10,11 +10,11 @@ import pytest
 from starlette.testclient import TestClient
 
 import server.app as app
-from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA
+from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA
 
 
 UUID = "241026-11111111-2222-3333-4444-555555555555"
-SHA = "a" * 64
+SHA = MODEL_SHA256
 SEAT = 1
 EVENTS = [{"type": "start_game", "names": ["A", "B", "C", "D"]}]
 META = {"uuid": UUID, "account_ids": [11, 22, 33, 44]}
@@ -24,7 +24,7 @@ def review():
     return {
         "target_actor": SEAT,
         "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
-                   "weight_sha256": SHA, "version": 4, "steps": 582500,
+                   "weight_sha256": SHA, "version": 4, "steps": None, "revision": MODEL_REVISION,
                    "q_source": "neural_network", "review_schema": REVIEW_SCHEMA},
         "summary": {"rating": 95},
         "kyokus": [{"steps": [{"event": EVENTS[0]}]}],
@@ -38,7 +38,7 @@ def review_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(app, "_review_tasks", set())
-    monkeypatch.setattr(app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(app, "DATA_DIR", tmp_path)
     monkeypatch.setattr(app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
@@ -190,33 +190,27 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
                 raise RuntimeError("test did not release inference")
             return review()
 
-        async def next_message(stream):
-            return json.loads((await asyncio.wait_for(anext(stream), 2)).removeprefix("data: ").strip())
-
         monkeypatch.setattr(app, "review_game", progress_review)
         request = app.AnalyzeStreamReq(**analyze_payload("stream"))
         leader = follower = None
         try:
-            leader = (await app.api_analyze_stream(request)).body_iterator
-            assert (await next_message(leader))["percent"] == 5
-            assert (await next_message(leader))["percent"] == 15
+            leader = asyncio.create_task(app.api_analyze_stream(request))
             await asyncio.wait_for(started[0].wait(), 2)
-
-            follower = (await app.api_analyze_stream(request)).body_iterator
-            assert (await next_message(follower))["percent"] == 5
-            assert (await next_message(follower))["type"] == "queued"
-            queued = asyncio.create_task(next_message(follower))
-            send_first_progress.set()
-            assert (await next_message(leader))["percent"] == 42
+            follower = asyncio.create_task(app.api_analyze_stream(request))
             await asyncio.sleep(0.03)
-            assert not queued.done() and calls == [0]
-            await leader.aclose()
+            assert not follower.done() and calls == [0]
+            send_first_progress.set()
+            leader.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await leader
+            assert app.review_semaphore.locked()
             release[0].set()
-            assert (await queued)["percent"] == 15
             await asyncio.wait_for(started[1].wait(), 2)
-            assert (await next_message(follower))["percent"] == 65
             release[1].set()
-            messages = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in follower]
+            response = await asyncio.wait_for(follower, 2)
+            messages = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
+            assert any(message.get("type") == "queued" for message in messages)
+            assert any(message.get("percent") == 65 for message in messages)
             complete = [message for message in messages if message["type"] == "complete"]
             assert len(complete) == 1 and complete[0]["result"] == {**review(), "game_id": UUID}
             assert calls == [0, 1]
@@ -226,9 +220,6 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
             for event in release:
                 event.set()
             send_first_progress.set()
-            if leader is not None:
-                await leader.aclose()
-            if follower is not None:
-                await follower.aclose()
+            await asyncio.gather(*(task for task in (leader, follower) if task is not None), return_exceptions=True)
 
     asyncio.run(scenario())
