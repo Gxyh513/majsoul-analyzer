@@ -339,8 +339,9 @@ class MajsoulClient:
         fut = asyncio.get_running_loop().create_future()
         self._pending[idx] = fut
         try:
-            await self._ws.send(pkt)
-            raw = await asyncio.wait_for(fut, timeout)
+            with measure("fetchGameRecord请求") if full == ".lq.Lobby.fetchGameRecord" else nullcontext():
+                await self._ws.send(pkt)
+                raw = await asyncio.wait_for(fut, timeout)
         finally:
             self._pending.pop(idx, None)
         with measure("Protobuf实际解码") if return_payload else nullcontext():

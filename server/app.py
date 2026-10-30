@@ -42,25 +42,27 @@ log = logging.getLogger("majsoul-analyzer")
 
 def _log_performance(stats: dict[str, Any], started: float) -> None:
     fields = (
-        ("UUID解析", "ms", 1), ("雀魂抓取", "ms", 1), ("原始牌谱读取", "ms", 1),
+        ("UUID解析", "ms", 1), ("雀魂抓取", "ms", 1),
+        ("雀魂抓取", "ms", 1, "雀魂下载总耗时"), ("原始牌谱获取总耗时", "ms", 1),
         ("Protobuf解码", "ms", 1), ("Protobuf实际解码", "ms", 1), ("JSON解析", "ms", 1),
         ("MJAI转换", "ms", 1), ("原始数据大小", "KB", 1024), ("MJAI数据大小", "KB", 1024),
         ("结果返回", "ms", 1),
         ("本地记录检查", "ms", 1), ("本地文件读取", "ms", 1),
         ("并发任务等待", "ms", 1), ("文件锁等待", "ms", 1),
         ("雀魂连接准备", "ms", 1), ("WebSocket连接", "ms", 1), ("雀魂线路握手", "ms", 1),
-        ("雀魂登录", "ms", 1), ("雀魂牌谱请求", "ms", 1),
+        ("雀魂登录", "ms", 1), ("fetchGameRecord请求", "ms", 1), ("雀魂牌谱请求", "ms", 1),
         ("外部数据下载", "ms", 1), ("原始牌谱保存", "ms", 1),
     )
     stats, now = _performance_snapshot(stats)
     active = stats.get("_active_stages", {})
 
-    def format_field(stage: str, unit: str, divisor: int) -> str:
+    def format_field(stage: str, unit: str, divisor: int, label: str | None = None) -> str:
+        name = label or stage
         running = tuple(active.get(stage, ()))
         if stage not in stats and not running:
-            return f"{stage}=N/A"
+            return f"{name}=N/A"
         value = stats.get(stage, 0.0) + sum((now - start) * 1000 for start in running)
-        return f"{stage}={value / divisor:.1f}{unit}{'(进行中)' if running else ''}"
+        return f"{name}={value / divisor:.1f}{unit}{'(进行中)' if running else ''}"
 
     details = " ".join(format_field(*field) for field in fields)
     indicators = ("牌谱获取方式", "牌谱获取结果", "是否命中本地记录", "是否等待文件锁", "雀魂连接结果",
@@ -73,12 +75,15 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         return f"{name}={value if value is not None else 'N/A'}"
 
     details += " " + " ".join(format_indicator(name) for name in indicators)
-    if "原始牌谱读取" in stats or active.get("原始牌谱读取"):
-        details += " 原始牌谱读取范围=本地检查至获取返回或中断"
+    if "原始牌谱获取总耗时" in stats or active.get("原始牌谱获取总耗时"):
+        details += " 原始牌谱获取总耗时范围=本地检查至获取返回或中断"
     if "雀魂抓取" in stats or active.get("雀魂抓取"):
-        details += " 雀魂抓取范围=账号选择至抓取返回或失败"
+        details += " 雀魂抓取范围=同雀魂下载总耗时"
+        details += " 雀魂下载总耗时范围=账号选择至抓取返回或失败（含连接、登录及请求）"
+    if "fetchGameRecord请求" in stats or active.get("fetchGameRecord请求"):
+        details += " fetchGameRecord请求范围=WebSocket发送及响应等待"
     if "雀魂牌谱请求" in stats or active.get("雀魂牌谱请求"):
-        details += " 雀魂牌谱请求范围=含响应解码"
+        details += " 雀魂牌谱请求范围=fetchGameRecord调用（含响应解码）"
     log.info("[Paipu Performance] %s %s 总耗时=%.1fms", stats.get("mode", "未完成"), details,
              (now - started) * 1000)
 
@@ -626,7 +631,7 @@ async def resolve_game_data(
     if stats is not None:
         stats["牌谱获取结果"] = "进行中"
     try:
-        with _measure("原始牌谱读取"):
+        with _measure("原始牌谱获取总耗时"):
             stored = await get_or_download_record(game_uuid)
     except asyncio.CancelledError:
         if stats is not None:
