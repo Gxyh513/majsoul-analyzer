@@ -120,7 +120,10 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
   if (pending.progress) onProgress(...pending.progress);
   try {
     const result = await pending.promise;
-    if (timings) timings.completeReceivedAt = pending.timings.completeReceivedAt;
+    if (timings) {
+      timings.completeReceivedAt = pending.timings.completeReceivedAt;
+      timings.requestId = pending.timings.requestId;
+    }
     return result;
   } finally {
     pending.listeners.delete(onProgress);
@@ -131,7 +134,7 @@ function logReviewViewCompletion(timings, version) {
   if (!Number.isFinite(timings.completeReceivedAt)) return;
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (version !== analysisViewVersion) return;
-    console.info(`[Paipu UX Performance] complete事件接收至页面切换完成=${(performance.now() - timings.completeReceivedAt).toFixed(1)}ms 范围=页面更新后的第二个动画帧（含浏览器调度等待）`);
+    console.info(`[Paipu UX Performance] 请求ID=${timings.requestId || "N/A"} complete事件接收至页面切换完成=${(performance.now() - timings.completeReceivedAt).toFixed(1)}ms 范围=页面更新后的第二个动画帧（含浏览器调度等待）`);
   }));
 }
 

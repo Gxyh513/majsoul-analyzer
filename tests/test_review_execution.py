@@ -1,6 +1,8 @@
 """Review requests execute independently, without persisted review results."""
 import asyncio
+import base64
 import copy
+import gzip
 import json
 import threading
 from types import SimpleNamespace
@@ -85,6 +87,41 @@ def test_repeated_api_requests_run_inference_each_time(review_environment, tmp_p
     assert review_environment.call_count == 2
     assert not (tmp_path / "reviews").exists()
     assert not (tmp_path / "metadata").exists()
+
+
+def test_stream_send_metrics_wrap_the_actual_app(review_environment, caplog):
+    request_id = "1234567890abcdef1234567890abcdef"
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    with caplog.at_level("INFO", logger="majsoul-analyzer"):
+        response = client.post("/api/analyze/stream", json=analyze_payload("stream"), headers={"X-Request-ID": request_id})
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == request_id
+    messages = [record.getMessage() for record in caplog.records]
+    for event in ("100%", "complete"):
+        assert any(f"请求ID={request_id} 事件={event}" in message and "send等待=" in message for message in messages)
+    assert any(f"[Paipu Performance] 请求ID={request_id}" in message for message in messages)
+
+
+def test_stream_compresses_only_when_client_negotiates(review_environment, monkeypatch):
+    large = review()
+    large["summary"]["description"] = "完整结果" * 20000
+    monkeypatch.setattr(app, "review_game", lambda *args, **kwargs: copy.deepcopy(large))
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+
+    def complete(payload):
+        response = client.post("/api/analyze/stream", json=payload)
+        assert response.status_code == 200
+        events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                  if line.startswith("data: ")]
+        return next(event for event in events if event["type"] == "complete")
+
+    payload = analyze_payload("stream")
+    legacy = complete(payload)
+    assert legacy["result"] == {**large, "game_id": UUID}
+    negotiated = complete({**payload, "accept_compression": "gzip+base64"})
+    assert negotiated["encoding"] == "gzip+base64"
+    restored = json.loads(gzip.decompress(base64.b64decode(negotiated["data"])))
+    assert restored == {**large, "game_id": UUID}
 
 
 def test_start_review_job_returns_task_that_owns_permit(review_environment, monkeypatch):

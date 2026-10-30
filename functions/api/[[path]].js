@@ -1,3 +1,5 @@
+import { createSseByteMeter } from "../../shared/sse-metrics.js";
+
 const UPSTREAM_ORIGIN = "https://gxyh513-majsoul-analyzer.ms.show";
 const UPSTREAM_USER_AGENT = "majsoul-analyzer-pages/1.0";
 const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024;
@@ -100,6 +102,77 @@ function safeResponseHeaders(upstream, isStream) {
   return headers;
 }
 
+function monitorSseStream(body, requestId, started, wallOrigin) {
+  const reader = body.getReader();
+  const meter = createSseByteMeter();
+  let chunkIndex = 0;
+  let totalBytes = 0;
+  let samples = [];
+  let progress = null;
+  let cancelled = false;
+  let released = false;
+
+  function releaseReader() {
+    if (!released) {
+      released = true;
+      reader.releaseLock();
+    }
+  }
+
+  function flushSamples() {
+    if (!samples.length) return;
+    console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 块明细=序号,接收ms,转发ms,字节 ${JSON.stringify(samples)}`);
+    samples = [];
+  }
+
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        const arrivedAt = performance.now();
+        if (cancelled) return;
+        if (done) {
+          flushSamples();
+          console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 流结束 块数=${chunkIndex} 字节数=${totalBytes}`);
+          releaseReader();
+          controller.close();
+          return;
+        }
+        chunkIndex++;
+        totalBytes += value.byteLength;
+        const events = meter.add(value, chunkIndex, arrivedAt);
+        controller.enqueue(value);
+        const forwardedAt = performance.now();
+        meter.forwarded(chunkIndex, forwardedAt, events.finished);
+        samples.push([chunkIndex, +(arrivedAt - started).toFixed(1), +(forwardedAt - started).toFixed(1), value.byteLength]);
+        if (samples.length >= 128) flushSamples();
+        for (const event of events.started) {
+          if (event.kind === "100%") progress = event;
+          const upstreamGap = progress && event.kind === "complete" ? event.firstAt - progress.firstAt : null;
+          const downstreamGap = progress && event.kind === "complete" ? event.firstForwardAt - progress.firstForwardAt : null;
+          console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 事件=${event.kind} 首块=${event.firstChunk} 上游首块=${(event.firstAt - started).toFixed(1)}ms 上游首块Unix=${(wallOrigin + event.firstAt).toFixed(1)}ms 下游首块入队=${(event.firstForwardAt - started).toFixed(1)}ms 上游事件首块间隔=${upstreamGap == null ? "N/A" : `${upstreamGap.toFixed(1)}ms`} 下游事件首块入队间隔=${downstreamGap == null ? "N/A" : `${downstreamGap.toFixed(1)}ms`}`);
+        }
+        for (const event of events.finished) {
+          console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 事件=${event.kind} 字节数=${event.bytes} 末块=${event.lastChunk} 上游末块=${(event.lastAt - started).toFixed(1)}ms 下游末块入队=${(event.lastForwardAt - started).toFixed(1)}ms`);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          flushSamples();
+          console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 流中断 块数=${chunkIndex} 字节数=${totalBytes}`);
+          controller.error(error);
+          releaseReader();
+        }
+      }
+    },
+    async cancel() {
+      cancelled = true;
+      flushSamples();
+      console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 下游取消 块数=${chunkIndex} 字节数=${totalBytes}`);
+      try { await reader.cancel(); } finally { releaseReader(); }
+    },
+  }, { highWaterMark: 0 });
+}
+
 export async function onRequest({ request, env }) {
   const path = new URL(request.url).pathname;
   const route = ROUTES.get(`${request.method} ${path}`);
@@ -146,10 +219,18 @@ export async function onRequest({ request, env }) {
   });
   if (request.method === "POST") headers.set("Content-Type", "application/json");
   if (token) headers.set("X-Api-Token", token);
+  let requestId = "";
+  if (route.stream) {
+    const supplied = request.headers.get("X-Request-ID") || "";
+    requestId = /^[0-9a-f]{32}$/.test(supplied) ? supplied : crypto.randomUUID().replaceAll("-", "");
+    headers.set("X-Request-ID", requestId);
+  }
 
   // The path comes from the exact allowlist. Query strings, cookies, Origin,
   // client auth headers, and forwarding headers are never copied upstream.
   const upstreamUrl = new URL(path, UPSTREAM_ORIGIN);
+  const started = performance.now();
+  const wallOrigin = Date.now() - started;
   let upstream;
   try {
     upstream = await fetch(upstreamUrl.toString(), {
@@ -164,6 +245,10 @@ export async function onRequest({ request, env }) {
     return jsonError(502, "分析服务暂时不可用，请稍后重试");
   }
 
+  if (route.stream) {
+    const headersAt = performance.now();
+    console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 上游响应头到达=${(headersAt - started).toFixed(1)}ms 上游响应头Unix=${(wallOrigin + headersAt).toFixed(1)}ms 状态=${upstream.status} 相对时间基准=上游fetch开始 说明=Worker计时在计算期间可能冻结，Unix时间未经跨机校准`);
+  }
   if (upstream.status >= 300 && upstream.status < 400) {
     try { await upstream.body?.cancel(); } catch (_) {}
     return jsonError(502, "分析服务返回了不支持的重定向");
@@ -191,9 +276,11 @@ export async function onRequest({ request, env }) {
     }
   }
 
-  // Keep the SSE body streaming; do not buffer or parse it in the proxy.
-  return new Response(upstream.body, {
+  const responseHeaders = safeResponseHeaders(upstream, route.stream);
+  if (route.stream) responseHeaders.set("X-Request-ID", requestId);
+  const isSse = route.stream && upstream.ok && /^text\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
+  return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, requestId, started, wallOrigin) : upstream.body, {
     status: upstream.status,
-    headers: safeResponseHeaders(upstream, route.stream),
+    headers: responseHeaders,
   });
 }

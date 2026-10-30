@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import aclosing, asynccontextmanager
+import gzip
 import hmac
 import ipaddress
 import re
@@ -54,8 +56,10 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         ("获取已加载模型耗时", "ms", 1), ("模型锁等待耗时", "ms", 1),
         ("AI推理排队等待", "ms", 1), ("AI推理许可获得时间", "ms", 1),
         ("AI检讨流程耗时", "ms", 1), ("ONNX实际推理耗时", "ms", 1),
-        ("完成结果序列化耗时", "ms", 1), ("100%事件生成时间", "ms", 1),
+        ("完成结果序列化耗时", "ms", 1), ("complete压缩耗时", "ms", 1), ("complete Base64编码耗时", "ms", 1),
+        ("100%事件生成时间", "ms", 1),
         ("complete事件生成时间", "ms", 1), ("100%至complete事件生成间隔", "ms", 1),
+        ("ASGI请求至100%事件生成", "ms", 1), ("ASGI请求至complete事件生成", "ms", 1),
         ("结果返回", "ms", 1),
         ("本地记录检查", "ms", 1), ("本地文件读取", "ms", 1),
         ("并发任务等待", "ms", 1), ("文件锁等待", "ms", 1),
@@ -79,6 +83,8 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
 
     details = " ".join(format_field(*field) for field in fields)
     indicators = ("AI模型加载次数", "AI模型复用次数", "ONNX推理调用次数",
+                  "原始complete事件字节数", "原始检讨JSON字节数", "gzip压缩后字节数", "Base64编码后字节数",
+                  "complete传输字节数", "complete压缩比例", "complete压缩状态",
                   "牌谱获取方式", "牌谱获取结果", "是否命中本地记录", "是否等待文件锁", "雀魂连接结果",
                   "雀魂连接准备失败次数", "WebSocket连接失败次数", "雀魂线路握手失败次数", "雀魂登录失败次数",
                   "雀魂牌谱请求失败次数", "外部数据下载失败次数", "最近雀魂失败类型", "最后失败阶段")
@@ -94,10 +100,13 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
     details += " 模型下载等待范围=下载状态等待（含后台校验加载安装及状态轮询）"
     details += " 后台模型加载等待范围=请求等待期间与后台模型初始化重叠的时间（包含在模型下载等待内）"
     details += " 获取已加载模型范围=复用调用累计（含模型锁等待）"
-    details += " AI推理许可及事件生成时间基准=请求开始后（非浏览器接收时间）"
+    details += " AI推理许可及原事件生成时间基准=流生成器开始后（非浏览器接收时间）"
+    details += " ASGI请求至事件生成时间基准=ASGI请求到达，与send计时一致"
     details += " AI检讨流程范围=review_game完整调用（含前后处理及模型获取）"
     details += " ONNX实际推理范围=session.run调用（包含在AI检讨流程内，不含初始化预热）"
-    details += " 完成结果序列化范围=公开结果筛选及complete事件JSON序列化"
+    details += " 完成结果序列化范围=公开结果筛选及检讨JSON序列化（不含压缩）"
+    details += " 结果返回范围=序列化及可选gzip和Base64编码"
+    details += " complete压缩比例范围=gzip字节数除以原始检讨JSON字节数"
     details += " 100%至complete事件生成间隔范围=服务端事件生成及发送等待"
     if "雀魂连接准备" in stats or active.get("雀魂连接准备"):
         details += " 雀魂连接准备范围=prepare完整调用；子项包含在总耗时内，不应重复相加"
@@ -112,8 +121,8 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         details += " fetchGameRecord请求范围=WebSocket发送及响应等待"
     if "雀魂牌谱请求" in stats or active.get("雀魂牌谱请求"):
         details += " 雀魂牌谱请求范围=fetchGameRecord调用（含响应解码）"
-    log.info("[Paipu Performance] %s %s 总耗时=%.1fms", stats.get("mode", "未完成"), details,
-             (now - started) * 1000)
+    log.info("[Paipu Performance] 请求ID=%s %s %s 总耗时=%.1fms", stats.get("request_id", "N/A"),
+             stats.get("mode", "未完成"), details, (now - started) * 1000)
 
 
 async def _record_mjai_size(events: list[dict]) -> None:
@@ -357,7 +366,7 @@ async def protect_api_and_log(request: Request, call_next):
         if origin:
             headers.update({"Access-Control-Allow-Origin": origin,
                             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Api-Token",
+                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Api-Token, X-Request-ID",
                             "Access-Control-Allow-Private-Network": "true"})
         return Response(status_code=204, headers=headers)
 
@@ -379,6 +388,8 @@ async def protect_api_and_log(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Private-Network"] = "true"
+        if path == "/api/analyze/stream":
+            response.headers["Access-Control-Expose-Headers"] = "X-Request-ID"
     if path == "/api/status":
         # Anonymous and authenticated callers receive different status bodies;
         # neither may be stored by a shared intermediary.
@@ -391,6 +402,75 @@ async def protect_api_and_log(request: Request, call_next):
         cost_ms = (time.time() - t0) * 1000
         log.info("[HTTP响应完成] %s %s -> 状态码: %d (用时: %.1fms)", request.method, path, response.status_code, cost_ms)
     return response
+
+
+class _SSESendMetricsMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") != "/api/analyze/stream" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        raw_id = next((value for key, value in scope.get("headers", ()) if key.lower() == b"x-request-id"), b"")
+        try:
+            request_id = raw_id.decode("ascii")
+        except UnicodeDecodeError:
+            request_id = ""
+        if not re.fullmatch(r"[0-9a-f]{32}", request_id):
+            request_id = uuid.uuid4().hex
+        request_started = time.perf_counter()
+        scope.setdefault("state", {}).update(sse_request_id=request_id, sse_request_started=request_started)
+        progress_started = None
+        progress_sent = None
+
+        async def measured_send(message):
+            nonlocal progress_started, progress_sent
+            if message["type"] == "http.response.start":
+                headers = [(key, value) for key, value in message.get("headers", ()) if key.lower() != b"x-request-id"]
+                await send({**message, "headers": [*headers, (b"x-request-id", request_id.encode("ascii"))]})
+                return
+            if message["type"] != "http.response.body":
+                await send(message)
+                return
+
+            body = message.get("body", b"")
+            if body.startswith(b'data: {"type": "progress", "percent": 100,'):
+                event = "100%"
+            elif body.startswith(b'data: {"type": "complete",'):
+                event = "complete"
+            else:
+                await send(message)
+                return
+
+            started = time.perf_counter()
+            started_wall = time.time_ns() / 1_000_000
+            completed = False
+            try:
+                await send(message)
+                completed = True
+            finally:
+                finished = time.perf_counter()
+                finished_wall = time.time_ns() / 1_000_000
+                gap = (started - progress_sent) * 1000 if event == "complete" and progress_sent is not None else None
+                start_gap = (started - progress_started) * 1000 if event == "complete" and progress_started is not None else None
+                log.info(
+                    "[Paipu SSE Backend] 请求ID=%s 事件=%s 字节数=%d send开始=%.1fms send完成=%.1fms "
+                    "send开始Unix=%.1fms send完成Unix=%.1fms send等待=%.1fms 100%%至complete发送开始间隔=%s "
+                    "100%%发送完成至complete发送开始=%s 状态=%s 时间基准=ASGI请求到达 范围=ASGI服务器接收，非客户端收到",
+                    request_id, event, len(body), (started - request_started) * 1000,
+                    (finished - request_started) * 1000, started_wall, finished_wall,
+                    (finished - started) * 1000, f"{start_gap:.1f}ms" if start_gap is not None else "N/A",
+                    f"{gap:.1f}ms" if gap is not None else "N/A", "完成" if completed else "中断",
+                )
+                if event == "100%" and completed:
+                    progress_started, progress_sent = started, finished
+
+        await self.app(scope, receive, measured_send)
+
+
+app.add_middleware(_SSESendMetricsMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +497,7 @@ class AnalyzeStreamReq(BaseModel):
     engine: str = "auto"
     temperature: float = 0.1
     title: str | None = None
+    accept_compression: str | None = None
 
 
 class AnalyzeJsonReq(BaseModel):
@@ -956,13 +1037,43 @@ class _ClosingStreamingResponse(StreamingResponse):
             await self.background()
 
 
-def _complete_review_event(result: dict[str, Any]) -> str:
-    with _measure("结果返回"), _measure("完成结果序列化耗时"):
-        return f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(result)}, ensure_ascii=False)}\n\n"
+def _complete_review_event(result: dict[str, Any], accept_compression: bool = False) -> str:
+    raw_prefix = 'data: {"type": "complete", "result": '
+    compressed_prefix = 'data: {"type": "complete", "encoding": "gzip+base64", "data": "'
+    with _measure("结果返回"):
+        with _measure("完成结果序列化耗时"):
+            result_json = json.dumps(_public_review_result(result), ensure_ascii=False)
+            result_bytes = result_json.encode("utf8")
+        raw_size = len(raw_prefix) + len(result_bytes) + len("}\n\n")
+        _set_performance_value("原始complete事件字节数", raw_size)
+        _set_performance_value("原始检讨JSON字节数", len(result_bytes))
+        _set_performance_value("complete压缩状态", "未协商" if not accept_compression else "数据较小")
+        if accept_compression and len(result_bytes) >= 64 * 1024:
+            try:
+                with _measure("complete压缩耗时"):
+                    compressed = gzip.compress(result_bytes, compresslevel=3, mtime=0)
+                with _measure("complete Base64编码耗时"):
+                    encoded = base64.b64encode(compressed).decode("ascii")
+                _set_performance_value("gzip压缩后字节数", len(compressed))
+                _set_performance_value("Base64编码后字节数", len(encoded))
+                _set_performance_value("complete压缩比例", f"{len(compressed) / len(result_bytes) * 100:.1f}%")
+                compressed_size = len(compressed_prefix) + len(encoded) + len('"}\n\n')
+                if compressed_size < raw_size:
+                    _set_performance_value("complete压缩状态", "成功")
+                    _set_performance_value("complete传输字节数", compressed_size)
+                    return f'{compressed_prefix}{encoded}"}}\n\n'
+                _set_performance_value("complete压缩状态", "压缩后未变小，回退原始")
+            except Exception:  # noqa: BLE001
+                _set_performance_value("complete压缩状态", "压缩失败，回退原始")
+        _set_performance_value("complete传输字节数", raw_size)
+        return f"{raw_prefix}{result_json}}}\n\n"
 
 
 @app.post("/api/analyze/stream")
 async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
+    request_id = getattr(request.state, "sse_request_id", None) if request is not None else None
+    request_started = getattr(request.state, "sse_request_started", None) if request is not None else None
+    request_id = request_id or uuid.uuid4().hex
     try:
         normalize_model_id(req.engine)
     except ValueError as exc:
@@ -1076,10 +1187,14 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 progress_event = f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '检讨完成！'}, ensure_ascii=False)}\n\n"
                 progress_generated = time.perf_counter()
                 stats["100%事件生成时间"] = (progress_generated - stats["_started"]) * 1000
+                if request_started is not None:
+                    stats["ASGI请求至100%事件生成"] = (progress_generated - request_started) * 1000
                 yield progress_event
-                complete_event = _complete_review_event(res)
+                complete_event = _complete_review_event(res, req.accept_compression == "gzip+base64")
                 complete_generated = time.perf_counter()
                 stats["complete事件生成时间"] = (complete_generated - stats["_started"]) * 1000
+                if request_started is not None:
+                    stats["ASGI请求至complete事件生成"] = (complete_generated - request_started) * 1000
                 stats["100%至complete事件生成间隔"] = (complete_generated - progress_generated) * 1000
                 yield complete_event
             finally:
@@ -1094,7 +1209,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             log.error("SSE analyze error (%s)", _safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
     async def measured_stream():
-        stats: dict[str, Any] = {"mode": "准备中", "AI模型加载次数": 0, "AI模型复用次数": 0}
+        stats: dict[str, Any] = {"mode": "准备中", "request_id": request_id, "AI模型加载次数": 0, "AI模型复用次数": 0}
         started = time.perf_counter()
         stats["_started"] = started
         generator = sse_generator(stats)
@@ -1120,6 +1235,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             "Content-Encoding": "identity",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id,
         },
     )
 
