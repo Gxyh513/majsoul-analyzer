@@ -86,6 +86,7 @@ def _without_credentials(value: Any) -> Any:
 
 
 def _save_record(records_dir: Path, game_uuid: str, record: dict) -> None:
+    """Atomically persist a validated record; propagate any local write error."""
     record = _without_credentials(record)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid) or not _valid_record(record, game_uuid):
         raise ValueError("invalid record")
@@ -438,8 +439,10 @@ async def fetch_record_with_failover(
     - Distinguishes 540 rate limits, auth/login failures, and network errors
     - Raises HTTP 429 ONLY if ALL actually attempted accounts returned 540
     - Keeps per-account diagnostics in server logs, not public error messages
-    - Closes connection cleanly upon failure to prevent connection state leaking
-    - Never writes or modifies local paipu cache upon failure
+    - Closes failed login or fetch connections before trying another account
+    - Atomically saves fetched records; local persistence failures return an explicit error
+    - Does not switch accounts, refetch, or close a valid connection after a local save failure
+    - Does not replace the previous record when an atomic cache write fails
     """
     import server.app as server_app
     if client is None:
@@ -522,11 +525,14 @@ async def fetch_record_with_failover(
                     raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
                 try:
                     _save_record(records_dir, game_uuid, record)
-                except (OSError, ValueError, TypeError):
-                    log.warning("[牌谱缓存写入失败] UUID: %s", game_uuid)
+                except (OSError, ValueError, TypeError) as e:
+                    log.error("[牌谱缓存写入失败] UUID: %s (%s)", game_uuid, type(e).__name__)
+                    raise HTTPException(status_code=500, detail="牌谱抓取成功，但原始牌谱保存失败，请检查缓存目录。") from e
                 log.info("[牌谱抓取成功] 账号 (%s) 成功抓取牌谱: %s", actual_display, game_uuid)
                 attempt_outcomes.append({"status": "success", "account": actual_display})
                 return record
+            except HTTPException:
+                raise
             except MajsoulError as e:
                 err_str = str(e)
                 safe_err = _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None))

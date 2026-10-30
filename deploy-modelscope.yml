@@ -1,0 +1,75 @@
+
+name: Deploy to ModelScope Studio
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 避免多个部署同时执行
+concurrency:
+  group: modelscope-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 获取 GitHub main 代码
+      - name: Checkout GitHub
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          lfs: true
+
+      # 2. 同步代码到魔搭
+      - name: Push to ModelScope
+        env:
+          MODELSCOPE_API_KEY: ${{ secrets.MODELSCOPE_API_KEY }}
+          MODELSCOPE_OWNER: ${{ vars.MODELSCOPE_OWNER }}
+          MODELSCOPE_STUDIO: ${{ vars.MODELSCOPE_STUDIO }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git lfs install
+
+          # 添加魔搭远程仓库
+          git remote add modelscope \
+            "https://oauth2:${MODELSCOPE_API_KEY}@modelscope.cn/studios/${MODELSCOPE_OWNER}/${MODELSCOPE_STUDIO}.git"
+
+          # 获取魔搭 master
+          git fetch modelscope master
+
+          # 检查历史关系，禁止意外覆盖
+          if ! git merge-base --is-ancestor modelscope/master HEAD; then
+            echo "::error::Git histories are not synchronized. Please complete the initial merge first."
+            exit 1
+          fi
+
+          # 推送 GitHub main 到魔搭 master
+          git push modelscope HEAD:master
+
+      # 3. 通知魔搭重新部署
+      - name: Deploy ModelScope Studio
+        env:
+          MODELSCOPE_API_KEY: ${{ secrets.MODELSCOPE_API_KEY }}
+          MODELSCOPE_OWNER: ${{ vars.MODELSCOPE_OWNER }}
+          MODELSCOPE_STUDIO: ${{ vars.MODELSCOPE_STUDIO }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${MODELSCOPE_API_KEY}" \
+            "https://modelscope.cn/openapi/v1/studios/${MODELSCOPE_OWNER}/${MODELSCOPE_STUDIO}/deploy"
+
+          echo "ModelScope deployment triggered successfully."

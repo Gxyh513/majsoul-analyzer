@@ -106,6 +106,27 @@ test("analysis injects only the server token and streams SSE without buffering",
   }
 });
 
+test("analysis forwards only the validated cache persistence header", async () => {
+  try {
+    for (const value of ["true", "false", "untrusted"]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ summary: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "X-Review-Cache-Persisted": value, "Set-Cookie": "secret=hidden" },
+      });
+      const request = new Request("https://pages.example/api/analyze/paipu", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paipu: "demo" }),
+      });
+      const response = await onRequest({ request, env: { MAJSOUL_API_TOKEN: "server-only-secret" } });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("x-review-cache-persisted"), value === "untrusted" ? null : value);
+      assert.equal(response.headers.get("set-cookie"), null);
+      assert.deepEqual(await response.json(), { summary: {} });
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("proxy rejects private routes, methods, missing secrets, and oversized bodies", async () => {
   let fetchCalls = 0;
   globalThis.fetch = async () => {

@@ -11,7 +11,7 @@ from server.engine.reviewer import EngineManager
 
 
 def review(sha="a" * 64):
-    return {"engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
+    return {"target_actor": 0, "engine": {"type": "mortal", "id": MODEL_ID, "weight_file": MODEL_FILE,
         "weight_sha256": sha, "version": 4, "steps": 582500,
         "q_source": "neural_network", "review_schema": REVIEW_SCHEMA}}
 

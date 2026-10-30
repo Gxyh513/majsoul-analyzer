@@ -56,7 +56,6 @@ def start_round():
 
 def test_riichi_discard_is_a_separate_navigable_step(monkeypatch):
     monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
-    monkeypatch.setattr(reviewer, "analyze_candidate_metadata", lambda *args: {})
     events = [{"type":"start_game","names":["A","B","C","D"]}, start_round(),
               {"type":"tsumo","actor":0,"pai":"1m"},
               {"type":"reach","actor":0},
@@ -77,9 +76,48 @@ def test_riichi_discard_is_a_separate_navigable_step(monkeypatch):
     assert summary["match_rate"] == round(100 * summary["total_matches"] / summary["total_reviewed"], 1)
 
 
+def test_indexed_next_action_skips_long_metadata_and_preserves_hora_and_reach():
+    prefix = [{"type": "dora"}] * 1500
+    win = {"type": "hora", "actor": 0}
+    events = [{"type": "end_game"}, *prefix, {"type": "hora", "actor": 1}, win]
+    assert reviewer.next_player_action(events, 0, False, True, False, 1) == win
+    reach = {"type": "reach", "actor": 0}
+    events = [reach, {"type": "reach_accepted"}, {"type": "dahai", "actor": 0, "pai": "2m"}]
+    assert reviewer.next_player_action(events, 0, False, False, False) == {**reach, "pai": "2m"}
+    assert reach == {"type": "reach", "actor": 0}
+
+
+def test_snapshots_preserve_river_and_meld_before_calls_and_kakan(monkeypatch):
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    events = [start_round(),
+              {"type": "dahai", "actor": 0, "pai": "1m"},
+              {"type": "pon", "actor": 1, "target": 0, "pai": "1m", "consumed": ["1m", "1m"]},
+              {"type": "kakan", "actor": 1, "pai": "1m"},
+              {"type": "end_kyoku"}]
+    steps = reviewer.review_game(events, 0, FakeManager())["kyokus"][0]["steps"]
+    assert steps[1]["rivers"][0][0]["called"] is False
+    assert steps[2]["rivers"][0][0]["called"] is True
+    assert steps[2]["melds"][1][0]["type"] == "pon"
+    assert len(steps[2]["melds"][1][0]["tiles"]) == 3
+    assert steps[3]["melds"][1][0]["type"] == "kakan"
+    assert len(steps[3]["melds"][1][0]["tiles"]) == 4
+
+
+def test_candidates_keep_model_scores_without_supplemental_statistics(monkeypatch):
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    events = [start_round(), {"type": "tsumo", "actor": 0, "pai": "1m"},
+              {"type": "dahai", "actor": 0, "pai": "1m"}, {"type": "end_kyoku"}]
+    decision = reviewer.review_game(events, 0, FakeManager())["decisions"][0]
+    candidates = decision["candidates"]
+    assert [c["label"] for c in candidates] == [37, 1, 0]
+    assert [c["rank"] for c in candidates] == [1, 2, 3]
+    assert candidates[0]["raw_q"] == 37 and candidates[0]["prob"] > candidates[-1]["prob"]
+    assert all(not ({"shanten_after", "ukeire", "ev", "danger", "tenpai_prob"} & c.keys()) for c in candidates)
+    assert all(set(bar) == {"prob"} for bar in decision["tile_bars"].values())
+
+
 def test_self_turn_decision_preserves_tsumogiri_flag(monkeypatch):
     monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
-    monkeypatch.setattr(reviewer, "analyze_candidate_metadata", lambda *args: {})
     events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}, start_round(),
               {"type": "tsumo", "actor": 0, "pai": "1m"},
               {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": True},
