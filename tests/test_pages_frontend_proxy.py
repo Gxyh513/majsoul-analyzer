@@ -1,13 +1,14 @@
 """Regression checks for Pages same-origin proxy mode in the browser client."""
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
+from frontend_assets import javascript_source
+
 
 def source_between(start, end):
-    text = Path("web/app.js").read_text(encoding="utf8")
+    text = javascript_source()
     return text[text.index(start):text.index(end)]
 
 

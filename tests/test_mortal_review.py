@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+from frontend_assets import javascript_source
 from server.app import make_cache_key, resolve_engine_cache_info
 from server.engine.mortal_model import Brain, DQN, LoadedMortal
 from server.engine.reviewer import EngineManager, review_game, softmax
@@ -456,7 +457,7 @@ def test_config_local_isolation_and_credentials_protection(tmp_path: Path, monke
 def test_frontend_engine_status_mapping():
     """The frontend must not claim an unavailable checkpoint fell back to builtin."""
     from server import app as server_app
-    source = (ROOT_DIR / "web" / "app.js").read_text(encoding="utf-8")
+    source = javascript_source()
     assert "系统已自动回退为内置引擎" not in source
     assert "无法分析，不会回退到其他引擎" in source
     assert "requireTrustedReview(result)" in source

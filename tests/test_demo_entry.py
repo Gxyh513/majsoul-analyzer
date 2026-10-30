@@ -5,11 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from frontend_assets import javascript_source
+
 
 def test_empty_input_and_demo_label():
     if not shutil.which("node"):
         pytest.skip("Node.js not installed")
-    source = Path("web/app.js").read_text(encoding="utf-8")
+    source = javascript_source()
     code = source[source.index("function applyPerspective("):source.index("async function switchSeatPerspective(")]
     script = r'''
 const assert = require('assert');
@@ -48,7 +50,7 @@ const window = {location:{href:'https://example.test/'},history:{pushState(){}}}
 
 def test_demo_entry_and_labels_are_present():
     html = Path("web/index.html").read_text(encoding="utf-8")
-    js = Path("web/app.js").read_text(encoding="utf-8")
+    js = javascript_source()
     assert 'id="btnDemoAnalyze"' in html
     assert 'id="demoReviewLabel"' in html
     assert 'id="homeInputError"' in html

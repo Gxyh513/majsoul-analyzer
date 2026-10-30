@@ -1,15 +1,16 @@
 """Exercise the actual frontend request coordinator with controlled async APIs."""
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
+
+from frontend_assets import javascript_source
 
 
 def test_on_demand_perspectives_and_races():
     if not shutil.which("node"):
         pytest.skip("Node.js not installed")
-    source = Path("web/app.js").read_text(encoding="utf-8")
+    source = javascript_source()
     code = source[source.index("const inFlightRequests = new Map();"):source.index("function handWind(")]
     script = r'''
 const assert = require('assert');
@@ -97,7 +98,7 @@ const window={location:{href:'https://example.test/'},history:{pushState(){}}};
 def test_cached_read_overlaps_status_and_write_does_not_block():
     if not shutil.which("node"):
         pytest.skip("Node.js not installed")
-    source = Path("web/app.js").read_text(encoding="utf-8")
+    source = javascript_source()
     code = source[source.index("const inFlightRequests = new Map();"):source.index("function setPerspectiveLoading(")]
     script = r'''
 const assert = require('assert');
@@ -131,6 +132,6 @@ const apiFetch = async () => { throw Error('unexpected fallback'); };
 
 
 def test_no_automatic_review_preloading():
-    source = Path("web/app.js").read_text(encoding="utf-8")
+    source = javascript_source()
     assert "preloadOtherPerspectives" not in source
     assert "requestIdleCallback" not in source

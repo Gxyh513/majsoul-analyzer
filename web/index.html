@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>牌谱检讨 · 雀魂 AI 复盘</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
-  <link rel="stylesheet" href="/styles.css?v=20261030-demo-entry" />
+  <link rel="stylesheet" href="/styles.css?v=20261030-frontend-split-1" />
 </head>
 <body>
   <!-- ========================================================================
@@ -280,7 +280,7 @@
           <tr><td style="padding:6px 0;"><kbd>]</kbd> <kbd>[</kbd></td><td style="color:#eee;">下一局 / 上一局</td></tr>
           <tr><td style="padding:6px 0;"><kbd>End</kbd> <kbd>Home</kbd></td><td style="color:#eee;">跳转至本局终了 / 本局开局</td></tr>
           <tr><td style="padding:6px 0;"><kbd>空格</kbd> (Space)</td><td style="color:#eee;">自动播放 / 暂停</td></tr>
-          <tr><td style="padding:6px 0;"><kbd>Alt</kbd> + 滚轮</td><td style="color:#eee;">在牌桌区域逐步前进 / 后退</td></tr>
+          <tr><td style="padding:6px 0;">鼠标滚轮</td><td style="color:#eee;">在牌桌区域向下前进 / 向上后退</td></tr>
           <tr><td style="padding:6px 0;"><kbd>H</kbd></td><td style="color:#eee;">开关他家手牌（明牌 / 暗牌模式）</td></tr>
           <tr><td style="padding:6px 0;"><kbd>S</kbd></td><td style="color:#eee;">查看全庄各局得点变动</td></tr>
           <tr><td style="padding:6px 0;"><kbd>?</kbd></td><td style="color:#eee;">打开 / 关闭此快捷键窗口</td></tr>
@@ -324,6 +324,18 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <script src="/app.js?v=20261030-review-v4"></script>
+  <script src="/js/replay-state.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/cache.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/api.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/review.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/summary-renderer.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/replay-controls.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/board-renderer.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/decision-renderer.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/replay-navigation.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/modal-manager.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/import.js?v=20261030-frontend-split-1"></script>
+  <script src="/js/events.js?v=20261030-frontend-split-1"></script>
+  <script src="/app.js?v=20261030-frontend-split-1"></script>
 </body>
 </html>
