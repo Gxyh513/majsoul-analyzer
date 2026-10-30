@@ -1,5 +1,6 @@
 """Real-model API attestation and failure behavior."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ MODEL_DIR = Path(__file__).resolve().parents[1] / "data" / "models"
 
 @pytest.mark.parametrize("route", ["demo", "stream"])
 @pytest.mark.parametrize("replacement_during_inference", [False, True])
-def test_real_model_inference_failure_returns_503(monkeypatch, tmp_path, route, replacement_during_inference):
+def test_real_model_inference_failure_reports_error(monkeypatch, tmp_path, route, replacement_during_inference):
     if not (MODEL_DIR / MODEL_FILE).is_file():
         pytest.skip("published ONNX model not present")
     manager = EngineManager(MODEL_DIR)
@@ -34,7 +35,15 @@ def test_real_model_inference_failure_returns_503(monkeypatch, tmp_path, route, 
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     payload = {"paipu": "demo", "target_actor": 0} if route == "stream" else {"target_actor": 0}
     response = client.post(f"/api/analyze/{route}", json=payload)
-    assert response.status_code == 503, response.text
+    if route == "stream":
+        assert response.status_code == 200, response.text
+        messages = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                    if line.startswith("data: ")]
+        errors = [message for message in messages if message["type"] == "error"]
+        assert len(errors) == 1 and "AI 模型推理失败" in errors[0]["detail"]
+        assert not any(message["type"] == "complete" for message in messages)
+    else:
+        assert response.status_code == 503, response.text
     assert "private inference error" not in response.text
     if replacement_during_inference:
         assert manager._model is not model and not manager._inference_failed

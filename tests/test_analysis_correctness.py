@@ -67,7 +67,7 @@ def test_ambiguous_kan_is_not_counted_as_agreement(monkeypatch):
               {"type": "ankan", "actor": 0, "consumed": ["1m"] * 4},
               {"type": "end_kyoku"}, {"type": "end_game"}]
     result = reviewer.review_game(events, 0, FakeManager())
-    dec = result["decisions"][0]
+    dec = result["kyokus"][0]["decisions"][0]
     assert dec["expected"]["type"] == "kan"
     assert dec["is_equal"] is None and dec["verdict"] == "unknown"
     assert dec["rel_score"] is None

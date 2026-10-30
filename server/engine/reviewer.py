@@ -417,12 +417,20 @@ def review_game(
     pending_decisions: list[dict[str, Any]] = []
     mortal_obs_batch: list[np.ndarray] = []
     mortal_mask_batch: list[np.ndarray] = []
+    sorted_hands: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = [None] * 4
 
-    def snapshot_board(ev: dict, step_idx: int) -> dict[str, Any]:
+    def snapshot_board(ev: dict) -> dict[str, Any]:
+        snapshot_hands = []
+        for seat, hand in enumerate(hands):
+            hand_state = tuple(hand)
+            cached = sorted_hands[seat]
+            if cached is None or cached[0] != hand_state:
+                cached = (hand_state, tuple(sorted(hand, key=sort_key)))
+                sorted_hands[seat] = cached
+            snapshot_hands.append(list(cached[1]))
         return {
-            "step_idx": step_idx,
             "event": ev,
-            "hands": [sorted(h, key=sort_key) for h in hands],
+            "hands": snapshot_hands,
             "drawn": list(drawn_tile),
             # Entries are replaced rather than mutated when calls or kans change them.
             "melds": [list(ms) for ms in melds],
@@ -434,7 +442,6 @@ def review_game(
             "honba": honba,
             "tiles_left": tiles_left,
             "junme": junme,
-            "actor": ev.get("actor"),
             "decision_idx": None,
         }
 
@@ -498,7 +505,7 @@ def review_game(
                 "steps": [],
                 "decisions": [],
             }
-            cur_kyoku["steps"].append(snapshot_board(ev, 0))
+            cur_kyoku["steps"].append(snapshot_board(ev))
             continue
 
         if cur_kyoku is None:
@@ -543,7 +550,7 @@ def review_game(
                         # Separate the riichi declaration from its discard choice,
                         # so both decisions have an independently navigable step.
                         step_ref = len(cur_kyoku["steps"])
-                        cur_kyoku["steps"].append(snapshot_board(ev, step_ref))
+                        cur_kyoku["steps"].append(snapshot_board(ev))
                         pending_decisions.append(
                             {
                                 "kyoku_idx": cur_kyoku["kyoku_idx"],
@@ -667,7 +674,7 @@ def review_game(
             cur_kyoku["end_summaries"].append(label)
 
         step_idx = len(cur_kyoku["steps"])
-        step_snap = snapshot_board(ev, step_idx)
+        step_snap = snapshot_board(ev)
         cur_kyoku["steps"].append(step_snap)
 
         # Check if `target_actor` has a decision at this exact step
@@ -975,6 +982,5 @@ def review_game(
         },
         "match_rate": None if no_scored_kan_only else round(overall_match_rate, 1),
         "blunders": blunders,
-        "decisions": [d for k in kyokus for d in k.get("decisions", [])],
         "kyokus": kyokus,
     }

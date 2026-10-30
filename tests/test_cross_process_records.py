@@ -92,8 +92,8 @@ def configure(app, stage):
                        "weight_sha256": WEIGHT_SHA, "version": 4, "steps": None, "revision": MODEL_REVISION,
                        "q_source": "neural_network", "review_schema": REVIEW_SCHEMA},
             "summary": {"total_reviewed": 1, "match_rate": 100.0},
-            "kyokus": [{"steps": [{"event": events[2]}], "notes": ["完整检讨"]}],
-            "decisions": [{"actor": seat, "candidates": [{"tile": "5p", "q": 0.75}]}],
+            "kyokus": [{"steps": [{"event": events[2]}], "notes": ["完整检讨"],
+                        "decisions": [{"actor": seat, "candidates": [{"tile": "5p", "q": 0.75}]}]}],
             "fixture_input": {"events": events, "meta": kwargs["meta"], "temperature": TEMPERATURE},
             "analysis_marker": f"{stage}-{len(calls)}",
         }

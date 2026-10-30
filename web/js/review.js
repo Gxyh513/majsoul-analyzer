@@ -53,30 +53,76 @@ function requireTrustedReview(result) {
 // Only the latest request may update the visible review or its progress.
 let analysisViewVersion = 0;
 let currentReviewSource = null;
+const reviewCache = new Map();
+const pendingReviews = new Map();
+const REVIEW_CACHE_SOURCE_LIMIT = 2;
+const REVIEW_ENGINE = "auto";
+const REVIEW_TEMPERATURE = 0.1;
 
 function matchesReview(result, seat) {
   return isTrustedReview(result) && Number.isInteger(result.target_actor) &&
     (seat == null || result.target_actor === seat);
 }
 
-async function getReview(source, seat, onProgress) {
-  await requireModelStatus();
+async function getReview(source, seat, onProgress = () => {}) {
+  const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const body = source.kind === "json"
-    ? { content: source.input }
-    : { paipu: source.identity };
-  if (seat != null) body.target_actor = seat;
-  let result;
-  try {
-    result = await fetchReviewStream(body, onProgress);
-  } catch (streamErr) {
-    if (streamErr.serverReported) throw streamErr;
-    console.warn("SSE stream failed, falling back to analysis API:", streamErr);
-    const endpoint = source.kind === "json" ? "/api/analyze/json" : "/api/analyze/paipu";
-    result = await apiFetch(endpoint, { method: "POST", body: JSON.stringify(body) });
+    ? { content: source.input, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE }
+    : { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE };
+  const sourceKey = JSON.stringify([url, source.kind, body, "mortal-s42-onnx", MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA]);
+  const cached = reviewCache.get(sourceKey);
+  const cachedSeat = seat == null ? cached?.defaultSeat : seat;
+  if (cachedSeat != null && cached?.seats.has(cachedSeat)) {
+    reviewCache.delete(sourceKey);
+    reviewCache.set(sourceKey, cached);
+    onProgress(100, "已复用本页面的分析结果，正在加载回放...");
+    return cached.seats.get(cachedSeat);
   }
-  requireTrustedReview(result);
-  if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
-  return result;
+
+  let requests = pendingReviews.get(sourceKey);
+  if (!requests) {
+    requests = new Map();
+    pendingReviews.set(sourceKey, requests);
+  }
+  let pending = requests.get(seat);
+  if (!pending) {
+    pending = { listeners: new Set(), progress: null, promise: null };
+    requests.set(seat, pending);
+    const notify = (percent, message) => {
+      pending.progress = [percent, message];
+      for (const listener of pending.listeners) listener(percent, message);
+    };
+    pending.promise = Promise.resolve().then(async () => {
+      notify(0, "正在验证 Mortal S42 ONNX 模型...");
+      await requireModelStatus();
+      if (url !== buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
+        throw new Error("后端地址已发生变化，请重新分析。");
+      }
+      const requestBody = seat == null ? body : { ...body, target_actor: seat };
+      const result = await fetchReviewStream(requestBody, notify, url);
+      requireTrustedReview(result);
+      if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
+      const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map() };
+      entry.seats.set(result.target_actor, result);
+      if (seat == null) entry.defaultSeat = result.target_actor;
+      reviewCache.delete(sourceKey);
+      reviewCache.set(sourceKey, entry);
+      while (reviewCache.size > REVIEW_CACHE_SOURCE_LIMIT) {
+        reviewCache.delete(reviewCache.keys().next().value);
+      }
+      return result;
+    }).finally(() => {
+      requests.delete(seat);
+      if (!requests.size) pendingReviews.delete(sourceKey);
+    });
+  }
+  pending.listeners.add(onProgress);
+  if (pending.progress) onProgress(...pending.progress);
+  try {
+    return await pending.promise;
+  } finally {
+    pending.listeners.delete(onProgress);
+  }
 }
 
 function setPerspectiveLoading(title) {

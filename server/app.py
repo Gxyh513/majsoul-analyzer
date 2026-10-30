@@ -806,6 +806,23 @@ class _ClosingStreamingResponse(StreamingResponse):
         async with aclosing(self.body_iterator):
             await super().stream_response(send)
 
+    async def __call__(self, scope, receive, send) -> None:
+        stream_task = asyncio.create_task(self.stream_response(send))
+        disconnect_task = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _ = await asyncio.wait((stream_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
+            if disconnect_task in done:
+                disconnect_task.result()
+            else:
+                stream_task.result()
+        finally:
+            for task in (stream_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stream_task, disconnect_task, return_exceptions=True)
+        if self.background is not None:
+            await self.background()
+
 
 def _complete_review_event(result: dict[str, Any]) -> str:
     with _measure("结果返回"):
@@ -814,14 +831,51 @@ def _complete_review_event(result: dict[str, Any]) -> str:
 
 @app.post("/api/analyze/stream")
 async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
+    try:
+        normalize_model_id(req.engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def wait_for_phase(task: asyncio.Task, kind: str, percent: float, message: str):
+        started = time.monotonic()
+        try:
+            while not task.done():
+                done, _ = await asyncio.wait((task,), timeout=10)
+                if not done:
+                    elapsed = int(time.monotonic() - started)
+                    event = {"type": kind, "percent": percent, "message": f"{message}（已等待 {elapsed} 秒）"}
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def sse_generator(stats: dict[str, Any]):
         try:
-            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在检查 AI 模型...'}, ensure_ascii=False)}\n\n"
 
+            async def prepare_model():
+                await _wait_for_model_download(req.engine)
+                try:
+                    await asyncio.to_thread(engine_mgr.get_mortal, req.engine)
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
+
+            model_task = asyncio.create_task(prepare_model())
+            async with aclosing(wait_for_phase(model_task, "progress", 5, "正在检查 AI 模型")) as updates:
+                async for update in updates:
+                    yield update
+            model_task.result()
+
+            yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
             try:
-                game_id, mjai_events, meta, seat = await resolve_game_data(
+                resolve_task = asyncio.create_task(resolve_game_data(
                     paipu=req.paipu, content=req.content, target_actor=req.target_actor
-                )
+                ))
+                async with aclosing(wait_for_phase(resolve_task, "progress", 5, "正在准备牌谱数据")) as updates:
+                    async for update in updates:
+                        yield update
+                game_id, mjai_events, meta, seat = resolve_task.result()
             except HTTPException as e:
                 yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
                 return
@@ -858,16 +912,28 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                         listening.clear()
 
             try:
-                task = await _start_review_job(
+                start_task = asyncio.create_task(_start_review_job(
                     game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                     engine=req.engine, temperature=req.temperature, progress_callback=on_progress,
-                )
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 15, 'message': '牌谱准备就绪，启动 AI 检讨引擎...'}, ensure_ascii=False)}\n\n"
+                ))
+                async with aclosing(wait_for_phase(start_task, "queued", 5, "服务器正忙，当前正在排队中")) as updates:
+                    async for update in updates:
+                        yield update
+                task = start_task.result()
+                progress = {"percent": 15, "message": "牌谱准备就绪，启动 AI 检讨引擎..."}
+                progress_started = last_update = time.monotonic()
+                yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
                 while not task.done():
                     try:
                         progress = await asyncio.wait_for(q.get(), timeout=0.25)
                     except asyncio.TimeoutError:
+                        now = time.monotonic()
+                        if now - last_update >= 10:
+                            waiting = {**progress, "message": f"{progress['message']}（已等待 {int(now - progress_started)} 秒）"}
+                            yield f"data: {json.dumps({'type': 'progress', **waiting}, ensure_ascii=False)}\n\n"
+                            last_update = now
                         continue
+                    progress_started = last_update = time.monotonic()
                     yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
 
                 while not q.empty():
@@ -882,10 +948,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 listening.clear()
 
         except HTTPException as e:
-            if e.status_code == 503:
-                raise
             log.error("SSE analyze error (%s)", _safe_error_context(e))
-            yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
         except Exception as e:
             log.error("SSE analyze error (%s)", _safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
@@ -907,55 +971,12 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             await generator.aclose()
             _log_performance(stats, started)
 
-    # Delay response headers until inference finishes, so model failures can
-    # still produce HTTP 503. A disconnected client stops waiting, while an
-    # already-started review retains its permit until its worker finishes.
-    async def buffer_stream():
-        try:
-            normalize_model_id(req.engine)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        await _wait_for_model_download(req.engine)
-        try:
-            await asyncio.to_thread(engine_mgr.get_mortal, req.engine)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="AI 模型不可用，请检查或重新下载模型。") from exc
-        chunks = []
-        async with aclosing(measured_stream()) as stream:
-            async for chunk in stream:
-                chunks.append(chunk)
-        return chunks
-
-    async def watch_disconnect():
-        while True:
-            if (await request.receive())["type"] == "http.disconnect":
-                return
-
-    buffer_task = asyncio.create_task(buffer_stream())
-    disconnect_task = asyncio.create_task(watch_disconnect()) if request is not None else None
-    try:
-        if disconnect_task is not None:
-            done, _ = await asyncio.wait((buffer_task, disconnect_task), return_when=asyncio.FIRST_COMPLETED)
-            if disconnect_task in done:
-                disconnect_task.result()
-                raise asyncio.CancelledError
-        chunks = await buffer_task
-    finally:
-        tasks = (buffer_task, disconnect_task) if disconnect_task is not None else (buffer_task,)
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def buffered_stream():
-        for chunk in chunks:
-            yield chunk
-
     return _ClosingStreamingResponse(
-        buffered_stream(),
+        measured_stream(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
+            "Content-Encoding": "identity",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

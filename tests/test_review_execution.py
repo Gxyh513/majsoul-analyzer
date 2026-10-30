@@ -27,8 +27,8 @@ def review():
                    "weight_sha256": SHA, "version": 4, "steps": None, "revision": MODEL_REVISION,
                    "q_source": "neural_network", "review_schema": REVIEW_SCHEMA},
         "summary": {"rating": 95},
-        "kyokus": [{"steps": [{"event": EVENTS[0]}]}],
-        "decisions": [{"candidates": [{"label": 1, "raw_q": 0.5}]}],
+        "kyokus": [{"steps": [{"event": EVENTS[0]}],
+                    "decisions": [{"candidates": [{"label": 1, "raw_q": 0.5}]}]}],
     }
 
 
@@ -177,6 +177,7 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
         started = [asyncio.Event(), asyncio.Event()]
         release = [threading.Event(), threading.Event()]
         send_first_progress = threading.Event()
+        queued = asyncio.Event()
         calls = []
 
         def progress_review(*args, **kwargs):
@@ -190,27 +191,39 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
                 raise RuntimeError("test did not release inference")
             return review()
 
+        async def consume(response):
+            messages = []
+            async for chunk in response.body_iterator:
+                message = json.loads(chunk.removeprefix("data: ").strip())
+                messages.append(message)
+                if message.get("type") == "queued":
+                    queued.set()
+            return messages
+
         monkeypatch.setattr(app, "review_game", progress_review)
         request = app.AnalyzeStreamReq(**analyze_payload("stream"))
         leader = follower = None
         try:
-            leader = asyncio.create_task(app.api_analyze_stream(request))
+            leader_response = await asyncio.wait_for(app.api_analyze_stream(request), 2)
+            assert not calls
+            leader = asyncio.create_task(consume(leader_response))
             await asyncio.wait_for(started[0].wait(), 2)
-            follower = asyncio.create_task(app.api_analyze_stream(request))
-            await asyncio.sleep(0.03)
+            follower_response = await asyncio.wait_for(app.api_analyze_stream(request), 2)
+            follower = asyncio.create_task(consume(follower_response))
+            await asyncio.wait_for(queued.wait(), 2)
             assert not follower.done() and calls == [0]
             send_first_progress.set()
             leader.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await leader
-            assert app.review_semaphore.locked()
+            assert app.review_semaphore.locked() and len(app._review_tasks) == 1
             release[0].set()
             await asyncio.wait_for(started[1].wait(), 2)
             release[1].set()
-            response = await asyncio.wait_for(follower, 2)
-            messages = [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in response.body_iterator]
+            messages = await asyncio.wait_for(follower, 2)
             assert any(message.get("type") == "queued" for message in messages)
             assert any(message.get("percent") == 65 for message in messages)
+            assert not any(message.get("percent") == 42 for message in messages)
             complete = [message for message in messages if message["type"] == "complete"]
             assert len(complete) == 1 and complete[0]["result"] == {**review(), "game_id": UUID}
             assert calls == [0, 1]
@@ -220,6 +233,9 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
             for event in release:
                 event.set()
             send_first_progress.set()
+            for task in (leader, follower):
+                if task is not None and not task.done():
+                    task.cancel()
             await asyncio.gather(*(task for task in (leader, follower) if task is not None), return_exceptions=True)
 
     asyncio.run(scenario())

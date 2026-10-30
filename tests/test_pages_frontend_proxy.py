@@ -33,7 +33,7 @@ const fetch=async (url,options)=>{
   if(url==='/api/analyze/stream'){
     let sent=false;
     const line='data: {"type":"complete","result":{"ok":true}}\n\n';
-    return {ok:true,body:{getReader:()=>({read:async()=>sent?{done:true}:(sent=true,{done:false,value:new TextEncoder().encode(line)})})}};
+    return {ok:true,body:{getReader:()=>({read:async()=>sent?{done:true}:(sent=true,{done:false,value:new TextEncoder().encode(line)}),cancel:async()=>{},releaseLock:()=>{}})}};
   }
   return {ok:true,json:async()=>({ok:true})};
 };

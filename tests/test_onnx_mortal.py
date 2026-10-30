@@ -125,10 +125,11 @@ def test_demo_review_preserves_real_network_q_values(real_model, monkeypatch):
     monkeypatch.setattr(real_model, "eval_batch", capture)
     events = json.loads((ROOT / "data" / "demo_mjai.json").read_text(encoding="utf8"))
     result = review_game(events, 0, manager, force_engine=MODEL_ID)
-    assert result["decisions"] and len(captures) == 1
+    decisions = [decision for kyoku in result["kyokus"] for decision in kyoku["decisions"]]
+    assert decisions and len(captures) == 1
     q, masks = captures[0]
-    assert len(q) == len(result["decisions"])
-    for i, decision in enumerate(result["decisions"]):
+    assert len(q) == len(decisions)
+    for i, decision in enumerate(decisions):
         assert {c["label"] for c in decision["candidates"]} == set(np.flatnonzero(masks[i]))
         for candidate in decision["candidates"]:
             assert candidate["raw_q"] == pytest.approx(float(q[i, candidate["label"]]))
