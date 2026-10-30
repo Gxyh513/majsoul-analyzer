@@ -46,68 +46,33 @@ function requireTrustedReview(result) {
   if (!isTrustedReview(result)) throw new Error("分析结果的模型来源无法验证，请重新分析。");
 }
 
-const inFlightRequests = new Map();
+// Only the latest request may update the visible review or its progress.
 let analysisViewVersion = 0;
 let currentReviewSource = null;
-
-function reviewKey(source, model, seat) {
-  return JSON.stringify([source.kind, source.identity, model, seat]);
-}
 
 function matchesReview(result, seat) {
   return isTrustedReview(result) && Number.isInteger(result.target_actor) &&
     (seat == null || result.target_actor === seat);
 }
 
-function getReview(source, model, seat, onProgress) {
-  const key = reviewKey(source, model, seat);
-  const existing = inFlightRequests.get(key);
-  if (existing) {
-    existing.onProgress = onProgress;
-    return existing.promise;
+async function getReview(source, model, seat, onProgress) {
+  await requireModelStatus();
+  const body = source.kind === "json"
+    ? { content: source.input, engine: model }
+    : { paipu: source.identity, engine: model };
+  if (seat != null) body.target_actor = seat;
+  let result;
+  try {
+    result = await fetchReviewStream(body, onProgress);
+  } catch (streamErr) {
+    if (streamErr.serverReported) throw streamErr;
+    console.warn("SSE stream failed, falling back to analysis API:", streamErr);
+    const endpoint = source.kind === "json" ? "/api/analyze/json" : "/api/analyze/paipu";
+    result = await apiFetch(endpoint, { method: "POST", body: JSON.stringify(body) });
   }
-
-  const task = { onProgress };
-  task.promise = (async () => {
-    const cached = seat == null ? null : state.perspectiveCache[key];
-    const storedPromise = !cached && source.kind === "paipu" && seat != null
-      ? idbReviewCache.findByGame(source.identity, model, seat) : null;
-    await requireModelStatus();
-    if (matchesReview(cached, seat)) return cached;
-
-    if (source.kind === "paipu" && seat != null) {
-      const stored = await (storedPromise || idbReviewCache.findByGame(source.identity, model, seat));
-      if (matchesReview(stored, seat)) {
-        state.perspectiveCache[key] = stored;
-        return stored;
-      }
-    }
-
-    const body = source.kind === "json"
-      ? { content: source.input, engine: model }
-      : { paipu: source.input, engine: model };
-    if (seat != null) body.target_actor = seat;
-    let result;
-    try {
-      result = await fetchReviewStream(body, (pct, msg) => task.onProgress?.(pct, msg));
-    } catch (streamErr) {
-      console.warn("SSE stream failed, falling back to analysis API:", streamErr);
-      const endpoint = source.kind === "json" ? "/api/analyze/json" : "/api/analyze/paipu";
-      result = await apiFetch(endpoint, { method: "POST", body: JSON.stringify(body) });
-    }
-    requireTrustedReview(result);
-    if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
-    const resultKey = reviewKey(source, model, result.target_actor);
-    state.perspectiveCache[resultKey] = result;
-    if (source.kind === "paipu") {
-      void idbReviewCache.set(`${source.identity}_${result.target_actor}_${model}`, result);
-    }
-    return result;
-  })().finally(() => {
-    if (inFlightRequests.get(key) === task) inFlightRequests.delete(key);
-  });
-  inFlightRequests.set(key, task);
-  return task.promise;
+  requireTrustedReview(result);
+  if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
+  return result;
 }
 
 function setPerspectiveLoading(title) {
@@ -142,7 +107,8 @@ function applyPerspective(result, preservePosition) {
 }
 
 async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
-  const input = (rawInput || "").trim();
+  const originalInput = rawInput || "";
+  const input = originalInput.trim();
   if (!input) {
     $("homeInputError")?.classList.remove("hidden");
     $("homePaipuInput")?.focus();
@@ -150,7 +116,8 @@ async function startAnalysisFromInput(rawInput, model = "akagi", seat = null) {
   }
   $("homeInputError")?.classList.add("hidden");
   const isJson = input.startsWith("{") || input.startsWith("[");
-  const source = { kind: isJson ? "json" : "paipu", input, identity: isJson ? input : parsePaipuUuid(input) };
+  const source = { kind: isJson ? "json" : "paipu", input: isJson ? originalInput : input,
+    identity: isJson ? input : parsePaipuUuid(input) };
   const version = ++analysisViewVersion;
   state.selectedModel = model;
   updateEngineStatusDisplay(model);

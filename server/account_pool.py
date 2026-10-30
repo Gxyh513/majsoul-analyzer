@@ -6,16 +6,11 @@ and in-memory token refreshes for environment-managed pools.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
-import re
-import tempfile
-import threading
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import HTTPException
@@ -32,95 +27,6 @@ _env_pool_token_overrides: dict[str, tuple[str | None, str]] = {}
 # A 540 response has no reliable reset timestamp; avoid retrying it for a full day.
 _RATE_LIMIT_COOLDOWN = 24 * 60 * 60
 _rate_limited_until: dict[str, float] = {}
-_record_cache_io_lock = threading.Lock()
-
-
-def _parse_valid_record(record: Any, game_uuid: str) -> tuple[list[dict], dict] | None:
-    from server.majsoul.convert import game_meta, to_mjai
-
-    if not isinstance(record, dict) or not isinstance(record.get("head"), dict) or not isinstance(record.get("actions"), list):
-        return None
-    if record["head"].get("uuid") != game_uuid:
-        return None
-    try:
-        meta = game_meta(record)
-        return to_mjai(record), meta
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
-        return None
-    except Exception:
-        log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
-        return None
-
-
-def _valid_record(record: Any, game_uuid: str) -> bool:
-    return _parse_valid_record(record, game_uuid) is not None
-
-
-def load_cached_record(records_dir: Path, game_uuid: str, *, include_parsed: bool = False,
-                       timings: dict | None = None) -> dict | tuple[dict, list[dict], dict] | None:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid):
-        return None
-    path = records_dir / f"{game_uuid}.json"
-    try:
-        started = time.perf_counter()
-        raw = path.read_text(encoding="utf8")
-        if timings is not None:
-            timings["原始牌谱读取"] = timings.get("原始牌谱读取", 0.0) + (time.perf_counter() - started) * 1000
-        started = time.perf_counter()
-        record = json.loads(raw)
-        if timings is not None:
-            timings["JSON解析"] = timings.get("JSON解析", 0.0) + (time.perf_counter() - started) * 1000
-        started = time.perf_counter()
-        parsed = _parse_valid_record(record, game_uuid)
-        if timings is not None:
-            timings["MJAI转换"] = timings.get("MJAI转换", 0.0) + (time.perf_counter() - started) * 1000
-        if parsed is not None:
-            try:
-                path.touch()
-            except OSError:
-                pass
-            log.info("[牌谱缓存命中] UUID: %s", game_uuid)
-            return (record, *parsed) if include_parsed else record
-        log.warning("[牌谱缓存校验失败] UUID: %s", game_uuid)
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError, UnicodeError):
-        log.warning("[牌谱缓存读取失败] UUID: %s", game_uuid)
-    return None
-
-
-def _without_credentials(value: Any) -> Any:
-    """Exclude authentication fields from persisted game data at every depth."""
-    if isinstance(value, dict):
-        secret_keys = {"password", "access_token", "token", "refresh_token", "secret"}
-        return {k: _without_credentials(v) for k, v in value.items()
-                if not (isinstance(k, str) and k.lower() in secret_keys)}
-    if isinstance(value, list):
-        return [_without_credentials(item) for item in value]
-    return value
-
-
-def _save_record(records_dir: Path, game_uuid: str, record: dict, *,
-                 parsed: tuple[list[dict], dict] | None = None) -> None:
-    """Atomically persist a validated record; propagate any local write error."""
-    sanitized = _without_credentials(record)
-    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", game_uuid)
-            or ((parsed is None or sanitized != record) and not _valid_record(sanitized, game_uuid))):
-        raise ValueError("invalid record")
-    record = sanitized
-    temp_path = None
-    try:
-        records_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as f:
-            temp_path = Path(f.name)
-            json.dump(record, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        with _record_cache_io_lock:
-            os.replace(temp_path, records_dir / f"{game_uuid}.json")
-    finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
 
 
 def _account_pool_key(acc: dict) -> str:
@@ -444,245 +350,106 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
 async def fetch_record_with_failover(
     game_uuid: str,
     client: MajsoulClient | None = None,
-    records_dir: Path | None = None,
-    client_lock: asyncio.Lock | None = None,
-    *,
-    include_parsed: bool = False,
-    timings: dict | None = None,
-) -> dict | tuple[dict, list[dict], dict]:
-    """
-    Fetches game record with automatic multi-account failover.
-    Guarantees:
-    - Serialized execution via _ms_client_lock (no race conditions/connection corruption)
-    - Re-checks local disk cache inside lock in case a concurrent fetch already saved it
-    - Tries each distinct configured account exactly once in order
-    - Stops immediately if error is 1203 (牌谱不存在/无权查看) to avoid wasting other accounts' quota
-    - Distinguishes 540 rate limits, auth/login failures, and network errors
-    - Raises HTTP 429 ONLY if ALL actually attempted accounts returned 540
-    - Keeps per-account diagnostics in server logs, not public error messages
-    - Closes failed login or fetch connections before trying another account
-    - Atomically saves fetched records; local persistence failures return an explicit error
-    - Does not switch accounts, refetch, or close a valid connection after a local save failure
-    - Does not replace the previous record when an atomic cache write fails
-    """
+    client_lock=None,
+):
+    """Fetch through a shared session; reconnect or switch accounts exclusively."""
+    from contextlib import asynccontextmanager
     import server.app as server_app
-    if client is None:
-        client = server_app.ms_client
-    if records_dir is None:
-        records_dir = server_app.RECORDS_DIR
-    if client_lock is None:
-        client_lock = server_app._ms_client_lock
 
-    get_accounts_fn = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
-    login_spec_fn = getattr(server_app, "login_with_account_spec", login_with_account_spec)
-    is_logged_in_fn = getattr(server_app, "is_client_logged_in_as", is_client_logged_in_as)
+    client = client or server_app.ms_client
+    client_lock = client_lock or server_app._ms_client_lock
+    get_accounts = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
+    login = getattr(server_app, "login_with_account_spec", login_with_account_spec)
+    is_logged_in = getattr(server_app, "is_client_logged_in_as", is_client_logged_in_as)
+    accounts = list(get_accounts())
+    if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
+        if not any(is_logged_in(account) for account in accounts):
+            accounts.insert(0, {"account": client.current_account, "account_id": client.account_id,
+                                "access_token": client.access_token})
+    if not accounts:
+        raise HTTPException(status_code=401, detail="雀魂牌谱服务暂不可用，请检查账号设置或上传牌谱 JSON 文件。")
 
-    async with client_lock:
-        # Re-check cache inside lock to eliminate duplicate requests in concurrent scenarios
-        cached_record = await asyncio.to_thread(load_cached_record, records_dir, game_uuid,
-                                                include_parsed=include_parsed, timings=timings)
-        if cached_record is not None:
-            return cached_record
+    @asynccontextmanager
+    async def read_session():
+        if hasattr(client_lock, "read"):
+            async with client_lock.read():
+                yield
+        else:
+            async with client_lock:
+                yield
 
-        accs = get_accounts_fn()
-        if not accs:
-            raise HTTPException(
-                status_code=401,
-                detail="雀魂牌谱服务暂不可用，请检查账号设置或上传牌谱 JSON 文件。",
-            )
-
-        attempt_outcomes: list[dict[str, Any]] = []
-        # Keep the live session at the front, including when it belongs to a backup.
-        accs = sorted(accs, key=lambda acc: not is_logged_in_fn(acc))
-
-        for idx, acc in enumerate(accs):
-            pool_key = hashlib.sha256(_account_pool_key(acc).encode("utf8")).hexdigest()
-            if _rate_limited_until.get(pool_key, 0) > time.monotonic():
-                log.info("[频控冷却] 跳过已限流账号")
-                attempt_outcomes.append({"status": "rate_limited", "account": f"账号{idx + 1}"})
+    attempted: set[str] = set()
+    outcomes: list[str] = []
+    while True:
+        available = []
+        for account in accounts:
+            key = _account_pool_key(account)
+            if key in attempted:
                 continue
-            _rate_limited_until.pop(pool_key, None)
-            acc_label = acc.get("nickname") or _mask_account(acc.get("account")) or f"账号{idx+1}"
-            acc_id_str = f" (ID: {acc.get('account_id')})" if acc.get("account_id") else ""
-            display_name = f"{acc_label}{acc_id_str}"
-
-            # Step A: Ensure logged into THIS specific account
-            if not is_logged_in_fn(acc):
-                if idx > 0:
-                    log.info("[账号切换] 尝试下一个可用账号")
-                try:
-                    await login_spec_fn(acc)
-                except Exception as login_err:
-                    log.warning(
-                        "[账号登录失败] 轮转尝试账号 [%d/%d] (%s) 登录失败: %s",
-                        idx + 1,
-                        len(accs),
-                        display_name,
-                        _redact_error(login_err, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)),
-                    )
-                    err_str = str(login_err)
-                    is_net = any(k in err_str.lower() for k in ("timeout", "connect", "connection", "network", "getaddrinfo"))
-                    status_type = "network_error" if is_net else "login_failed"
-                    attempt_outcomes.append({
-                        "status": status_type,
-                        "account": display_name,
-                    })
-                    await client.close()
-                    continue
-
-            # Update display name with actual nickname/id after login if available
-            actual_display = f"{client.nickname or acc_label} (ID: {client.account_id or acc.get('account_id') or '未知'})"
-
-            # Step B: Attempt fetchGameRecord with this account
-            try:
-                log.info(
-                    "[牌谱抓取] 正在使用账号 [%d/%d] (%s) 抓取牌谱 (UUID: %s)...",
-                    idx + 1,
-                    len(accs),
-                    actual_display,
-                    game_uuid,
-                )
-                record = await client.fetch_record(game_uuid)
-                started = time.perf_counter()
-                parsed = await asyncio.to_thread(_parse_valid_record, record, game_uuid)
-                if timings is not None:
-                    timings["MJAI转换"] = timings.get("MJAI转换", 0.0) + (time.perf_counter() - started) * 1000
-                if parsed is None:
-                    raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
-                try:
-                    save_task = asyncio.create_task(asyncio.to_thread(
-                        _save_record, records_dir, game_uuid, record, parsed=parsed))
-                    try:
-                        await asyncio.shield(save_task)
-                    except asyncio.CancelledError:
-                        try:
-                            await save_task
-                        finally:
-                            raise
-                except (OSError, ValueError, TypeError) as e:
-                    log.error("[牌谱缓存写入失败] UUID: %s (%s)", game_uuid, type(e).__name__)
-                    raise HTTPException(status_code=500, detail="牌谱抓取成功，但原始牌谱保存失败，请检查缓存目录。") from e
-                log.info("[牌谱抓取成功] 账号 (%s) 成功抓取牌谱: %s", actual_display, game_uuid)
-                attempt_outcomes.append({"status": "success", "account": actual_display})
-                return (record, *parsed) if include_parsed else record
-            except HTTPException:
-                raise
-            except MajsoulError as e:
-                err_str = str(e)
-                safe_err = _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None))
-                code = getattr(e, "code", None)
-
-                # 1203: 牌谱不存在或无权查看 - 立即终止轮换，避免无意义浪费其他账号配额
-                if code == 1203 or "1203" in err_str:
-                    log.warning("[牌谱不存在] 雀魂返回 1203 牌谱不存在或无权查看，终止轮换: %s", safe_err)
-                    raise HTTPException(
-                        status_code=400,
-                        detail="雀魂牌谱不存在、已被删除或属于匿名/私密对局无权查看 (错误码 1203)。",
-                    ) from e
-
-                # 540: 官方频控限制 (单账号单日抓取额度已达上限)
-                if code == 540 or "540" in err_str:
-                    _rate_limited_until[pool_key] = time.monotonic() + _RATE_LIMIT_COOLDOWN
-                    log.warning(
-                        "[单账号额度耗尽] 账号 [%d/%d] (%s) 今日抓谱配额已达官方上限 (错误码 540)",
-                        idx + 1,
-                        len(accs),
-                        actual_display,
-                    )
-                    attempt_outcomes.append({
-                        "status": "rate_limited",
-                        "code": 540,
-                        "error": "单账号额度耗尽(540)",
-                        "account": actual_display,
-                    })
-                    await client.close()
-                    continue
-
-                # 账号鉴权失效 (109 token过期, 1004/1003/104/103 等)
-                is_auth_error = (code in (103, 104, 109, 1003, 1004)) or any(
-                    k in err_str for k in ("109", "1004", "1003", "104", "103", "鉴权失效", "未登录")
-                )
-                if is_auth_error:
-                    log.warning("[账号鉴权失效] 账号 (%s) 鉴权失效: %s", actual_display, safe_err)
-                    attempt_outcomes.append({"status": "auth_error", "account": actual_display})
-                    await client.close()
-                    continue
-
-                is_net = any(k in err_str for k in ("连接已断开", "timeout", "网络"))
-                if is_net:
-                    log.warning("[网络传输异常] 账号 (%s) 业务网络异常: %s", actual_display, safe_err)
-                    attempt_outcomes.append({"status": "network_error", "account": actual_display})
-                    await client.close()
-                    continue
-
-                log.warning("[接口业务异常] 账号 (%s) 抓谱异常: %s", actual_display, safe_err)
-                attempt_outcomes.append({"status": "majsoul_error", "code": code, "account": actual_display})
-                await client.close()
-                continue
-            except Exception as e:
-                safe_err = _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None))
-                log.warning("[网络传输异常] 账号 (%s) 网络异常: %s", actual_display, safe_err)
-                attempt_outcomes.append({"status": "network_error", "account": actual_display})
-                await client.close()
-                continue
-
-        # All configured accounts exhausted. Analyze exact outcomes:
-        num_accounts = len(accs)
-        rate_limited_count = sum(1 for v in attempt_outcomes if v.get("status") == "rate_limited")
-        login_failed_count = sum(1 for v in attempt_outcomes if v.get("status") in ("login_failed", "auth_error"))
-        network_error_count = sum(1 for v in attempt_outcomes if v.get("status") == "network_error")
-
-        # Case 1: All actually attempted accounts were verified to return 540
-        if rate_limited_count == num_accounts:
-            log.error("[全账号频控] 已配置的全部 %d 个雀魂账号今日抓取配额均已耗尽 (错误码 540)", num_accounts)
-            raise HTTPException(
-                status_code=429,
-                detail="雀魂官方抓谱额度暂时耗尽 (错误码 540)。请稍后再试或导入牌谱 JSON 文件分析。",
-            )
-
-        # Build detailed diagnostic per-account outcome strings
-        reasons = []
-        for info in attempt_outcomes:
-            acc_name = info.get("account", "未知账号")
-            st = info.get("status")
-            if st == "rate_limited":
-                reasons.append(f"{acc_name}: 额度已满(540)")
-            elif st == "login_failed":
-                reasons.append(f"{acc_name}: 登录失败")
-            elif st == "auth_error":
-                reasons.append(f"{acc_name}: Token已失效")
-            elif st == "network_error":
-                reasons.append(f"{acc_name}: 网络异常")
+            cooldown = hashlib.sha256(key.encode("utf8")).hexdigest()
+            if _rate_limited_until.get(cooldown, 0) > time.monotonic():
+                attempted.add(key)
+                outcomes.append("rate_limited")
             else:
-                reasons.append(f"{acc_name}: 业务异常")
-        detail_msg = "；".join(reasons)
+                _rate_limited_until.pop(cooldown, None)
+                available.append(account)
+        if not available:
+            break
 
-        # Case 2: Some returned 540, but others failed login/network/other
-        if rate_limited_count > 0:
-            log.error("[账号容灾失败] 牌谱拉取失败 (部分额度耗尽但备用账号不可用): %s", detail_msg)
-            raise HTTPException(
-                status_code=400,
-                detail="抓取牌谱暂时不可用：部分抓谱额度已满，其他连接失败。请稍后重试或导入牌谱 JSON 文件。",
-            )
+        async with read_session():
+            account = next((a for a in available if is_logged_in(a)), None)
+            if account is not None:
+                session = client._ws
+                try:
+                    return await client.fetch_record(game_uuid)
+                except Exception as error:
+                    failure = error
 
-        # Case 3: All accounts failed login/auth
-        if login_failed_count == num_accounts:
-            log.error("[全账号认证失败] 所有已配置账号均登录或鉴权失败: %s", detail_msg)
-            raise HTTPException(
-                status_code=401,
-                detail="雀魂服务暂时无法认证，请检查账号设置或稍后重试。",
-            )
+        if account is None:
+            async with client_lock:
+                if any(is_logged_in(a) for a in available):
+                    continue
+                account = available[0]
+                key = _account_pool_key(account)
+                try:
+                    await login(account)
+                    if not is_logged_in(account):
+                        raise MajsoulError("登录后雀魂会话不可用")
+                except Exception as error:
+                    log.warning("[账号登录失败] %s", _redact_error(error, account.get("password"), account.get("access_token")))
+                    text = str(error).lower()
+                    outcomes.append("network_error" if any(x in text for x in ("timeout", "connect", "network", "getaddrinfo")) else "login_failed")
+                    attempted.add(key)
+                    await client.close()
+            continue
 
-        # Case 4: Network errors
-        if network_error_count > 0:
-            log.error("[网络连接失败] 所有尝试连接均出现网络异常: %s", detail_msg)
-            raise HTTPException(
-                status_code=503,
-                detail="连接雀魂服务器超时或失败，请稍后重试。",
-            )
+        key = _account_pool_key(account)
+        code = getattr(failure, "code", None)
+        text = str(failure)
+        if code == 1203 or "1203" in text:
+            raise HTTPException(status_code=400, detail="雀魂牌谱不存在、已被删除或属于匿名/私密对局无权查看 (错误码 1203)。") from failure
+        attempted.add(key)
+        if code == 540 or "540" in text:
+            cooldown = hashlib.sha256(key.encode("utf8")).hexdigest()
+            _rate_limited_until[cooldown] = time.monotonic() + _RATE_LIMIT_COOLDOWN
+            outcomes.append("rate_limited")
+        elif code in (103, 104, 109, 1003, 1004) or any(x in text for x in ("鉴权失效", "未登录")):
+            outcomes.append("auth_error")
+        elif isinstance(failure, MajsoulError) and not any(x in text.lower() for x in ("连接已断开", "timeout", "网络")):
+            outcomes.append("majsoul_error")
+        else:
+            outcomes.append("network_error")
+        log.warning("[牌谱抓取失败] %s", _redact_error(failure, account.get("password"), account.get("access_token"), getattr(client, "access_token", None)))
+        async with client_lock:
+            if client._ws is session:
+                await client.close()
 
-        log.error("[全账号抓谱失败] 所有已配置账号均无法抓取牌谱: %s", detail_msg)
-        raise HTTPException(
-            status_code=500,
-            detail="抓取牌谱失败，请稍后重试或导入牌谱 JSON 文件。",
-        )
+    if outcomes and all(outcome == "rate_limited" for outcome in outcomes):
+        raise HTTPException(status_code=429, detail="雀魂官方抓谱额度暂时耗尽 (错误码 540)。请稍后再试或导入牌谱 JSON 文件。")
+    if "rate_limited" in outcomes:
+        raise HTTPException(status_code=400, detail="抓取牌谱暂时不可用：部分抓谱额度已满，其他连接失败。请稍后重试或导入牌谱 JSON 文件。")
+    if outcomes and all(outcome in ("login_failed", "auth_error") for outcome in outcomes):
+        raise HTTPException(status_code=401, detail="雀魂服务暂时无法认证，请检查账号设置或稍后重试。")
+    if "network_error" in outcomes:
+        raise HTTPException(status_code=503, detail="连接雀魂服务器超时或失败，请稍后重试。")
+    raise HTTPException(status_code=500, detail="抓取牌谱失败，请稍后重试或导入牌谱 JSON 文件。")

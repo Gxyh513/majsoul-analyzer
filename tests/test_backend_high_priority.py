@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
@@ -81,11 +79,14 @@ class ControlledReviews:
 
 
 @pytest.fixture
-def review_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
+def review_environment(monkeypatch):
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
-    monkeypatch.setattr(server_app, "resolve_engine_cache_info", lambda _: (MODEL_ID, f"{REVIEW_SCHEMA}_{SHA}"))
+    monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
+    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
+        get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
+        status=lambda: {}, selected_model=MODEL_ID,
+    ))
 
     async def resolve(paipu=None, content=None, target_actor=None):
         name = paipu or "first"
@@ -95,7 +96,7 @@ def review_environment(monkeypatch, tmp_path):
 
 
 async def nonstream(name):
-    return await server_app._run_review_with_cache(
+    return await server_app._run_review(
         name, [{"name": name}], {"names": ["A", "B", "C", "D"]}, 0, MODEL_ID, 0.1
     )
 
@@ -109,7 +110,7 @@ async def wait_started(control, name):
 
 
 async def assert_queued_and_finish(control, owner):
-    """Same-key waiter uses the completed cache; different-key work stays serialized."""
+    """Both follow-up requests run afresh after the detached worker finishes."""
     same = asyncio.create_task(nonstream("first"))
     other = asyncio.create_task(nonstream("other"))
     await asyncio.sleep(0.03)
@@ -121,7 +122,7 @@ async def assert_queued_and_finish(control, owner):
     same_result = await asyncio.wait_for(same, timeout=2)
     assert same_result["game_id"] == "first"
     await wait_started(control, "other")
-    assert control.calls.count("first") == 1
+    assert control.calls.count("first") == 2
     assert control.max_active == 1
     control.release["other"].set()
     assert (await asyncio.wait_for(other, timeout=2))["game_id"] == "other"
@@ -133,7 +134,7 @@ async def assert_queued_and_finish(control, owner):
 
 
 @pytest.mark.parametrize("disconnect_at", ["startup_yield", "queue_wait", "progress_yield"])
-def test_stream_disconnect_keeps_permit_and_saves(review_environment, monkeypatch, disconnect_at):
+def test_stream_disconnect_keeps_permit_until_worker_finishes(review_environment, monkeypatch, disconnect_at):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop(), emit_progress=disconnect_at == "progress_yield")
         monkeypatch.setattr(server_app, "review_game", control.review)
@@ -214,87 +215,6 @@ def test_nonstream_cancellation_and_event_loop_responsiveness(review_environment
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("path", ["nonstream", "stream", "inside_semaphore"])
-def test_slow_cache_read_does_not_block_event_loop(review_environment, monkeypatch, path):
-    async def scenario():
-        started = asyncio.Event()
-        release = threading.Event()
-        loop = asyncio.get_running_loop()
-        calls = []
-        result = {**valid_result(), "game_id": "first"}
-
-        def read_cache(_key):
-            calls.append(True)
-            if path == "inside_semaphore" and len(calls) == 1:
-                return None
-            loop.call_soon_threadsafe(started.set)
-            if not release.wait(5):
-                raise RuntimeError("test did not release slow cache read")
-            return result
-
-        monkeypatch.setattr(server_app, "get_cached_review", read_cache)
-        try:
-            if path == "stream":
-                response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-                stream = response.body_iterator
-                assert event_from_chunk(await anext(stream))["percent"] == 5
-                owner = asyncio.create_task(anext(stream))
-            else:
-                owner = asyncio.create_task(nonstream("first"))
-            await asyncio.wait_for(started.wait(), 2)
-            ticks = []
-            await asyncio.wait_for(asyncio.sleep(0.03), 0.5)
-            ticks.append(True)
-            assert ticks and not owner.done()
-            if path == "inside_semaphore":
-                assert server_app.review_semaphore.locked()
-            release.set()
-            value = await asyncio.wait_for(owner, 2)
-            if path == "stream":
-                assert event_from_chunk(value)["percent"] == 100
-                assert event_from_chunk(await anext(stream))["result"] == result
-                await stream.aclose()
-            else:
-                assert value == result
-            assert not server_app._review_tasks
-            assert not server_app.review_semaphore.locked()
-        finally:
-            release.set()
-
-    asyncio.run(scenario())
-
-
-def test_cancel_during_semaphore_cache_recheck_releases_permit(review_environment, monkeypatch):
-    async def scenario():
-        started = asyncio.Event()
-        release = threading.Event()
-        loop = asyncio.get_running_loop()
-        calls = []
-
-        def read_cache(_key):
-            calls.append(True)
-            if len(calls) == 1:
-                return None
-            loop.call_soon_threadsafe(started.set)
-            release.wait(5)
-            return None
-
-        monkeypatch.setattr(server_app, "get_cached_review", read_cache)
-        try:
-            owner = asyncio.create_task(nonstream("first"))
-            await asyncio.wait_for(started.wait(), 2)
-            assert server_app.review_semaphore.locked()
-            owner.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await owner
-            assert not server_app.review_semaphore.locked()
-            assert not server_app._review_tasks
-        finally:
-            release.set()
-
-    asyncio.run(scenario())
-
-
 def test_stream_and_nonstream_complete_normally(review_environment, monkeypatch):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop(), emit_progress=True)
@@ -310,7 +230,7 @@ def test_stream_and_nonstream_complete_normally(review_environment, monkeypatch)
             messages = [event_from_chunk(chunk) async for chunk in stream]
             assert next(event["result"] for event in messages if event["type"] == "complete")["game_id"] == "first"
             assert (await nonstream("first"))["game_id"] == "first"
-            assert control.calls == ["first"]
+            assert control.calls == ["first", "first"]
             await asyncio.sleep(0)
             assert not server_app._review_tasks
         finally:
@@ -351,17 +271,6 @@ def test_shutdown_drains_detached_inference(review_environment, monkeypatch):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
-        monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(status=lambda: {}, selected_model=MODEL_ID))
-
-        async def fake_cleanup():
-            await asyncio.Event().wait()
-
-        async def fake_login():
-            await asyncio.Event().wait()
-
-        monkeypatch.setattr(server_app, "_cache_cleanup_loop", fake_cleanup)
-        monkeypatch.setattr(server_app, "ensure_ms_logged_in", fake_login)
-        monkeypatch.setattr(server_app, "_ms_client_lock", asyncio.Lock())
         lifespan = server_app.lifespan(server_app.app)
         try:
             await lifespan.__aenter__()
@@ -378,7 +287,7 @@ def test_shutdown_drains_detached_inference(review_environment, monkeypatch):
             await asyncio.wait_for(closing, timeout=2)
             assert not server_app._review_tasks
             assert (await nonstream("first"))["game_id"] == "first"
-            assert control.calls == ["first"]
+            assert control.calls == ["first", "first"]
         finally:
             control.release_all()
 
@@ -499,7 +408,7 @@ def test_asgi_nonstream_disconnect_during_download_wait_stops_preparation(review
     asyncio.run(scenario())
 
 
-def test_asgi_nonstream_disconnect_after_start_preserves_worker_and_cache(review_environment, monkeypatch):
+def test_asgi_nonstream_disconnect_after_start_preserves_worker(review_environment, monkeypatch):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
@@ -539,7 +448,7 @@ def test_asgi_nonstream_success_stops_disconnect_watcher(review_environment, mon
     asyncio.run(scenario())
 
 
-def test_cancelling_job_itself_waits_for_thread_and_cache(review_environment, monkeypatch):
+def test_cancelling_job_itself_waits_for_thread_before_next_review(review_environment, monkeypatch):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
         monkeypatch.setattr(server_app, "review_game", control.review)
@@ -560,7 +469,7 @@ def test_cancelling_job_itself_waits_for_thread_and_cache(review_environment, mo
                 await asyncio.wait_for(owner, timeout=2)
             result = await asyncio.wait_for(same, timeout=2)
             assert result["game_id"] == "first"
-            assert control.calls == ["first"]
+            assert control.calls == ["first", "first"]
             await asyncio.sleep(0)
             assert not server_app._review_tasks
         finally:
@@ -569,29 +478,29 @@ def test_cancelling_job_itself_waits_for_thread_and_cache(review_environment, mo
     asyncio.run(scenario())
 
 
-def test_worker_cancelled_error_does_not_spin_or_leak(tmp_path):
+def test_worker_cancelled_error_does_not_spin_or_leak():
     # Run in a subprocess so a regression cannot freeze the entire suite's
     # event loop and prevent an asyncio timeout from firing.
     script = textwrap.dedent("""
         import asyncio
         import pathlib
+        from types import SimpleNamespace
 
         original_is_file = pathlib.Path.is_file
         pathlib.Path.is_file = lambda self: False if self.name in ('config.json', 'config.local.json') else original_is_file(self)
         from server import app
         pathlib.Path.is_file = original_is_file
 
-        app.REVIEWS_DIR = pathlib.Path(__import__('sys').argv[1])
         app.review_semaphore = asyncio.Semaphore(1)
         app._review_tasks = set()
-        app.resolve_engine_cache_info = lambda _: ('akagi', 'schema_' + 'a' * 64)
+        app.engine_mgr = SimpleNamespace(get_mortal=lambda _: (SimpleNamespace(weight_sha256='a' * 64), 'akagi', None))
         def cancelled_worker(*args, **kwargs):
             raise asyncio.CancelledError('worker failed')
         app.review_game = cancelled_worker
 
         async def scenario():
             try:
-                await asyncio.wait_for(app._run_review_with_cache('game', [], {}, 0, 'akagi', 0.1), 3)
+                await asyncio.wait_for(app._run_review('game', [], {}, 0, 'akagi', 0.1), 3)
             except asyncio.CancelledError:
                 pass
             else:
@@ -599,20 +508,19 @@ def test_worker_cancelled_error_does_not_spin_or_leak(tmp_path):
             await asyncio.sleep(0)
             assert not app._review_tasks
             assert not app.review_semaphore.locked()
-            assert not list(app.REVIEWS_DIR.glob('*.json'))
             await asyncio.wait_for(asyncio.sleep(0.01), 1)
 
         asyncio.run(scenario())
     """)
     env = {key: value for key, value in os.environ.items() if not key.startswith("MAJSOUL_")}
     process = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)], capture_output=True, text=True,
+        [sys.executable, "-c", script], capture_output=True, text=True,
         encoding="utf8", errors="replace", env=env, timeout=20,
     )
     assert process.returncode == 0, process.stdout + process.stderr
 
 
-def test_detached_invalid_result_is_never_cached(review_environment, monkeypatch, tmp_path):
+def test_detached_invalid_result_is_rejected_and_next_request_runs(review_environment, monkeypatch):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop(), invalid_first=True)
         monkeypatch.setattr(server_app, "review_game", control.review)
@@ -627,101 +535,27 @@ def test_detached_invalid_result_is_never_cached(review_environment, monkeypatch
             result = await asyncio.gather(job, return_exceptions=True)
             assert isinstance(result[0], RuntimeError)
             await asyncio.sleep(0)
-            assert not list(tmp_path.glob("*.json"))
             assert not server_app._review_tasks
-            # A later valid attempt must actually run and can populate the cache.
+            assert not server_app.review_semaphore.locked()
+            # A later valid attempt must run independently.
             assert (await asyncio.wait_for(nonstream("first"), timeout=2))["game_id"] == "first"
             assert control.calls == ["first", "first"]
-            assert len(list(tmp_path.glob("*.json"))) == 1
         finally:
             control.release_all()
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize(
-    ("fields", "old_summary", "new_summary"),
-    [
-        ({"yiman": True, "title_id": 5, "han": 1, "fu": 50}, "50符1番", "役满（大三元）"),
-        ({"yiman": False, "title_id": 11, "han": 13, "fu": 30}, "30符13番", "累计役满 30符13番"),
-    ],
-)
-def test_old_yakuman_review_cache_is_invalidated(review_environment, monkeypatch, tmp_path, streaming, fields, old_summary, new_summary):
-    async def scenario():
-        events = [{"type": "hora", "actor": 0, "target": 1, **fields}]
-        meta = {"names": ["A", "B", "C", "D"]}
-        weight_sig = f"{REVIEW_SCHEMA}_{SHA}"
-        old_parts = ["first", events, meta, 0, MODEL_ID, 0.1, weight_sig]
-        payload = json.dumps(old_parts, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        old_key = "review-" + hashlib.sha256(payload.encode("utf8")).hexdigest()
-        new_key = server_app.review_cache_key("first", events, meta, 0, MODEL_ID, 0.1, weight_sig)
-        assert old_key != new_key
-        ordinary = [{"type": "hora", "yiman": False, "han": 1, "fu": 50}]
-        ordinary_payload = json.dumps(["first", ordinary, meta, 0, MODEL_ID, 0.1, weight_sig], sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        assert server_app.review_cache_key("first", ordinary, meta, 0, MODEL_ID, 0.1, weight_sig) == "review-" + hashlib.sha256(ordinary_payload.encode("utf8")).hexdigest()
-
-        stale = valid_result()
-        stale["game_id"] = "first"
-        stale["kyokus"] = [{"end_summaries": [f"A 荣和 B {old_summary} +32000"]}]
-        server_app.save_cached_review(old_key, stale)
-        calls = []
-
-        def review(*args, **kwargs):
-            calls.append(True)
-            fresh = valid_result()
-            fresh["kyokus"] = [{"end_summaries": [f"A 荣和 B {new_summary} +32000"]}]
-            return fresh
-
-        async def resolve(**kwargs):
-            return "first", events, meta, 0
-
-        monkeypatch.setattr(server_app, "review_game", review)
-        monkeypatch.setattr(server_app, "resolve_game_data", resolve)
-        if streaming:
-            response = await server_app.api_analyze_stream(server_app.AnalyzeStreamReq(paipu="first"))
-            messages = [event_from_chunk(chunk) async for chunk in response.body_iterator]
-            result = next(message["result"] for message in messages if message["type"] == "complete")
-        else:
-            result = await server_app._run_review_with_cache("first", events, meta, 0, MODEL_ID, 0.1)
-        assert calls == [True]
-        assert new_summary in result["kyokus"][0]["end_summaries"][0]
-        assert result["kyokus"][0]["end_summaries"][0] != stale["kyokus"][0]["end_summaries"][0]
-        assert result["engine"]["review_schema"] == REVIEW_SCHEMA
-        assert server_app.get_cached_review(new_key) == result
-        assert server_app.get_cached_review(old_key) == stale
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    ("event", "invalidates"),
-    [
-        ({"type": "hora", "yiman": True, "title_id": 5, "han": 1, "fu": 50}, True),
-        ({"type": "hora", "yiman": True, "title_id": 10, "han": 6, "fu": 50}, True),
-        ({"type": "hora", "yiman": False, "title_id": 11, "han": 13, "fu": 30}, True),
-        ({"type": "hora", "yiman": False, "title_id": 4, "han": 11, "fu": 30}, False),
-    ],
-)
-def test_only_yakuman_or_counted_yakuman_changes_legacy_cache_key(event, invalidates):
-    events = [event]
-    parts = ["game", events, {}, 0, MODEL_ID, 0.1, f"{REVIEW_SCHEMA}_{SHA}"]
-    payload = json.dumps(parts, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    legacy = "review-" + hashlib.sha256(payload.encode("utf8")).hexdigest()
-    current = server_app.review_cache_key(*parts)
-    assert (legacy != current) is invalidates
-
-
-def test_mjai_disconnect_retry_has_stable_identity(monkeypatch, tmp_path):
+def test_mjai_disconnect_retry_reanalyses_without_inventing_start_time(monkeypatch):
     async def scenario():
         now = [1000]
         monkeypatch.setattr(server_app.time, "time", lambda: now[0])
-        monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
         monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
         monkeypatch.setattr(server_app, "_review_tasks", set())
-        monkeypatch.setattr(server_app, "_MEMORY_LOGS", {})
         monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
-        monkeypatch.setattr(server_app, "resolve_engine_cache_info", lambda _: (MODEL_ID, f"{REVIEW_SCHEMA}_{SHA}"))
+        monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
+            get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
+        ))
         started = asyncio.Event()
         release = threading.Event()
         calls = []
@@ -742,22 +576,25 @@ def test_mjai_disconnect_retry_has_stable_identity(monkeypatch, tmp_path):
             assert event_from_chunk(await anext(stream))["percent"] == 5
             assert event_from_chunk(await anext(stream))["percent"] == 15
             await asyncio.wait_for(started.wait(), 2)
+            first_job = next(iter(server_app._review_tasks))
             await stream.aclose()
             now[0] = 2000
             game_id, retry_events, meta, seat = await server_app.resolve_game_data(content=events)
             assert meta["start_time"] is None
-            retry = asyncio.create_task(server_app._run_review_with_cache(game_id, retry_events, meta, seat, MODEL_ID, 0.1))
+            retry = asyncio.create_task(server_app._run_review(game_id, retry_events, meta, seat, MODEL_ID, 0.1))
             await asyncio.sleep(0.03)
             assert not retry.done() and len(calls) == 1
             release.set()
+            first_result = await asyncio.wait_for(first_job, 2)
             result = await asyncio.wait_for(retry, 2)
-            assert len(calls) == 1
+            assert len(calls) == 2
             assert result["meta"]["start_time"] is None
+            assert first_result["game_id"] != game_id
             now[0] = 3000
             game_id2, events2, meta2, seat2 = await server_app.resolve_game_data(content=events)
-            again = await server_app._run_review_with_cache(game_id2, events2, meta2, seat2, MODEL_ID, 0.1)
-            assert game_id2 == game_id and again == result and len(calls) == 1
-            assert (await server_app.resolve_game_data(paipu=game_id))[2]["start_time"] is None
+            again = await server_app._run_review(game_id2, events2, meta2, seat2, MODEL_ID, 0.1)
+            assert game_id2 != game_id and again["game_id"] == game_id2
+            assert again["meta"]["start_time"] is None and len(calls) == 3
             assert not server_app._review_tasks
         finally:
             release.set()
@@ -765,13 +602,13 @@ def test_mjai_disconnect_retry_has_stable_identity(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
-def test_real_metadata_start_time_remains_part_of_cache_identity(monkeypatch, tmp_path):
+def test_uploaded_metadata_start_time_is_preserved_on_every_review(monkeypatch):
     async def scenario():
-        monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
         monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
         monkeypatch.setattr(server_app, "_review_tasks", set())
-        monkeypatch.setattr(server_app, "_MEMORY_LOGS", {})
-        monkeypatch.setattr(server_app, "resolve_engine_cache_info", lambda _: (MODEL_ID, f"{REVIEW_SCHEMA}_{SHA}"))
+        monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
+            get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
+        ))
         calls = []
 
         def review(_events, _seat, _manager, **kwargs):
@@ -785,317 +622,36 @@ def test_real_metadata_start_time_remains_part_of_cache_identity(monkeypatch, tm
         results = []
         for record in (first, second, first):
             game_id, events, meta, seat = await server_app.resolve_game_data(content=record)
-            results.append(await server_app._run_review_with_cache(game_id, events, meta, seat, MODEL_ID, 0.1))
+            results.append(await server_app._run_review(game_id, events, meta, seat, MODEL_ID, 0.1))
         assert [result["meta"]["start_time"] for result in results] == [1234, 5678, 1234]
-        assert calls == [1234, 5678]
-        signature = f"{REVIEW_SCHEMA}_{SHA}"
-        assert server_app.review_cache_key("upload-game", [], {"start_time": 1234}, 0, MODEL_ID, 0.1, signature) != server_app.review_cache_key("upload-game", [], {"start_time": 5678}, 0, MODEL_ID, 0.1, signature)
+        assert calls == [1234, 5678, 1234]
+        assert len({result["game_id"] for result in results}) == 3
 
     asyncio.run(scenario())
 
 
-def test_cache_replacement_is_atomic(monkeypatch, tmp_path):
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
-    server_app.save_cached_review("test", {"version": "old"})
-    started, release = threading.Event(), threading.Event()
-    original_dump = json.dump
-
-    def delayed_dump(value, file, **kwargs):
-        file.write('{"partial":')
-        file.flush()
-        started.set()
-        assert release.wait(5)
-        file.seek(0)
-        file.truncate()
-        original_dump(value, file, **kwargs)
-
-    monkeypatch.setattr(server_app.json, "dump", delayed_dump)
-    writer = threading.Thread(target=server_app.save_cached_review, args=("test", {"version": "new"}))
-    writer.start()
-    try:
-        assert started.wait(2)
-        assert server_app.get_cached_review("test") == {"version": "old"}
-    finally:
-        release.set()
-        writer.join(timeout=5)
-    assert not writer.is_alive()
-    assert server_app.get_cached_review("test") == {"version": "new"}
-    assert not list(tmp_path.glob("*.tmp"))
-
-
-def test_cleanup_only_old_review_temps_and_counts_survivors(monkeypatch, tmp_path, caplog):
-    reviews, records, cache = (tmp_path / name for name in ("reviews", "records", "cache"))
-    for directory in (reviews, records, cache):
-        directory.mkdir()
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", reviews)
-    monkeypatch.setattr(server_app, "RECORDS_DIR", records)
-    monkeypatch.setattr(server_app, "CACHE_DIR", cache)
-    old_temp = reviews / ".review-abcdefgh.tmp"
-    active = reviews / ".review-active01.tmp"
-    young = reviews / ".review-young001.tmp"
-    unrelated = reviews / ".review-incorrect-length.tmp"
-    other_dir = records / ".review-abcdefgh.tmp"
-    recent_json = reviews / "recent.json"
-    for path, size in ((old_temp, 5), (active, 250_000), (young, 350_000), (unrelated, 13), (other_dir, 17), (recent_json, 400_000)):
-        path.write_bytes(b"x" * size)
-    old = time.time() - 8 * 86400
-    for path in (old_temp, active, unrelated, other_dir):
-        os.utime(path, (old, old))
-    monkeypatch.setattr(server_app, "_active_review_temp_files", {active})
-    caplog.set_level("INFO", logger="majsoul-analyzer")
-    outcome = server_app.cleanup_old_caches(max_days=7, max_total_mb=100)
-    assert outcome == {"cleaned_count": 1, "cleaned_bytes": 5}
-    assert not old_temp.exists()
-    assert all(path.exists() for path in (active, young, unrelated, other_dir, recent_json))
-    expected_mb = (250_000 + 350_000 + 400_000) / (1024 * 1024)
-    assert f"{expected_mb:.2f} MB / 上限" in caplog.text
-
-
-@pytest.mark.parametrize("phase", ["expiration", "quota"])
-def test_cleanup_does_not_delete_newly_replaced_review(monkeypatch, tmp_path, phase):
-    reviews, records, cache = (tmp_path / name for name in ("reviews", "records", "cache"))
-    for directory in (reviews, records, cache):
-        directory.mkdir()
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", reviews)
-    monkeypatch.setattr(server_app, "RECORDS_DIR", records)
-    monkeypatch.setattr(server_app, "CACHE_DIR", cache)
-    server_app.save_cached_review("test", {"version": "old"})
-    target = reviews / "test.json"
-    if phase == "expiration":
-        old_time = time.time() - 8 * 86400
-        os.utime(target, (old_time, old_time))
-    inspected, resume = threading.Event(), threading.Event()
-    original_remove = server_app._remove_review_cache_if_unchanged
-    outcomes = []
-
-    def delayed_remove(path, observed):
-        inspected.set()
-        if not resume.wait(5):
-            raise RuntimeError("test did not resume cleanup")
-        return original_remove(path, observed)
-
-    monkeypatch.setattr(server_app, "_remove_review_cache_if_unchanged", delayed_remove)
-    cleaner = threading.Thread(target=lambda: outcomes.append(server_app.cleanup_old_caches(
-        max_days=7, max_total_mb=100 if phase == "expiration" else 0,
-    )))
-    cleaner.start()
-    try:
-        assert inspected.wait(2)
-        server_app.save_cached_review("test", {"version": "new replacement"})
-    finally:
-        resume.set()
-        cleaner.join(timeout=5)
-    assert not cleaner.is_alive()
-    assert outcomes == [{"cleaned_count": 0, "cleaned_bytes": 0}]
-    assert server_app.get_cached_review("test") == {"version": "new replacement"}
-
-
-def test_cleanup_quota_counts_young_temp_without_deleting_it(monkeypatch, tmp_path):
-    reviews, records, cache = (tmp_path / name for name in ("reviews", "records", "cache"))
-    for directory in (reviews, records, cache):
-        directory.mkdir()
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", reviews)
-    monkeypatch.setattr(server_app, "RECORDS_DIR", records)
-    monkeypatch.setattr(server_app, "CACHE_DIR", cache)
-    temp = reviews / ".review-young001.tmp"
-    review = reviews / "review.json"
-    temp.write_bytes(b"x" * 200)
-    review.write_bytes(b"y" * 200)
-    outcome = server_app.cleanup_old_caches(max_days=7, max_total_mb=300 / (1024 * 1024))
-    assert temp.exists() and not review.exists()
-    assert outcome == {"cleaned_count": 1, "cleaned_bytes": 200}
-
-
-def test_cleanup_does_not_remove_active_temp_even_with_old_mtime(monkeypatch, tmp_path):
-    reviews, records, cache = (tmp_path / name for name in ("reviews", "records", "cache"))
-    for directory in (reviews, records, cache):
-        directory.mkdir()
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", reviews)
-    monkeypatch.setattr(server_app, "RECORDS_DIR", records)
-    monkeypatch.setattr(server_app, "CACHE_DIR", cache)
-    entered, release = threading.Event(), threading.Event()
-    original_dump = json.dump
-
-    def delayed_dump(value, file, **kwargs):
-        file.write("{")
-        file.flush()
-        old = time.time() - 8 * 86400
-        os.utime(file.name, (old, old))
-        entered.set()
-        if not release.wait(5):
-            raise RuntimeError("test did not release writer")
-        file.seek(0)
-        file.truncate()
-        original_dump(value, file, **kwargs)
-
-    monkeypatch.setattr(server_app.json, "dump", delayed_dump)
-    writer = threading.Thread(target=server_app.save_cached_review, args=("test", {"version": "new"}))
-    writer.start()
-    try:
-        assert entered.wait(2)
-        temps = list(reviews.glob(".review-????????.tmp"))
-        assert len(temps) == 1
-        server_app.cleanup_old_caches(max_days=7, max_total_mb=0)
-        assert temps[0].exists()
-    finally:
-        release.set()
-        writer.join(timeout=5)
-    assert not writer.is_alive()
-    assert server_app.get_cached_review("test") == {"version": "new"}
-    assert not server_app._active_review_temp_files
-
-
-def test_concurrent_cache_reader_does_not_block_atomic_replace(monkeypatch, tmp_path):
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
-    server_app.save_cached_review("test", {"version": "old"})
-    reading, release = threading.Event(), threading.Event()
-    original_read = Path.read_text
-    results = []
-
-    def delayed_read(path, *args, **kwargs):
-        if path == tmp_path / "test.json":
-            with path.open(encoding="utf8") as file:
-                reading.set()
-                if not release.wait(5):
-                    raise RuntimeError("test did not release reader")
-                return file.read()
-        return original_read(path, *args, **kwargs)
-
-    def reader():
-        results.append(server_app.get_cached_review("test"))
-
-    monkeypatch.setattr(Path, "read_text", delayed_read)
-    reader_thread = threading.Thread(target=reader)
-    writer_thread = threading.Thread(target=server_app.save_cached_review, args=("test", {"version": "new"}))
-    reader_thread.start()
-    try:
-        assert reading.wait(2)
-        writer_thread.start()
-        time.sleep(0.03)
-        assert writer_thread.is_alive()
-    finally:
-        release.set()
-        reader_thread.join(timeout=5)
-        writer_thread.join(timeout=5)
-    assert not reader_thread.is_alive() and not writer_thread.is_alive()
-    assert results == [{"version": "old"}]
-    assert server_app.get_cached_review("test") == {"version": "new"}
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
-@pytest.mark.parametrize("open_mode", ["deny_delete", "ordinary"])
-def test_windows_external_reader_sharing_violation_is_retried(monkeypatch, tmp_path, open_mode):
-    import ctypes
-    from ctypes import wintypes
-
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
-    server_app.save_cached_review("test", {"version": "old"})
-    target = tmp_path / "test.json"
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file = kernel.CreateFileW
-    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-                            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    create_file.restype = wintypes.HANDLE
-    close_handle = kernel.CloseHandle
-    close_handle.argtypes = [wintypes.HANDLE]
-    close_handle.restype = wintypes.BOOL
-    # Permit reading/writing, but deny deletion/rename of the old file.
-    handle, ordinary_file = None, None
-    if open_mode == "ordinary":
-        ordinary_file = target.open(encoding="utf8")
-    else:
-        handle = create_file(str(target), 0x80000000, 1 | 2, None, 3, 0x80, None)
-        assert handle != ctypes.c_void_p(-1).value
-    real_replace = Path.replace
-    collision = threading.Event()
-
-    def observed_replace(source, destination):
-        try:
-            return real_replace(source, destination)
-        except OSError as error:
-            if getattr(error, "winerror", None) in (5, 32, 33):
-                collision.set()
-            raise
-
-    monkeypatch.setattr(Path, "replace", observed_replace)
-    writer = threading.Thread(target=server_app.save_cached_review, args=("test", {"version": "new"}))
-    writer.start()
-    try:
-        assert collision.wait(2)
-    finally:
-        if ordinary_file is not None:
-            ordinary_file.close()
-        if handle is not None:
-            close_handle(handle)
-        writer.join(timeout=5)
-    assert not writer.is_alive()
-    assert server_app.get_cached_review("test") == {"version": "new"}
-    assert not list(tmp_path.glob("*.tmp"))
-
-
-@pytest.mark.parametrize("winerror", [5, 32, 33])
-def test_cache_replace_retries_windows_sharing_violation(monkeypatch, tmp_path, winerror):
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
-    server_app.save_cached_review("test", {"version": "old"})
-    replace = Path.replace
-    attempts = []
-
-    def flaky_replace(source, target):
-        attempts.append(1)
-        if len(attempts) < 3:
-            error = PermissionError(13, "sharing violation")
-            error.winerror = winerror
-            raise error
-        return replace(source, target)
-
-    monkeypatch.setattr(Path, "replace", flaky_replace)
-    server_app.save_cached_review("test", {"version": "new"})
-    assert len(attempts) == 3
-    assert server_app.get_cached_review("test") == {"version": "new"}
-    assert not list(tmp_path.glob("*.tmp"))
-
-
-@pytest.mark.parametrize("winerror", [5, 32])
-def test_cache_replace_persistent_failure_keeps_old_file(monkeypatch, tmp_path, caplog, winerror):
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
-    server_app.save_cached_review("test", {"version": "old"})
-    attempts = []
-
-    def blocked_replace(source, target):
-        attempts.append(1)
-        error = PermissionError(13, "sharing violation")
-        error.winerror = winerror
-        raise error
-
-    monkeypatch.setattr(Path, "replace", blocked_replace)
-    server_app.save_cached_review("test", {"version": "new"})
-    assert len(attempts) == 5
-    assert server_app.get_cached_review("test") == {"version": "old"}
-    assert not list(tmp_path.glob("*.tmp"))
-    assert "Failed to save review cache" in caplog.text
-
-
 @pytest.mark.parametrize("route", ["paipu", "json", "demo", "stream"])
 @pytest.mark.parametrize("caller", ["pages_proxy", "local"])
-def test_analysis_responses_hide_engine_paths_without_mutating_cache(monkeypatch, tmp_path, route, caller):
+def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypatch, route, caller):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "synthetic-api-token")
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://majsoul.ccwu.cc")
-    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path)
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
     monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
-    monkeypatch.setattr(server_app, "resolve_engine_cache_info", lambda _: (MODEL_ID, f"{REVIEW_SCHEMA}_{SHA}"))
+    monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
+        get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
+    ))
     private_path = "/internal/synthetic/model.pth"
-    calls = []
+    results = []
 
     async def resolve(**_kwargs):
         return "same", [{"type": "start_game"}], {"names": ["A", "B", "C", "D"]}, 0
 
     def review(*args, **kwargs):
-        calls.append(True)
         result = valid_result()
         result["engine"].update(model_path=private_path, models_dir="/internal/synthetic", private_debug={"path": private_path})
         result["meta"] = {"label": "preserved"}
+        results.append(result)
         return result
 
     monkeypatch.setattr(server_app, "resolve_game_data", resolve)
@@ -1121,10 +677,9 @@ def test_analysis_responses_hide_engine_paths_without_mutating_cache(monkeypatch
         assert "private_debug" not in result["engine"]
         assert valid_review_source(result, SHA)
         assert result["meta"] == {"label": "preserved"}
-        assert len(calls) == 1
-    stored = json.loads(next(tmp_path.glob("*.json")).read_text(encoding="utf8"))
-    assert stored["engine"]["model_path"] == private_path
-    assert stored["engine"]["private_debug"]["path"] == private_path
+        assert len(results) == attempt + 1
+        assert results[-1]["engine"]["model_path"] == private_path
+        assert results[-1]["engine"]["private_debug"]["path"] == private_path
 
 
 def test_public_review_redaction_does_not_modify_original():
@@ -1195,24 +750,30 @@ def test_public_status_excludes_private_state_and_retains_model_attestation(monk
 def test_mixed_account_failures_are_private_in_json_and_sse(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "synthetic-api-token")
     monkeypatch.delenv("MAJSOUL_ALLOWED_ORIGINS", raising=False)
+    import server.account_pool as pool
+
     monkeypatch.setattr(server_app, "RECORDS_DIR", tmp_path)
+    monkeypatch.setattr(server_app, "LEGACY_RECORDS_DIRS", ())
     monkeypatch.setattr(server_app, "_ms_client_lock", asyncio.Lock())
+    monkeypatch.setattr(pool, "_rate_limited_until", {})
     accounts = [
         {"account": "first@example.invalid", "nickname": "PrivateNickOne", "account_id": 1234501,
          "password": "synthetic-password-one", "access_token": "synthetic-token-one"},
         {"account": "second@example.invalid", "nickname": "PrivateNickTwo", "account_id": 1234502,
          "password": "synthetic-password-two", "access_token": "synthetic-token-two"},
     ]
-    fake = SimpleNamespace(nickname=None, account_id=None, access_token=None, logged_in=False)
+    fake = SimpleNamespace(nickname=None, account_id=None, access_token=None, logged_in=False, _ws=None)
 
     async def close():
         fake.logged_in = False
+        fake._ws = None
 
     async def login(acc):
         if acc["account_id"] == 1234502:
             raise RuntimeError("connect failed synthetic-password-two synthetic-token-two")
         fake.nickname, fake.account_id, fake.access_token = acc["nickname"], acc["account_id"], acc["access_token"]
         fake.logged_in = True
+        fake._ws = object()
 
     async def fetch(_uuid):
         raise MajsoulError("quota reached", code=540)
@@ -1221,13 +782,13 @@ def test_mixed_account_failures_are_private_in_json_and_sse(monkeypatch, tmp_pat
     monkeypatch.setattr(server_app, "ms_client", fake)
     monkeypatch.setattr(server_app, "get_all_configured_accounts", lambda: accounts)
     monkeypatch.setattr(server_app, "login_with_account_spec", login)
-    monkeypatch.setattr(server_app, "is_client_logged_in_as", lambda _: False)
-    monkeypatch.setattr(server_app, "parse_paipu", lambda _: ("synthetic-game", None))
+    monkeypatch.setattr(server_app, "is_client_logged_in_as", lambda acc: fake.logged_in and fake.account_id == acc["account_id"])
     monkeypatch.setattr(server_app, "models_download_state", {MODEL_ID: {"status": "idle"}})
     client = TestClient(server_app.app, base_url="http://api.example", client=("203.0.113.5", 12345))
     headers = {"X-Api-Token": "synthetic-api-token"}
-    json_response = client.post("/api/analyze/paipu", json={"paipu": "synthetic-game"}, headers=headers)
-    stream_response = client.post("/api/analyze/stream", json={"paipu": "synthetic-game"}, headers=headers)
+    game_id = "241026-11111111-2222-3333-4444-555555555555"
+    json_response = client.post("/api/analyze/paipu", json={"paipu": game_id}, headers=headers)
+    stream_response = client.post("/api/analyze/stream", json={"paipu": game_id}, headers=headers)
     assert json_response.status_code == 400
     assert stream_response.status_code == 200
     assert '"type": "error"' in stream_response.text
@@ -1235,7 +796,6 @@ def test_mixed_account_failures_are_private_in_json_and_sse(monkeypatch, tmp_pat
         assert "额度已满" in response.text
         for forbidden in ("PrivateNickOne", "PrivateNickTwo", "1234501", "1234502", "example.invalid", "synthetic-password", "synthetic-token"):
             assert forbidden not in response.text
-    assert "PrivateNickOne" in caplog.text and "PrivateNickTwo" in caplog.text
     assert "synthetic-password" not in caplog.text and "synthetic-token" not in caplog.text
 
 
@@ -1339,7 +899,6 @@ def test_invalid_paipu_does_not_echo_sensitive_input(monkeypatch, caplog):
         assert "无法识别的牌谱 ID" in response.text
         assert sensitive not in response.text
     assert sensitive not in caplog.text
-    assert "server/app.py:" in caplog.text
 
 
 def test_unexpected_stream_error_does_not_echo_exception(monkeypatch, caplog):

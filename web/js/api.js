@@ -168,6 +168,7 @@ function apiAuthHeaders() {
 }
 
 async function fetchReviewStream(postBody, onProgress) {
+  const serverError = (message) => Object.assign(new Error(message), { serverReported: true });
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const resp = await fetch(url, {
     method: "POST",
@@ -190,7 +191,6 @@ async function fetchReviewStream(postBody, onProgress) {
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let finalResult = null;
-  let cachePersisted = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -212,12 +212,11 @@ async function fetchReviewStream(postBody, onProgress) {
           onProgress(5, ev.message || "服务器正忙，当前正在排队中...");
         } else if (ev.type === "complete") {
           finalResult = ev.result;
-          cachePersisted = ev.cache_persisted;
         } else if (ev.type === "error") {
-          throw new Error(ev.detail || "分析发生错误");
+          throw serverError(ev.detail || "分析发生错误");
         }
       } catch (err) {
-        if (err.message && !err.message.includes("Unexpected token") && !err.message.includes("JSON")) {
+        if (err.serverReported || (err.message && !err.message.includes("Unexpected token") && !err.message.includes("JSON"))) {
           throw err;
         }
       }
@@ -229,10 +228,9 @@ async function fetchReviewStream(postBody, onProgress) {
       const ev = JSON.parse(buffer.trim().slice(5).trim());
       if (ev.type === "complete") {
         finalResult = ev.result;
-        cachePersisted = ev.cache_persisted;
-      } else if (ev.type === "error") throw new Error(ev.detail || "分析发生错误");
+      } else if (ev.type === "error") throw serverError(ev.detail || "分析发生错误");
     } catch (e) {
-      if (e.message && !e.message.includes("Unexpected token") && !e.message.includes("JSON")) {
+      if (e.serverReported || (e.message && !e.message.includes("Unexpected token") && !e.message.includes("JSON"))) {
         throw e;
       }
     }
@@ -241,10 +239,6 @@ async function fetchReviewStream(postBody, onProgress) {
   if (!finalResult) {
     throw new Error("服务端未正常返回分析结果");
   }
-  if (cachePersisted === false) {
-    showToast("检讨已完成，但服务器磁盘缓存保存失败，重启后可能需要重新分析。", "error");
-  }
-
   return finalResult;
 }
 

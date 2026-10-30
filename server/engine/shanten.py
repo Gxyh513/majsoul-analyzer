@@ -1,10 +1,6 @@
 """Shanten / ukeire calculation for 34-index tile count arrays."""
 from __future__ import annotations
 
-from functools import lru_cache
-
-
-@lru_cache(maxsize=None)
 def _suit_opts(counts: tuple) -> frozenset:
     """All Pareto-optimal (mentsu, taatsu, pair) for a 9-tile suit (numbers)."""
     i = 0

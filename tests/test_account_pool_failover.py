@@ -7,8 +7,8 @@ Verifies:
 4. 540 mixed with network error -> HTTP 400 with accurate breakdown.
 5. Error 1203 (paipu not found/forbidden) -> immediate abort, no further accounts wasted.
 6. Duplicate accounts deduplication -> only attempted once per unique account.
-7. Cache hit -> immediate return with 0 network calls.
-8. Concurrency -> serialized execution without crosstalk or deadlock.
+7. Persisted record hit -> immediate return with 0 network calls.
+8. Shared sessions -> concurrent requests without crosstalk or deadlock.
 9. Config read/write -> updates token safely without losing existing custom settings.
 """
 from __future__ import annotations
@@ -32,13 +32,30 @@ from server.app import (
     resolve_game_data,
 )
 from server.majsoul.client import MajsoulError
+from server.majsoul.session import SessionLock
+from server.record_store import RawRecord
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
 @pytest.fixture(autouse=True)
-def isolate_pool_cache(monkeypatch, tmp_path):
+def isolate_pool_state(monkeypatch, tmp_path):
     monkeypatch.setattr("server.account_pool._rate_limited_until", {})
     monkeypatch.setattr("server.app.RECORDS_DIR", tmp_path)
-    monkeypatch.setattr("server.app._MEMORY_LOGS", {})
+    monkeypatch.setattr("server.app.LEGACY_RECORDS_DIRS", ())
+    monkeypatch.setattr("server.app._ms_client_lock", SessionLock())
+    for attr, value in (("logged_in", False), ("_ws", None), ("account_id", None),
+                        ("nickname", None), ("current_account", None), ("access_token", None)):
+        monkeypatch.setattr(ms_client, attr, value)
+    for name in ("MAJSOUL_ACCOUNTS_JSON", "MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+async def mock_connect():
+    ms_client._ws = MagicMock(closed=False)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +80,7 @@ async def test_failover_primary_540_backup_success():
     }
 
     test_uuid = "241026-11111111-2222-3333-4444-555555555555"
-    expected_record = {"head": {"uuid": test_uuid}, "actions": [], "fetched_at": 123456}
+    expected_record = RawRecord("fixture-v1", b"raw response", b"raw detail")
 
     attempts = []
 
@@ -87,7 +104,7 @@ async def test_failover_primary_540_backup_success():
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
         patch.object(ms_client, "login_password", side_effect=mock_login_password),
         patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
     ):
@@ -128,7 +145,7 @@ async def test_all_accounts_540_raises_429():
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
         patch.object(ms_client, "login_password", side_effect=mock_login_password),
         patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
     ):
@@ -175,7 +192,7 @@ async def test_mixed_540_and_login_failure():
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
         patch.object(ms_client, "login_password", side_effect=mock_login_password),
         patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
     ):
@@ -222,7 +239,7 @@ async def test_mixed_540_and_network_error():
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
         patch.object(ms_client, "login_password", side_effect=mock_login_password),
         patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
     ):
@@ -269,7 +286,7 @@ async def test_error_1203_stops_failover_immediately():
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
         patch.object(ms_client, "login_password", side_effect=mock_login_password),
         patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
     ):
@@ -321,7 +338,7 @@ def test_account_deduplication():
 
 
 # ---------------------------------------------------------------------------
-# Test Case 7: Cache Hit Direct Use (No Network Calls)
+# Test Case 7: Stored Records and Network-Only Failover
 # ---------------------------------------------------------------------------
 @pytest.mark.anyio
 async def test_cache_hit_does_not_fetch(tmp_path, monkeypatch):
@@ -348,42 +365,36 @@ async def test_cache_hit_does_not_fetch(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_cache_hit_inside_fetch_record_with_failover(tmp_path, monkeypatch):
-    """Verify that fetch_record_with_failover re-checks disk cache inside lock without network calls."""
-    records_dir = tmp_path / "records"
-    records_dir.mkdir()
-    monkeypatch.setattr("server.app.RECORDS_DIR", records_dir)
-    existing_uuid = "241026-11111111-2222-3333-4444-555555555555"
-    target_file = records_dir / f"{existing_uuid}.json"
-    target_file.write_text(json.dumps({
-        "head": {
-            "uuid": existing_uuid,
-            "accounts": [{"account_id": 1, "nickname": "PlayerA"}],
-            "result": {"players": [{"total_point": 10000}]},
-        },
-        "actions": [],
-    }), encoding="utf-8")
-    with patch.object(ms_client, "connect", new=AsyncMock()) as mock_conn:
-        res = await fetch_record_with_failover(existing_uuid)
-        assert isinstance(res, dict)
-        assert "head" in res
-        mock_conn.assert_not_called()
+async def test_failover_fetches_even_when_a_record_is_already_stored(tmp_path, monkeypatch):
+    """Network failover does not read, mutate, or replace on-disk records."""
+    game_uuid = "241026-11111111-2222-3333-4444-555555555555"
+    path = tmp_path / f"{game_uuid}.json"
+    stored = {"head": {"uuid": game_uuid, "accounts": []}, "actions": []}
+    path.write_text(json.dumps(stored), encoding="utf8")
+    source = RawRecord("fixture-v1", b"network response")
+    monkeypatch.setattr("server.app.get_all_configured_accounts", lambda: [{"account": "live", "account_id": 11}])
+    ms_client.logged_in = True
+    ms_client._ws = MagicMock(closed=False)
+    ms_client.account_id = 11
+    ms_client.current_account = "live"
+    fetch = AsyncMock(return_value=source)
+    monkeypatch.setattr(ms_client, "fetch_record", fetch)
+
+    assert await fetch_record_with_failover(game_uuid) == source
+    fetch.assert_awaited_once_with(game_uuid)
+    assert json.loads(path.read_text(encoding="utf8")) == stored
+    assert not (tmp_path / f"{game_uuid}.pb").exists()
 
 
 # ---------------------------------------------------------------------------
-# Test Case 8: Concurrency & Lock Serialization (No Crosstalk or Deadlock)
+# Test Case 8: Concurrent RPCs Share a Session Without Crosstalk
 # ---------------------------------------------------------------------------
 @pytest.mark.anyio
-async def test_concurrent_failover_serialization():
-    """Verify that multiple concurrent fetch requests execute serially through the lock."""
-    active_in_flight = 0
+async def test_concurrent_failover_shares_session_without_crosstalk():
+    active = 0
     max_concurrent = 0
-
-    mock_cfg = {
-        "account": "concurrent@example.com",
-        "password": "pw",
-        "account_id": 3001,
-    }
+    both_started = asyncio.Event()
+    mock_cfg = {"account": "concurrent@example.com", "password": "pw", "account_id": 3001}
 
     async def mock_login_password(account, password):
         ms_client.logged_in = True
@@ -391,35 +402,29 @@ async def test_concurrent_failover_serialization():
         ms_client.current_account = account
 
     async def mock_fetch_record(game_uuid):
-        nonlocal active_in_flight, max_concurrent
-        active_in_flight += 1
-        if active_in_flight > max_concurrent:
-            max_concurrent = active_in_flight
-        # Simulate slight I/O duration
-        await asyncio.sleep(0.04)
-        active_in_flight -= 1
-        return {"head": {"uuid": game_uuid}, "actions": []}
+        nonlocal active, max_concurrent
+        active += 1
+        max_concurrent = max(max_concurrent, active)
+        if active >= 2:
+            both_started.set()
+        try:
+            await asyncio.wait_for(both_started.wait(), 2)
+            await asyncio.sleep(0.01)
+            return RawRecord("fixture-v1", game_uuid.encode())
+        finally:
+            active -= 1
 
     with (
         patch("server.app.load_config", return_value=mock_cfg),
-        patch.object(ms_client, "connect", new=AsyncMock()),
-        patch.object(ms_client, "login_password", side_effect=mock_login_password),
-        patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record),
+        patch.object(ms_client, "connect", new=AsyncMock(side_effect=mock_connect)),
+        patch.object(ms_client, "login_password", side_effect=mock_login_password) as login,
+        patch.object(ms_client, "fetch_record", side_effect=mock_fetch_record) as fetch,
     ):
-        ms_client.logged_in = False
-        ms_client._ws = MagicMock(closed=False)
-
-        tasks = [
-            fetch_record_with_failover(f"241026-concurrent-{i:04d}-0000-0000-000000000000")
-            for i in range(5)
-        ]
-
-        results = await asyncio.gather(*tasks)
-
-        assert len(results) == 5
-        # Crucial: max_concurrent must be strictly 1 (serialized execution via lock)
-        assert max_concurrent == 1
-        assert active_in_flight == 0
+        uuids = [f"241026-{i:08x}-0000-0000-0000-000000000000" for i in range(5)]
+        results = await asyncio.wait_for(asyncio.gather(*(fetch_record_with_failover(uuid) for uuid in uuids)), 3)
+        assert results == [RawRecord("fixture-v1", uuid.encode()) for uuid in uuids]
+        assert max_concurrent >= 2 and active == 0
+        assert login.await_count == 1 and fetch.await_count == len(uuids)
 
 
 # ---------------------------------------------------------------------------
