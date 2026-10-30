@@ -99,7 +99,16 @@ def test_stream_send_metrics_wrap_the_actual_app(review_environment, caplog):
     messages = [record.getMessage() for record in caplog.records]
     for event in ("100%", "complete"):
         assert any(f"请求ID={request_id} 事件={event}" in message and "send等待=" in message for message in messages)
-    assert any(f"[Paipu Performance] 请求ID={request_id}" in message for message in messages)
+    performance_logs = [json.loads(message.removeprefix("[Paipu Performance] ")) for message in messages
+                        if message.startswith("[Paipu Performance] ")]
+    events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+              if line.startswith("data: ")]
+    reports = [event["performance"] for event in events if event["type"] == "performance"]
+    assert len(performance_logs) == len(reports) == 1
+    assert reports[0] == performance_logs[0]
+    assert reports[0]["request_id"] == request_id
+    assert events.index(next(event for event in events if event["type"] == "complete")) < events.index(
+        next(event for event in events if event["type"] == "performance"))
 
 
 def test_stream_compresses_only_when_client_negotiates(review_environment, monkeypatch):

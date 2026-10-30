@@ -177,6 +177,48 @@ async def test_first_and_second_analysis_redecode_and_reanalyse(monkeypatch, iso
     assert not (tmp_path / "metadata").exists()
 
 
+def test_stream_reports_download_then_local_record(monkeypatch, isolated_app, proto, tmp_path):
+    from starlette.testclient import TestClient
+
+    source = raw_record(proto, U1)
+    fetch = AsyncMock(return_value=source)
+    monkeypatch.setattr(app, "fetch_record_with_failover", fetch)
+    monkeypatch.setattr(app, "engine_mgr", SimpleNamespace(
+        get_mortal=lambda _: (SimpleNamespace(weight_sha256=MODEL_SHA256), MODEL_ID, None)))
+    monkeypatch.setattr(app, "review_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setattr(app, "_review_tasks", set())
+    monkeypatch.setattr(app, "model_download_state", {"status": "idle"})
+    monkeypatch.setattr(app, "review_game", lambda events, seat, manager, **kw: fake_review(seat))
+    monkeypatch.delenv("MAJSOUL_API_TOKEN", raising=False)
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    reports = []
+    for index in range(2):
+        request_id = str(index + 1) * 32
+        response = client.post("/api/analyze/stream", json={"paipu": U1, "target_actor": 1},
+                               headers={"X-Request-ID": request_id})
+        assert response.status_code == 200
+        events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
+                  if line.startswith("data: ")]
+        complete = next(event for event in events if event["type"] == "complete")
+        assert complete["result"]["game_id"] == U1
+        assert complete["result"]["target_actor"] == 1
+        report = next(event["performance"] for event in events if event["type"] == "performance")
+        assert report["request_id"] == request_id
+        assert report["status"]["record_result"] == "success"
+        assert report["sizes_bytes"]["raw_record"] == len(source.response) + len(source.detail)
+        assert report["timings_ms"]["protobuf_decode"] is not None
+        assert report["timings_ms"]["mjai_convert"] is not None
+        reports.append(report)
+    assert reports[0]["status"]["record_source"] == "majsoul_download"
+    assert reports[0]["status"]["local_record_hit"] is False
+    assert reports[0]["timings_ms"]["majsoul_fetch"] is not None
+    assert reports[1]["status"]["record_source"] == "local"
+    assert reports[1]["status"]["local_record_hit"] is True
+    assert reports[1]["timings_ms"]["majsoul_fetch"] is None
+    fetch.assert_awaited_once_with(U1)
+    assert (tmp_path / f"{U1}.pb").is_file()
+
+
 @pytest.mark.anyio
 async def test_same_uuid_concurrent_seats_download_once(monkeypatch, isolated_app, proto):
     async def download(game_uuid):

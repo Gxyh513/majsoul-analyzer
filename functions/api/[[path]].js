@@ -277,9 +277,14 @@ export async function onRequest({ request, env }) {
   }
 
   const responseHeaders = safeResponseHeaders(upstream, route.stream);
-  if (route.stream) responseHeaders.set("X-Request-ID", requestId);
+  const upstreamId = route.stream ? upstream.headers.get("X-Request-ID") : null;
+  const serverRequestId = typeof upstreamId === "string" && /^[0-9a-f]{32}$/.test(upstreamId) ? upstreamId : null;
+  if (serverRequestId) responseHeaders.set("X-Request-ID", serverRequestId);
+  if (route.stream && serverRequestId && serverRequestId !== requestId) {
+    console.info(`[Paipu SSE Proxy] 客户端请求ID=${requestId} 服务端请求ID=${serverRequestId}`);
+  }
   const isSse = route.stream && upstream.ok && /^text\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
-  return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, requestId, started, wallOrigin) : upstream.body, {
+  return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, serverRequestId || requestId, started, wallOrigin) : upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
   });

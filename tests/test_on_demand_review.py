@@ -361,6 +361,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
       readError=newline ? Error('read after complete') : null;
       progress=[];
       const result=await fetchReviewStream({paipu:'demo'},(...args)=>progress.push(args));
+      await new Promise(resolve=>setTimeout(resolve,0));
       readError=null;
       assert.deepStrictEqual(result,{ok:true,nested:{value:7}});
       assert.deepStrictEqual(progress,[[37,'分析中'],[5,'queued'],[100,'分析完成，正在加载回放...']]);

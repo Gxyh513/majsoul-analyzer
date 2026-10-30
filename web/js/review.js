@@ -122,7 +122,13 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
     const result = await pending.promise;
     if (timings) {
       timings.completeReceivedAt = pending.timings.completeReceivedAt;
+      timings.progress100ReceivedAt = pending.timings.progress100ReceivedAt;
+      timings.completeParsedAt = pending.timings.sse?.completeParsedAt;
       timings.requestId = pending.timings.requestId;
+      timings.clientRequestId = pending.timings.clientRequestId;
+      timings.serverRequestId = pending.timings.serverRequestId;
+      // A trailing performance event can provide the server ID after result delivery.
+      timings.streamTimings = pending.timings;
     }
     return result;
   } finally {
@@ -134,7 +140,24 @@ function logReviewViewCompletion(timings, version) {
   if (!Number.isFinite(timings.completeReceivedAt)) return;
   requestAnimationFrame(() => requestAnimationFrame(() => {
     if (version !== analysisViewVersion) return;
-    console.info(`[Paipu UX Performance] 请求ID=${timings.requestId || "N/A"} complete事件接收至页面切换完成=${(performance.now() - timings.completeReceivedAt).toFixed(1)}ms 范围=页面更新后的第二个动画帧（含浏览器调度等待）`);
+    const now = performance.now();
+    const rounded = (value) => Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
+    const progressAt = timings.progress100ReceivedAt;
+    const completeAt = timings.completeReceivedAt;
+    const stream = timings.streamTimings || timings;
+    try {
+      console.info(`[Paipu UX Performance] ${JSON.stringify({
+        event: "paipu_ux_performance", schema_version: 1,
+        client_request_id: stream.clientRequestId || timings.clientRequestId || timings.requestId || null,
+        server_request_id: stream.serverRequestId || null,
+        progress100_received_at_ms: rounded(progressAt), complete_received_at_ms: rounded(completeAt),
+        complete_parsed_at_ms: rounded(timings.completeParsedAt), view_completed_at_ms: rounded(now),
+        progress100_to_complete_ms: Number.isFinite(progressAt) ? rounded(completeAt - progressAt) : null,
+        complete_to_view_ms: rounded(now - completeAt),
+        progress100_to_view_ms: Number.isFinite(progressAt) ? rounded(now - progressAt) : null,
+        view_scope: "second_animation_frame_after_update", time_basis: "browser_performance_now",
+      })}`);
+    } catch (_) {}
   }));
 }
 

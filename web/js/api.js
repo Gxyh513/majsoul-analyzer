@@ -178,76 +178,167 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       supportsCompression = true;
     }
   } catch (_) {}
-  let requestId = globalThis.crypto?.randomUUID
+  const clientRequestId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-  timings.requestId = requestId;
-  const visibility = () => typeof document === "undefined" ? "unknown" : document.visibilityState;
+  let serverRequestId = null;
+  // requestId remains the local ID for existing callers; it is not evidence of
+  // a server-side match when the cross-origin request could not send the header.
+  timings.requestId = clientRequestId;
+  timings.clientRequestId = clientRequestId;
+  timings.serverRequestId = null;
+  const debugReads = typeof window !== "undefined" && window.__PAIPU_DEBUG_SSE__ === true;
+  const visibility = () => {
+    const value = typeof document === "undefined" ? "unknown" : document.visibilityState;
+    return ["visible", "hidden", "prerender", "unloaded"].includes(value) ? value : "unknown";
+  };
+  const initialVisibility = visibility();
   const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
   const monitorStarted = performance.now();
   let monitorEnded = Infinity;
+  let monitorFinished = false;
+  let streamFinished = false;
+  let summaryLogged = false;
   let observer = null;
-  let readSamples = [];
+  let longTaskMonitoring = false;
+  const readSamples = debugReads ? [] : null;
+  const readWaits = [];
   let readCount = 0;
+  let readErrorCount = 0;
+  let errorCount = 0;
+  let diagnosticErrorCount = 0;
   let chunkCount = 0;
   let totalBytes = 0;
+  let firstChunk = null;
+  let lastChunk = null;
+  let firstChunkAt = null;
+  let lastChunkAt = null;
   let previousReadFinished = null;
   let completeReadWaitMs = 0;
   let completeBetweenReadsMs = 0;
   let longTaskCount = 0;
   let longTaskMs = 0;
   let longestTaskMs = 0;
-  const visibilityStates = new Set([visibility()]);
+  const longTasks = [];
+  const visibilityStates = new Set([initialVisibility]);
+  const visibilityChanges = [];
   let progressFrame = null;
   let completeFrame = null;
   let frame = null;
   let lineHasContent = false;
+  let tailStatus = "not_started";
+  let performanceLogged = false;
+  const sensitiveValues = [];
+  const sensitiveKey = /token|secret|password|passwd|authorization|cookie|credential|api[-_]?key/i;
+  const sensitiveUrlKey = /(?:^|[_-])(key|signature|sig|auth|credential|session)(?:$|[_-])|token|secret|password/i;
+  const roundMs = (value) => Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
+  const validRequestId = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 
-  function flushReads() {
-    if (!readSamples.length) return;
-    console.info(`[Paipu SSE Browser] 请求ID=${requestId} read明细=序号,开始ms,完成ms,字节,可见状态或错误 ${JSON.stringify(readSamples)}`);
-    readSamples = [];
+  function safeLog(prefix, payload) {
+    try {
+      const json = JSON.stringify(payload, (key, value) => {
+        if (sensitiveKey.test(key)) return "[REDACTED]";
+        if (typeof value === "string" && (sensitiveValues.some((secret) => value.includes(secret)) ||
+            /https?:\/\/|\b(?:bearer|basic)\s+\S+|(?:token|secret|password|authorization|cookie|api[-_]?key)\s*[:=]\s*\S+/i.test(value))) {
+          return "[REDACTED]";
+        }
+        return value;
+      });
+      console.info(`${prefix} ${json}`);
+    } catch (_) {
+      // Diagnostics must never prevent displaying a completed review.
+    }
   }
-  function logLongTasks(entries) {
+  function recordLongTasks(entries) {
     for (const entry of entries) {
       if (entry.startTime > monitorEnded || entry.startTime + entry.duration < monitorStarted) continue;
       longTaskCount++;
       longTaskMs += entry.duration;
       longestTaskMs = Math.max(longestTaskMs, entry.duration);
-      console.info(`[Paipu SSE Browser] 请求ID=${requestId} 长任务开始=${entry.startTime.toFixed(1)}ms 耗时=${entry.duration.toFixed(1)}ms 当前可见状态=${visibility()}`);
+      longTasks.push({ start_ms: roundMs(entry.startTime), duration_ms: roundMs(entry.duration), visibility: visibility() });
     }
   }
   function visibilityChanged() {
-    visibilityStates.add(visibility());
-    console.info(`[Paipu SSE Browser] 请求ID=${requestId} 可见状态=${visibility()} 时间=${performance.now().toFixed(1)}ms`);
+    const state = visibility();
+    visibilityStates.add(state);
+    visibilityChanges.push({ state, at_ms: roundMs(performance.now()) });
   }
-  function stopDiagnostics() {
+  function frameSummary(item) {
+    return item ? { bytes: item.bytes, first_chunk: item.firstChunk, last_chunk: item.lastChunk,
+      first_at_ms: roundMs(item.firstAt), last_at_ms: roundMs(item.lastAt),
+      first_at_unix_ms: roundMs(wallOrigin + item.firstAt) } : null;
+  }
+  function reportDiagnostics() {
+    if (!monitorFinished || !streamFinished || summaryLogged) return;
+    summaryLogged = true;
+    const sortedWaits = [...readWaits].sort((a, b) => a - b);
+    const p95 = sortedWaits.length ? sortedWaits[Math.ceil(sortedWaits.length * 0.95) - 1] : null;
+    const sse = timings.sse || {};
+    timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
+      visibilityStates: [...visibilityStates] };
+    const summary = {
+      event: "paipu_sse_browser", schema_version: 1,
+      client_request_id: clientRequestId, server_request_id: serverRequestId,
+      read_count: readCount, chunk_count: chunkCount, total_bytes: totalBytes,
+      first_chunk_ms: firstChunk?.received_at_ms ?? null, last_chunk_ms: lastChunk?.received_at_ms ?? null,
+      first_to_last_ms: firstChunkAt !== null && lastChunkAt !== null ? roundMs(lastChunkAt - firstChunkAt) : null,
+      chunk_time_basis: "browser_performance_now_ms_at_read_completion",
+      read_wait_total_ms: roundMs(readWaits.reduce((sum, wait) => sum + wait, 0)),
+      read_wait_max_ms: sortedWaits.length ? roundMs(sortedWaits[sortedWaits.length - 1]) : null,
+      read_wait_p95_ms: roundMs(p95), read_error_count: readErrorCount, error_count: errorCount,
+      diagnostic_error_count: diagnosticErrorCount, first_chunk: firstChunk, last_chunk: lastChunk,
+      visibility: { initial: initialVisibility, final: visibility(), states: [...visibilityStates], changes: visibilityChanges },
+      monitor: { started_at_ms: roundMs(monitorStarted), ended_at_ms: roundMs(monitorEnded),
+        time_origin_unix_ms: roundMs(wallOrigin), long_task_enabled: longTaskMonitoring,
+        scope: "request_to_result_parsed", time_basis: "browser_performance_now_uncalibrated" },
+      long_tasks: { count: longTaskCount, total_ms: roundMs(longTaskMs), max_ms: roundMs(longestTaskMs), entries: longTasks },
+      frames: { progress100: frameSummary(progressFrame), complete: frameSummary(completeFrame),
+        same_chunk: typeof sse.sameChunk === "boolean" ? sse.sameChunk : null,
+        complete_event_parsed_at_ms: roundMs(sse.completeEventParsedAt),
+        complete_first_to_event_parsed_ms: Number.isFinite(sse.completeFirstAt)
+          ? roundMs(sse.completeEventParsedAt - sse.completeFirstAt) : null,
+        complete_read_wait_ms: roundMs(completeReadWaitMs), complete_between_reads_ms: roundMs(completeBetweenReadsMs) },
+      tail_status: tailStatus, read_details_enabled: debugReads,
+    };
+    if (debugReads) summary.read_details = readSamples;
+    safeLog("[Paipu SSE Browser]", summary);
+  }
+  function stopMonitoring() {
+    if (monitorEnded !== Infinity) return;
     monitorEnded = performance.now();
-    flushReads();
-    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", visibilityChanged);
+    // Preserve the immediate timing snapshot expected by existing callers;
+    // long-task records and the final stream summary may finish asynchronously.
+    timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
+      visibilityStates: [...visibilityStates] };
     const finish = () => {
       if (observer) {
-        logLongTasks(observer.takeRecords());
-        observer.disconnect();
+        try { recordLongTasks(observer.takeRecords()); } catch (_) {}
+        try { observer.disconnect(); } catch (_) {}
         observer = null;
       }
-      timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
-        visibilityStates: [...visibilityStates] };
-      console.info(`[Paipu SSE Browser] 请求ID=${requestId} 数据块数量=${chunkCount} 接收字节=${totalBytes} complete后续read等待=${completeReadWaitMs.toFixed(1)}ms complete读块间隔=${completeBetweenReadsMs.toFixed(1)}ms 长任务数量=${longTaskCount} 长任务总耗时=${longTaskMs.toFixed(1)}ms 可见状态=${visibility()}`);
+      monitorFinished = true;
+      reportDiagnostics();
     };
-    if (observer) setTimeout(finish, 0);
+    // The current long task becomes observable only after yielding to the browser.
+    if (observer && typeof setTimeout === "function") setTimeout(finish, 0);
     else finish();
+  }
+  function finishStreamDiagnostics() {
+    if (streamFinished) return;
+    streamFinished = true;
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", visibilityChanged);
+    reportDiagnostics();
   }
   if (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
     try {
-      observer = new PerformanceObserver((list) => logLongTasks(list.getEntries()));
+      observer = new PerformanceObserver((list) => recordLongTasks(list.getEntries()));
       observer.observe({ type: "longtask", buffered: false });
+      longTaskMonitoring = true;
     } catch (_) {
       observer = null;
     }
   }
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", visibilityChanged);
-  console.info(`[Paipu SSE Browser] 请求ID=${requestId} 起始可见状态=${visibility()} performance时间原点Unix=${wallOrigin.toFixed(1)}ms 长任务监控=${observer ? "启用" : "不可用"} 监控范围=SSE请求至结果解析 说明=read完成是JS可观察时间，跨机时钟未校准`);
 
   function measureChunk(chunk, index, receivedAt) {
     let offset = 0;
@@ -270,10 +361,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
           frame.kind = "100%";
           progressFrame = frame;
         }
-        if (frame.kind) {
-          frame.prefix = "";
-          console.info(`[Paipu SSE Browser] 请求ID=${requestId} 事件=${frame.kind} 首块=${frame.firstChunk} 首块read完成=${frame.firstAt.toFixed(1)}ms 可见状态=${visibility()}`);
-        }
+        if (frame.kind) frame.prefix = "";
       }
       const contentEnd = newline < 0 ? end : newline;
       if (contentEnd - offset > 1 || (contentEnd - offset === 1 && chunk[offset] !== 13)) lineHasContent = true;
@@ -300,6 +388,18 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   }
   let resp;
   try {
+    const authHeaders = apiAuthHeaders();
+    for (const [key, value] of Object.entries(authHeaders)) {
+      if (sensitiveKey.test(key) && typeof value === "string" && value) sensitiveValues.push(value);
+    }
+    try {
+      const parsedUrl = new URL(url, typeof window !== "undefined" ? window.location.href : undefined);
+      if (parsedUrl.username) sensitiveValues.push(parsedUrl.username);
+      if (parsedUrl.password) sensitiveValues.push(parsedUrl.password);
+      for (const [key, value] of parsedUrl.searchParams) {
+        if (sensitiveUrlKey.test(key) && value) sensitiveValues.push(value);
+      }
+    } catch (_) {}
     resp = await fetch(url, {
       method: "POST",
       credentials: isPagesProxyMode() ? "omit" : "same-origin",
@@ -307,37 +407,54 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
-        ...apiAuthHeaders(),
-        ...(sameOrigin ? { "X-Request-ID": requestId } : {}),
+        ...authHeaders,
+        ...(sameOrigin ? { "X-Request-ID": clientRequestId } : {}),
       },
       body: JSON.stringify(requestBody),
     });
   } catch (_) {
-    stopDiagnostics();
+    errorCount++;
+    tailStatus = "fetch_error";
+    stopMonitoring();
+    finishStreamDiagnostics();
     throw new Error("无法确认分析请求是否送达，服务器可能已开始处理。立即重试可能导致重复推理。");
   }
 
   const responseRequestId = resp.headers?.get?.("X-Request-ID");
-  if (typeof responseRequestId === "string" && /^[0-9a-f]{32}$/.test(responseRequestId) && responseRequestId !== requestId) {
-    console.info(`[Paipu SSE Browser] 本地请求ID=${requestId} 服务端请求ID=${responseRequestId}`);
-    requestId = responseRequestId;
-    timings.requestId = requestId;
+  if (validRequestId(responseRequestId)) {
+    serverRequestId = responseRequestId;
+    timings.serverRequestId = serverRequestId;
   }
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "");
     const detail = `HTTP ${resp.status}: ${errText || resp.statusText}`;
-    stopDiagnostics();
+    errorCount++;
+    tailStatus = "http_error";
+    stopMonitoring();
+    finishStreamDiagnostics();
     if (resp.status >= 400 && resp.status < 500 && resp.status !== 408) {
       throw new Error(`分析请求被拒绝（${detail}）。`);
     }
     throw new Error(`分析服务没有正常响应（${detail}）。服务器可能已开始处理，立即重试可能导致重复推理。`);
   }
   if (!resp.body) {
-    stopDiagnostics();
+    errorCount++;
+    tailStatus = "no_body";
+    stopMonitoring();
+    finishStreamDiagnostics();
     throw receiveError("无法读取分析响应，服务器可能仍在处理，立即重试可能导致重复推理。");
   }
 
-  const reader = resp.body.getReader();
+  let reader;
+  try {
+    reader = resp.body.getReader();
+  } catch (_) {
+    errorCount++;
+    tailStatus = "reader_error";
+    stopMonitoring();
+    finishStreamDiagnostics();
+    throw receiveError("无法读取分析响应，服务器可能仍在处理，立即重试可能导致重复推理。");
+  }
   const decoder = new TextDecoder("utf-8");
   let lineParts = [];
   let dataLines = [];
@@ -358,10 +475,38 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     try {
       ev = JSON.parse(data);
     } catch (_) {
+      // A malformed optional diagnostic must not change the business outcome.
+      if (completionEvent || name === "performance" || /"type"\s*:\s*"performance"/.test(data.slice(0, 512))) {
+        diagnosticErrorCount++;
+        errorCount++;
+        return;
+      }
       throw receiveError("接收的分析数据格式不完整，服务器可能仍在处理，立即重试可能导致重复推理。");
     }
     const parsedAt = performance.now();
-    const type = ev.type || name;
+    const type = ev?.type || name;
+    if (type === "performance") {
+      if (!ev?.performance || typeof ev.performance !== "object" || Array.isArray(ev.performance)) {
+        diagnosticErrorCount++;
+        errorCount++;
+        return;
+      }
+      if (performanceLogged) return;
+      // The performance payload is emitted by the backend itself and therefore
+      // takes precedence over a response header supplied by an intermediary.
+      const eventRequestId = ev.performance.request_id;
+      if (validRequestId(eventRequestId)) {
+        serverRequestId = eventRequestId;
+        timings.serverRequestId = serverRequestId;
+      }
+      performanceLogged = true;
+      safeLog("[Paipu Performance]", { client_request_id: clientRequestId,
+        server_request_id: serverRequestId, performance: ev.performance });
+      return;
+    }
+    // Once complete has been received, trailing progress/errors are diagnostic
+    // input only and must not alter the already completed review.
+    if (completionEvent) return;
     if (type === "progress" || type === "queued") {
       const percent = Number(ev.percent);
       if (type === "progress" && percent === 100) timings.progress100ReceivedAt = progressFrame?.lastAt ?? receivedAt;
@@ -371,11 +516,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     } else if (type === "complete") {
       timings.completeReceivedAt = completeFrame?.lastAt ?? receivedAt;
       const progressAt = timings.progress100ReceivedAt;
-      const progressTime = Number.isFinite(progressAt) ? `${progressAt.toFixed(1)}ms` : "N/A";
-      const receiveInterval = Number.isFinite(progressAt) ? `${(timings.completeReceivedAt - progressAt).toFixed(1)}ms` : "N/A";
       const first = completeFrame?.firstAt;
-      const firstTime = Number.isFinite(first) ? `${first.toFixed(1)}ms` : "N/A";
-      const parseDuration = Number.isFinite(first) ? `${(parsedAt - first).toFixed(1)}ms` : "N/A";
       const sameChunk = progressFrame && completeFrame ? progressFrame.lastChunk === completeFrame.firstChunk : "N/A";
       timings.sse = {
         completeBytes: completeFrame?.bytes ?? null,
@@ -387,8 +528,6 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         chunkCount,
         totalBytes,
       };
-      console.info(`[Paipu UX Performance] 请求ID=${requestId} 100%事件接收时间=${progressTime} complete事件接收时间=${timings.completeReceivedAt.toFixed(1)}ms 100%事件至complete事件接收=${receiveInterval} 时间基准=页面performance.now`);
-      console.info(`[Paipu SSE Browser] 请求ID=${requestId} complete首块=${firstTime} complete末块=${timings.completeReceivedAt.toFixed(1)}ms complete首块Unix=${Number.isFinite(first) ? (wallOrigin + first).toFixed(1) : "N/A"}ms complete事件字节数=${completeFrame?.bytes ?? "N/A"} 字节范围=Fetch解码后的SSE帧 首块至事件解析完成=${parseDuration} 100%与complete同块=${sameChunk} 可见状态=${visibility()}`);
       completionEvent = { event: ev, eventParseMs: parsedAt - eventParseStarted };
     } else if (type === "error") {
       throw Object.assign(new Error(`服务器分析失败：${ev.detail || "分析发生错误"}`), { serverReported: true });
@@ -397,7 +536,9 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
 
   async function restoreComplete({ event, eventParseMs }) {
     if (event.encoding == null) {
-      console.info(`[Paipu Compression] 请求ID=${requestId} 格式=原始JSON 接收压缩数据大小=N/A 解压耗时=0.0ms 解压后数据大小=N/A JSON解析耗时=${eventParseMs.toFixed(1)}ms`);
+      safeLog("[Paipu Compression]", { client_request_id: clientRequestId, server_request_id: serverRequestId,
+        format: "raw_json", compressed_bytes: null, decompression_ms: 0, decompressed_bytes: null,
+        json_parse_ms: roundMs(eventParseMs) });
       return event.result;
     }
     if (event.encoding !== "gzip+base64" || typeof event.data !== "string" || !supportsCompression) {
@@ -417,7 +558,10 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       const parseStarted = performance.now();
       const result = JSON.parse(text);
       const parseMs = performance.now() - parseStarted;
-      console.info(`[Paipu Compression] 请求ID=${requestId} 格式=gzip+base64 接收压缩数据大小=${compressed.byteLength}B Base64数据大小=${event.data.length}B Base64解码耗时=${base64Ms.toFixed(1)}ms 解压耗时=${decompressMs.toFixed(1)}ms 解压后数据大小=${decoded.byteLength}B JSON解析耗时=${parseMs.toFixed(1)}ms 事件JSON解析耗时=${eventParseMs.toFixed(1)}ms`);
+      safeLog("[Paipu Compression]", { client_request_id: clientRequestId, server_request_id: serverRequestId,
+        format: "gzip+base64", compressed_bytes: compressed.byteLength, base64_bytes: event.data.length,
+        base64_decode_ms: roundMs(base64Ms), decompression_ms: roundMs(decompressMs),
+        decompressed_bytes: decoded.byteLength, json_parse_ms: roundMs(parseMs), event_json_parse_ms: roundMs(eventParseMs) });
       return result;
     } catch (_) {
       throw receiveError("接收的压缩分析结果无法恢复，请稍后重试。");
@@ -438,8 +582,8 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     else if (field === "event") eventName = value;
   }
 
-  function processText(text) {
-    if (!text) return;
+  function processText(text, stopAtComplete = false) {
+    if (!text) return "";
     let start = 0;
     if (skipLeadingLf) {
       if (text[0] === "\n") start = 1;
@@ -458,46 +602,128 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         else if (i + 1 === text.length) skipLeadingLf = true;
       }
       start = i + 1;
+      if (stopAtComplete && completionEvent) return text.slice(start);
     }
     if (start < text.length) lineParts.push(text.slice(start));
+    return "";
   }
 
+  let readFailed = false;
+  async function measuredRead() {
+    const readStarted = performance.now();
+    // These two legacy metrics cover reads from the first complete frame byte
+    // through complete parsing, not the optional diagnostic tail.
+    const readingComplete = Boolean(completeFrame) && !completionEvent;
+    if (readingComplete && previousReadFinished !== null) completeBetweenReadsMs += readStarted - previousReadFinished;
+    let packet;
+    let failure;
+    let failed = false;
+    try {
+      packet = await reader.read();
+    } catch (error) {
+      failed = true;
+      failure = error;
+      readFailed = true;
+      readErrorCount++;
+      errorCount++;
+    }
+    const readFinished = performance.now();
+    const wait = readFinished - readStarted;
+    if (readingComplete) completeReadWaitMs += wait;
+    previousReadFinished = readFinished;
+    readCount++;
+    readWaits.push(wait);
+    const size = failed || packet.done ? 0 : packet.value.byteLength;
+    const currentVisibility = visibility();
+    visibilityStates.add(currentVisibility);
+    if (!failed && !packet.done) {
+      chunkCount++;
+      totalBytes += size;
+      const chunk = { index: chunkCount, read_index: readCount, bytes: size, received_at_ms: roundMs(readFinished) };
+      if (!firstChunk) {
+        firstChunk = chunk;
+        firstChunkAt = readFinished;
+      }
+      lastChunk = chunk;
+      lastChunkAt = readFinished;
+    }
+    if (readSamples) readSamples.push({ index: readCount, started_at_ms: roundMs(readStarted),
+      finished_at_ms: roundMs(readFinished), wait_ms: roundMs(wait), bytes: size,
+      outcome: failed ? "error" : (packet.done ? "eof" : "chunk"), visibility: currentVisibility });
+    if (failed) throw failure;
+    return { ...packet, readFinished };
+  }
+  function cancelReader() {
+    try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {}
+  }
+  function releaseReader() {
+    try { reader.releaseLock(); } catch (_) {}
+  }
+
+  let tailText = "";
+  async function drainDiagnosticTail() {
+    // Bound resource use if an old/broken server leaves the stream open forever.
+    // This timer never delays the result or the view transition.
+    const timer = !ended && typeof setTimeout === "function" ? setTimeout(() => {
+      tailStatus = "timeout";
+      diagnosticErrorCount++;
+      errorCount++;
+      cancelReader();
+    }, 10000) : null;
+    try {
+      if (tailText) processText(tailText);
+      while (!ended && tailStatus !== "timeout") {
+        const { done, value } = await measuredRead();
+        if (done) {
+          ended = true;
+          break;
+        }
+        processText(decoder.decode(value, { stream: true }));
+      }
+      if (ended && tailStatus !== "timeout") {
+        processText(decoder.decode());
+        if (lineParts.length) {
+          processLine(lineParts.join(""));
+          lineParts = [];
+        }
+        dispatchEvent();
+        tailStatus = "eof";
+      }
+    } catch (_) {
+      if (tailStatus !== "timeout") {
+        tailStatus = readFailed ? "read_error" : "diagnostic_error";
+        diagnosticErrorCount++;
+        if (!readFailed) errorCount++;
+      }
+    } finally {
+      if (timer !== null && typeof clearTimeout === "function") clearTimeout(timer);
+      if (!ended) cancelReader();
+      releaseReader();
+      finishStreamDiagnostics();
+    }
+  }
+
+  let delivered = false;
   try {
     while (true) {
-      const readStarted = performance.now();
-      const readingComplete = Boolean(completeFrame);
-      if (readingComplete && previousReadFinished !== null) completeBetweenReadsMs += readStarted - previousReadFinished;
-      let packet;
-      try {
-        packet = await reader.read();
-      } catch (error) {
-        readCount++;
-        readSamples.push([readCount, +readStarted.toFixed(1), +performance.now().toFixed(1), 0, "error"]);
-        throw error;
-      }
-      const { done, value } = packet;
-      const readFinished = performance.now();
-      if (readingComplete) completeReadWaitMs += readFinished - readStarted;
-      previousReadFinished = readFinished;
-      readCount++;
-      const size = done ? 0 : value.byteLength;
-      visibilityStates.add(visibility());
-      readSamples.push([readCount, +readStarted.toFixed(1), +readFinished.toFixed(1), size, visibility()]);
-      if (readSamples.length >= 128) flushReads();
+      const { done, value, readFinished } = await measuredRead();
       if (done) {
         ended = true;
         break;
       }
-      chunkCount++;
-      totalBytes += size;
       measureChunk(value, chunkCount, readFinished);
-      processText(decoder.decode(value, { stream: true }));
+      tailText = processText(decoder.decode(value, { stream: true }), true);
       if (completionEvent) break;
     }
     if (!completionEvent) {
-      processText(decoder.decode());
-      if (lineParts.length) processLine(lineParts.join(""));
-      dispatchEvent();
+      tailText = processText(decoder.decode(), true);
+      if (!completionEvent) {
+        if (lineParts.length) {
+          processLine(lineParts.join(""));
+          lineParts = [];
+        }
+        dispatchEvent();
+      }
     }
     if (!completionEvent) {
       throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
@@ -508,14 +734,26 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     }
     timings.sse.completeParsedAt = performance.now();
     onProgress(100, "分析完成，正在加载回放...");
+    delivered = true;
     return result;
   } catch (err) {
+    if (!readFailed) errorCount++;
+    tailStatus = "business_error";
     if (err?.serverReported || err?.receiveError) throw err;
     throw receiveError("分析连接中断，服务器可能仍在处理，立即重试可能导致重复推理。");
   } finally {
-    if (!ended) reader.cancel().catch(() => {});
-    reader.releaseLock();
-    stopDiagnostics();
+    stopMonitoring();
+    if (delivered && (!ended || tailText)) {
+      tailStatus = "pending";
+      // Let the caller render first, including when both events share a chunk.
+      if (typeof setTimeout === "function") setTimeout(() => { void drainDiagnosticTail(); }, 0);
+      else Promise.resolve().then(drainDiagnosticTail);
+    } else {
+      if (!ended) cancelReader();
+      else if (delivered) tailStatus = "eof";
+      releaseReader();
+      finishStreamDiagnostics();
+    }
   }
 }
 
