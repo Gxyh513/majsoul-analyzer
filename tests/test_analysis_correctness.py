@@ -1,38 +1,4 @@
 """Focused correctness regressions for model review output."""
-from server.engine.reviewer import compute_tile_danger
-from server.engine.tiles import tid
-
-
-def danger(rivers, riichi, melds=None):
-    return compute_tile_danger(
-        tid("1m"), False, 0, rivers, riichi,
-        melds or [[], [], [], []], [], [0] * 34,
-    )
-
-
-def test_genbutsu_label_identifies_partial_riichi_safety():
-    rivers = [[], [{"pai": "1m", "step": 1}], [], []]
-    value, tags = danger(rivers, [None, 5, 5, None])
-    assert value > 0
-    assert "对部分立直者现物" in tags
-    assert "现物" not in tags
-
-
-def test_genbutsu_label_when_safe_against_all_riichi_players():
-    rivers = [[], [{"pai": "1m", "step": 1}], [{"pai": "1m", "step": 2}], []]
-    value, tags = danger(rivers, [None, 5, 5, None])
-    assert value == 0
-    assert "现物" in tags
-
-
-def test_genbutsu_label_distinguishes_other_open_hand_threat():
-    rivers = [[], [{"pai": "1m", "step": 1}], [{"pai": "9s", "step": i} for i in range(6)], []]
-    melds = [[], [], [{}, {}], []]
-    value, tags = danger(rivers, [None, 5, None, None], melds)
-    assert value > 0
-    assert "对立直者现物" in tags
-
-
 def convert_end(name, data):
     from server.majsoul.convert import to_mjai
     return next(e for e in to_mjai({"head": {}, "actions": [{"name": name, "data": data}]}) if e["type"] == "ryukyoku")
@@ -96,7 +62,6 @@ def test_ambiguous_kan_is_not_counted_as_agreement(monkeypatch):
             return obs, mask
 
     monkeypatch.setattr(reviewer.lstate, "PlayerState", KanState)
-    monkeypatch.setattr(reviewer, "analyze_candidate_metadata", lambda *args: {})
     events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}, start_round(),
               {"type": "tsumo", "actor": 0, "pai": "1m"},
               {"type": "ankan", "actor": 0, "consumed": ["1m"] * 4},

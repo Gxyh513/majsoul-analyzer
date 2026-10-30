@@ -623,15 +623,17 @@ async def lifespan(app: FastAPI):
     log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
     st = engine_mgr.status()
     log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), engine_mgr.selected_model)
-    log.info("数据缓存目录: %s (7 天过期自动清理与 3GB 磁盘配额)", RECORDS_DIR.parent)
+    auto_cleanup = os.environ.get("MAJSOUL_CACHE_AUTO_CLEANUP", "").strip().lower() in ("1", "true", "yes")
+    log.info("数据缓存目录: %s | 自动清理: %s", RECORDS_DIR.parent, "7 天 / 3GB" if auto_cleanup else "关闭")
     log.info("==================================================================")
-    cleanup_task = asyncio.create_task(_cache_cleanup_loop())
+    cleanup_task = asyncio.create_task(_cache_cleanup_loop()) if auto_cleanup else None
 
     try:
         yield
     finally:
-        cleanup_task.cancel()
-        await asyncio.gather(cleanup_task, return_exceptions=True)
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
         # Inference threads cannot be cancelled; drain their owning tasks before
         # shutting down the event loop so completed reviews are still cached.
         while _review_tasks:

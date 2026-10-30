@@ -158,6 +158,24 @@ def test_cleanup_does_not_remove_replaced_record(monkeypatch, tmp_path):
     assert json.loads(path.read_text(encoding="utf8"))["head"]["uuid"] == U1
 
 
+@pytest.mark.anyio
+async def test_fetch_reports_persistence_failure_without_retrying_accounts(monkeypatch, tmp_path):
+    acc = {"account": "a", "account_id": 11}
+    client = SimpleNamespace(logged_in=True, _ws=SimpleNamespace(closed=False), account_id=11,
+                             current_account="a", access_token=None, nickname="A", close=AsyncMock(),
+                             fetch_record=AsyncMock(return_value=record(U1)))
+    monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
+    monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: pool.is_client_logged_in_as(a, client))
+    def fail_save(*args):
+        raise OSError("disk full")
+    monkeypatch.setattr(pool, "_save_record", fail_save)
+    with pytest.raises(app.HTTPException, match="保存失败") as error:
+        await pool.fetch_record_with_failover(U1, client, tmp_path, asyncio.Lock())
+    assert error.value.status_code == 500
+    client.fetch_record.assert_awaited_once()
+    client.close.assert_not_called()
+
+
 def test_review_keys_isolate_game_and_seat():
     events = app.to_mjai(record(U1))
     meta = app.game_meta(record(U1))

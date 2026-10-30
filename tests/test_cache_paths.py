@@ -55,6 +55,41 @@ def test_backend_uses_configured_cache_root_in_new_process(monkeypatch, tmp_path
     assert paths[3] != root / "models" and paths[4] != root / "config.local.json"
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_lifespan_cleanup_requires_explicit_opt_in(monkeypatch, tmp_path, enabled):
+    import asyncio
+    import os
+    import time
+    from unittest.mock import AsyncMock
+    import server.app as app
+
+    for name in ("REVIEWS_DIR", "RECORDS_DIR", "CACHE_DIR", "METADATA_DIR"):
+        directory = tmp_path / name
+        directory.mkdir()
+        monkeypatch.setattr(app, name, directory)
+    old_record = app.RECORDS_DIR / "old.json"
+    old_record.write_text("{}", encoding="utf8")
+    old = time.time() - 8 * 86400
+    os.utime(old_record, (old, old))
+    if enabled:
+        monkeypatch.setenv("MAJSOUL_CACHE_AUTO_CLEANUP", "1")
+    else:
+        monkeypatch.delenv("MAJSOUL_CACHE_AUTO_CLEANUP", raising=False)
+    login = AsyncMock()
+    monkeypatch.setattr(app, "ensure_ms_logged_in", login)
+    async with app.lifespan(app.app):
+        if enabled:
+            for _ in range(100):
+                if not old_record.exists():
+                    break
+                await asyncio.sleep(0.01)
+        else:
+            await asyncio.sleep(0.05)
+        assert old_record.exists() is not enabled
+    login.assert_not_called()
+
+
 def test_record_write_excludes_nested_credentials(tmp_path):
     import json
     from server.account_pool import _save_record

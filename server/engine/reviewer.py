@@ -1,7 +1,6 @@
 """Core review + replay builder for Mahjong Soul 4-player logs.
 
-Uses only Mortal-V4-582500 for action Q values. Supplemental statistics
-(shanten, ukeire, danger and EV) are separate from model recommendations.
+Uses only Mortal-V4-582500 for action Q values and replay decisions.
 """
 from __future__ import annotations
 
@@ -21,14 +20,10 @@ import libriichi.state as lstate  # noqa: E402
 
 from .mortal_model import LoadedMortal  # noqa: E402
 from .model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file  # noqa: E402
-from .shanten import shanten as py_shanten  # noqa: E402
-from .shanten import ukeire as py_ukeire  # noqa: E402
 from .tiles import (  # noqa: E402
     action_idx_of_tile,
     deaka,
-    dora_from_marker,
     is_aka,
-    is_yaochu,
     sort_key,
     tid,
     tile_cn,
@@ -225,20 +220,22 @@ def next_player_action(
     can_pon_or_daiminkan: bool,
     can_agari: bool,
     can_ryukyoku: bool,
+    start_idx: int = 0,
 ) -> dict | None:
     """Port of `next_action` from `mjai-reviewer/src/review/mortal.rs`."""
-    if not events:
+    while start_idx < len(events) and events[start_idx]["type"] in ("dora", "reach_accepted"):
+        start_idx += 1
+    if start_idx >= len(events):
         return None
-    ev = events[0]
+    ev = events[start_idx]
     t = ev["type"]
-    if t in ("dora", "reach_accepted"):
-        return next_player_action(events[1:], player_id, can_pon_or_daiminkan, can_agari, can_ryukyoku)
     if t in ("end_kyoku", "end_game", "start_kyoku"):
         return None
     if t == "tsumo":
         return {"type": "none"}
     if t == "hora":
-        for a in events[:3]:
+        for idx in range(start_idx, min(start_idx + 3, len(events))):
+            a = events[idx]
             if a["type"] == "hora" and a.get("actor") == player_id:
                 return a
         return {"type": "none"} if can_agari else None
@@ -246,7 +243,8 @@ def next_player_action(
         return ev if can_ryukyoku else None
     if t == "reach":
         res = dict(ev)
-        for sub_ev in events[1:]:
+        for idx in range(start_idx + 1, len(events)):
+            sub_ev = events[idx]
             if sub_ev.get("actor") == player_id and sub_ev.get("type") == "dahai":
                 res["pai"] = sub_ev.get("pai")
                 break
@@ -355,419 +353,6 @@ def format_action_cn(ev: dict) -> str:
     return "跳过 (Pass)"
 
 
-def short_action_cn(ev: dict) -> str:
-    t = ev.get("type", "none")
-    if t == "dahai":
-        return f"切{tile_cn(ev['pai'])}"
-    if t == "reach":
-        return "立直"
-    if t == "chi":
-        c = "".join(x[0] for x in ev.get("consumed", []))
-        return f"吃({c})"
-    if t == "pon":
-        return f"碰{tile_cn(ev['pai'])}"
-    if t == "kan":
-        return "杠（具体牌未判定）"
-    if t in ("ankan", "kakan", "daiminkan"):
-        p = ev.get("pai") or (ev.get("consumed") or ["?"])[0]
-        return f"杠{tile_cn(p)}"
-    if t == "hora":
-        return "和了"
-    if t == "ryukyoku":
-        return "流局"
-    return "跳过"
-
-
-# ---------------------------------------------------------------------------
-# Defense & Heuristic Evaluator (uses libriichi v4 obs + board state)
-# ---------------------------------------------------------------------------
-def compute_tile_danger(
-    t34: int,
-    is_red: bool,
-    target_actor: int,
-    rivers: list[list[dict]],
-    riichi_step: list[int | None],
-    melds: list[list[dict]],
-    dora_T34s: list[int],
-    tiles_seen: list[int],
-) -> tuple[float, list[str]]:
-    """Compute danger score [0.0, 1.0] and descriptive safety/danger tags for tile `t34`."""
-    threatening_opps = []
-    for seat in range(4):
-        if seat == target_actor:
-            continue
-        if riichi_step[seat] is not None:
-            threatening_opps.append((seat, 1.0, True))
-        elif len(melds[seat]) >= 2 and len(rivers[seat]) >= 6:
-            threatening_opps.append((seat, 0.45 * (len(melds[seat]) - 1), False))
-
-    if not threatening_opps:
-        return 0.0, []
-
-    dora_cnt = sum(1 for d in dora_T34s if d == t34) + (1 if is_red else 0)
-    max_danger = 0.0
-    tags: list[str] = []
-    riichi_safe = 0
-    riichi_count = sum(1 for _, _, is_riichi in threatening_opps if is_riichi)
-
-    for opp, weight, is_riichi in threatening_opps:
-        # Build safe tiles (genbutsu) against `opp`
-        safe: set[int] = set()
-        for item in rivers[opp]:
-            safe.add(tid(item["pai"]))
-        if is_riichi and riichi_step[opp] is not None:
-            r_step = riichi_step[opp]
-            # Any tile discarded by any player after opp's riichi step is also genbutsu
-            for s in range(4):
-                for item in rivers[s]:
-                    if item.get("step", 0) >= r_step:
-                        safe.add(tid(item["pai"]))
-
-        if t34 in safe:
-            if is_riichi:
-                riichi_safe += 1
-            continue
-
-        # Tile is not genbutsu against this threatening opponent
-        if t34 >= 27:
-            seen = tiles_seen[t34]
-            if seen >= 4:
-                base = 0.02
-                if is_riichi and "绝张字牌" not in tags:
-                    tags.append("绝张字牌")
-            elif seen == 3:
-                base = 0.06
-                if is_riichi and "二枚切字" not in tags:
-                    tags.append("二枚切字")
-            elif seen == 2:
-                base = 0.14
-            else:
-                base = 0.26
-                if is_riichi and "生张字牌" not in tags:
-                    tags.append("生张字牌")
-        else:
-            r = t34 % 9
-            s_base = t34 - r
-            # Kabe (all 4 seen of adjacent connector)
-            def kabe(idx_in_suit: int) -> bool:
-                return 0 <= idx_in_suit < 9 and tiles_seen[s_base + idx_in_suit] >= 4
-
-            if r == 0:
-                suji = (s_base + 3) in safe
-                wall = kabe(1) or kabe(2)
-                base = 0.05 if wall else (0.10 if suji else 0.22)
-                if is_riichi:
-                    tags.append("壁牌" if wall else ("筋19" if suji else "无筋19"))
-            elif r == 8:
-                suji = (s_base + 5) in safe
-                wall = kabe(7) or kabe(6)
-                base = 0.05 if wall else (0.10 if suji else 0.22)
-                if is_riichi:
-                    tags.append("壁牌" if wall else ("筋19" if suji else "无筋19"))
-            elif r in (1, 7):
-                suji = (s_base + (4 if r == 1 else 4)) in safe
-                wall = kabe(2) if r == 1 else kabe(6)
-                base = 0.07 if wall else (0.14 if suji else 0.34)
-                if is_riichi:
-                    tags.append("筋28" if suji else "无筋28")
-            elif r in (2, 6):
-                suji = (s_base + (5 if r == 2 else 3)) in safe
-                base = 0.16 if suji else 0.38
-                if is_riichi:
-                    tags.append("筋37" if suji else "无筋37")
-            else:
-                # 4, 5, 6 (r = 3, 4, 5)
-                left_safe = (s_base + r - 3) in safe
-                right_safe = (s_base + r + 3) in safe
-                if left_safe and right_safe:
-                    base = 0.12
-                    if is_riichi:
-                        tags.append("中筋456")
-                elif left_safe or right_safe:
-                    base = 0.27
-                    if is_riichi:
-                        tags.append("片筋456")
-                else:
-                    base = 0.48
-                    if is_riichi:
-                        tags.append("无筋456")
-
-        base *= 1.0 + 0.22 * dora_cnt
-        max_danger = max(max_danger, min(1.0, base * weight))
-
-    # A tile safe against one riichi player may still be dangerous against another.
-    if riichi_safe:
-        if riichi_safe != riichi_count:
-            safe_tag = "对部分立直者现物"
-        elif max_danger > 0:
-            safe_tag = "对立直者现物"
-        else:
-            safe_tag = "现物"
-        tags.insert(0, safe_tag)
-
-    # Deduplicate tags preserving order
-    dedup = []
-    for t in tags:
-        if t not in dedup:
-            dedup.append(t)
-    return round(float(max_danger), 3), dedup[:2]
-
-
-def analyze_candidate_metadata(
-    ps: Any,
-    obs: np.ndarray,
-    mask: np.ndarray,
-    target_actor: int,
-    bakaze: str,
-    oya: int,
-    rivers: list[list[dict]],
-    riichi_step: list[int | None],
-    melds: list[list[dict]],
-    dora_markers: list[str],
-    tiles_left: int,
-) -> dict[int, dict[str, Any]]:
-    """Compute supplemental action metadata, never action weights."""
-    legal = np.nonzero(mask)[0].tolist()
-    meta_by_action: dict[int, dict[str, Any]] = {}
-
-    cans = ps.last_cans
-    tehai = list(ps.tehai)
-    akas = list(ps.akas_in_hand)
-    n_melds = len(ps.chis) + len(ps.pons) + len(ps.minkans) + len(ps.ankans)
-    dora_t34s = [dora_from_marker(m) for m in dora_markers]
-    tiles_seen = [int(round(float(obs[835, i]) * 4.0)) for i in range(34)]
-    rem = [max(0, 4 - tiles_seen[i]) for i in range(34)]
-
-    max_ev = float(obs[889, 0]) * 100000.0
-    has_next_shanten = bool(obs[876].any())
-    cur_shanten = int(ps.shanten)
-    real_shanten = (cur_shanten - 1) if (cans.can_discard and cur_shanten > 0 and has_next_shanten) else cur_shanten
-
-    num_opp_riichi = sum(1 for s in range(4) if s != target_actor and riichi_step[s] is not None)
-    any_opp_threat = num_opp_riichi > 0 or any(
-        s != target_actor and len(melds[s]) >= 2 and len(rivers[s]) >= 6 for s in range(4)
-    )
-
-    jikaze_idx = 27 + (target_actor - oya) % 4
-    bakaze_idx = 27 + "ESWN".index(bakaze)
-    yakuhai_set = {bakaze_idx, jikaze_idx, 31, 32, 33}
-
-    # --- 1. Evaluate discard actions (0..36) ---
-    discard_actions = [a for a in legal if a <= 36]
-    for a in discard_actions:
-        t34 = tid(tile_of_action_idx(a))
-        is_red = a >= 34
-        is_next = bool(obs[876, t34] > 0.5)
-        is_keep = bool(obs[875, t34] > 0.5)
-        is_tenpai = bool(obs[877, t34] > 0.5)
-
-        if cur_shanten > 0:
-            if is_next:
-                shanten_after = cur_shanten - 1
-            elif is_keep:
-                shanten_after = cur_shanten
-            else:
-                shanten_after = cur_shanten + 1
-        else:
-            shanten_after = 0 if (is_keep or is_next or ps.self_riichi_accepted) else 1
-
-        # Ukeire from libriichi SP table (rows 891..959) or fallback to shanten.py
-        req_keep = obs[891 + t34]
-        req_down = obs[925 + t34]
-        if req_keep.sum() > 0:
-            req_row = req_keep
-        elif req_down.sum() > 0:
-            req_row = req_down
-        else:
-            req_row = None
-
-        if req_row is not None:
-            uk_indices = [u for u in range(34) if req_row[u] > 0.5]
-            uk_count = sum(rem[u] for u in uk_indices)
-            uk_tiles = [{"pai": tname(u), "count": rem[u]} for u in uk_indices if rem[u] > 0]
-        else:
-            c_copy = list(tehai)
-            c_copy[t34] = max(0, c_copy[t34] - 1)
-            uk_count, uk_indices = py_ukeire(c_copy, n_melds, tiles_seen, shanten_after)
-            uk_tiles = [{"pai": tname(u), "count": rem[u]} for u in uk_indices if rem[u] > 0]
-
-        tenpai_prob = float(obs[961, t34])
-        win_prob = float(obs[978, t34])
-        ev = float(obs[995, t34]) * max_ev
-
-        danger, def_tags = compute_tile_danger(
-            t34, is_red, target_actor, rivers, riichi_step, melds, dora_t34s, tiles_seen
-        )
-
-        tags: list[str] = []
-        if shanten_after > real_shanten:
-            tags.append("退向")
-        elif is_tenpai and shanten_after == 0:
-            tags.append("听牌")
-        tags.extend(def_tags)
-
-        meta_by_action[a] = {
-            "shanten_after": shanten_after,
-            "ukeire": uk_count,
-            "ukeire_tiles": uk_tiles,
-            "ev": round(ev, 0),
-            "win_prob": round(win_prob * 100, 1),
-            "tenpai_prob": round(tenpai_prob * 100, 1),
-            "danger": round(danger * 100, 1),
-            "tags": tags,
-        }
-
-    # Add efficiency / EV tags to top discard candidates
-    if discard_actions:
-        max_uk = max((meta_by_action[a]["ukeire"] for a in discard_actions if meta_by_action[a]["shanten_after"] == real_shanten), default=0)
-        max_ev_cand = max((meta_by_action[a]["ev"] for a in discard_actions), default=0)
-        for a in discard_actions:
-            m = meta_by_action[a]
-            if m["shanten_after"] == real_shanten and max_uk > 0 and m["ukeire"] == max_uk:
-                if "进张最广" not in m["tags"]:
-                    m["tags"].insert(0, "进张最广")
-            if max_ev_cand >= 1000 and m["ev"] == max_ev_cand and "打点最优" not in m["tags"]:
-                m["tags"].append("打点最优")
-
-    # --- 2. Supplemental riichi metadata (not a recommendation) ---
-    if 37 in legal:
-        tenpai_discards = [a for a in discard_actions if meta_by_action[a]["shanten_after"] == 0]
-        best_uk = max((meta_by_action[a]["ukeire"] for a in tenpai_discards), default=0)
-        min_danger = min((meta_by_action[a]["danger"] for a in tenpai_discards), default=0.0)
-        r_tags = ["立直"]
-        meta_by_action[37] = {
-            "shanten_after": 0,
-            "ukeire": best_uk,
-            "ukeire_tiles": [],
-            "ev": round(max_ev, 0),
-            "win_prob": round(max((meta_by_action[a]["win_prob"] for a in tenpai_discards), default=0.0), 1),
-            "tenpai_prob": 100.0,
-            "danger": min_danger,
-            "tags": r_tags,
-        }
-
-    # --- 3. Evaluate Kan (42), Agari (43), Ryukyoku (44) ---
-    if 43 in legal:
-        meta_by_action[43] = {
-            "shanten_after": -1,
-            "ukeire": 0,
-            "ukeire_tiles": [],
-            "ev": round(max_ev, 0),
-            "win_prob": 100.0,
-            "tenpai_prob": 100.0,
-            "danger": 0.0,
-            "tags": ["和牌"],
-        }
-
-    if 44 in legal:
-        meta_by_action[44] = {
-            "shanten_after": real_shanten,
-            "ukeire": 0,
-            "ukeire_tiles": [],
-            "ev": 0,
-            "win_prob": 0.0,
-            "tenpai_prob": 0.0,
-            "danger": 0.0,
-            "tags": ["九种九牌"],
-        }
-
-    if 42 in legal:
-        meta_by_action[42] = {
-            "shanten_after": real_shanten,
-            "ukeire": 0,
-            "ukeire_tiles": [],
-            "ev": round(max_ev, 0),
-            "win_prob": 0.0,
-            "tenpai_prob": 0.0,
-            "danger": 0.0,
-            "tags": ["杠"],
-        }
-
-    # --- 4. Evaluate Naki / Pass (38, 39, 40, 41, 45) ---
-    if 45 in legal:
-        # 3n+1 state before calling
-        uk_pass_idx = [u for u in range(34) if obs[960, u] > 0.5]
-        uk_pass = sum(rem[u] for u in uk_pass_idx) if uk_pass_idx else py_ukeire(list(tehai), n_melds, tiles_seen, cur_shanten)[0]
-        pass_ev = float(obs[995, 0]) * max_ev
-        pass_wp = float(obs[978, 0])
-        meta_by_action[45] = {
-            "shanten_after": cur_shanten,
-            "ukeire": uk_pass,
-            "ukeire_tiles": [{"pai": tname(u), "count": rem[u]} for u in uk_pass_idx if rem[u] > 0][:10],
-            "ev": round(pass_ev, 0),
-            "win_prob": round(pass_wp * 100, 1),
-            "tenpai_prob": round(float(obs[961, 0]) * 100, 1),
-            "danger": 0.0,
-            "tags": ["门清/防守" if n_melds == 0 else "跳过"],
-        }
-
-        kawa_pai = ps.last_kawa_tile()
-        if kawa_pai:
-            k34 = tid(kawa_pai)
-            dora_owned = sum(tehai[d] for d in dora_t34s) + sum(1 for b in akas if b)
-            has_yakuhai_meld = any(p in yakuhai_set for p in ps.pons) or any(p in yakuhai_set for p in ps.minkans) or any(p in yakuhai_set for p in ps.ankans)
-            has_yakuhai_pair = any(tehai[y] >= 2 for y in yakuhai_set)
-
-            for call_act in [38, 39, 40, 41]:
-                if call_act not in legal:
-                    continue
-                c_after = list(tehai)
-                if call_act == 41:
-                    c_after[k34] = max(0, c_after[k34] - 2)
-                elif call_act == 38:
-                    c_after[k34 + 1] -= 1
-                    c_after[k34 + 2] -= 1
-                elif call_act == 39:
-                    c_after[k34 - 1] -= 1
-                    c_after[k34 + 1] -= 1
-                elif call_act == 40:
-                    c_after[k34 - 2] -= 1
-                    c_after[k34 - 1] -= 1
-
-                # c_after now has 3n+2 tiles (with n_melds + 1); find best discard after calling
-                best_s_after = 8
-                best_uk_after = 0
-                for d34 in range(34):
-                    if c_after[d34] <= 0:
-                        continue
-                    c_after[d34] -= 1
-                    s_d = py_shanten(c_after, n_melds + 1)
-                    uk_d, _ = py_ukeire(c_after, n_melds + 1, tiles_seen, s_d)
-                    if s_d < best_s_after or (s_d == best_s_after and uk_d > best_uk_after):
-                        best_s_after = s_d
-                        best_uk_after = uk_d
-                    c_after[d34] += 1
-
-                shanten_gain = cur_shanten - best_s_after
-                is_yakuhai_call = call_act == 41 and k34 in yakuhai_set
-                yaochu_in_hand = sum(c_after[i] for i in range(34) if is_yaochu(i))
-                is_tanyao_like = not is_yaochu(k34) and yaochu_in_hand <= 1
-                has_yaku = is_yakuhai_call or has_yakuhai_meld or has_yakuhai_pair or is_tanyao_like
-
-                call_tags = []
-                if is_yakuhai_call:
-                    call_tags.append("役牌碰")
-                if best_s_after == 0:
-                    call_tags.append("鸣牌听牌")
-                elif shanten_gain > 0:
-                    call_tags.append("进向")
-                if not has_yaku:
-                    call_tags.append("注意无役")
-
-                meta_by_action[call_act] = {
-                    "shanten_after": best_s_after,
-                    "ukeire": best_uk_after,
-                    "ukeire_tiles": [],
-                    "ev": round(pass_ev * (1.1 if shanten_gain > 0 else 0.8), 0),
-                    "win_prob": round(min(99.0, pass_wp * 100 * (1.25 if shanten_gain > 0 else 0.9)), 1),
-                    "tenpai_prob": 100.0 if best_s_after == 0 else round(float(obs[961, 0]) * 100, 1),
-                    "danger": 0.0,
-                    "tags": call_tags,
-                }
-
-    return meta_by_action
-
-
 # ---------------------------------------------------------------------------
 # Full Game Reviewer + Replay Builder
 # ---------------------------------------------------------------------------
@@ -801,7 +386,6 @@ def review_game(
     melds: list[list[dict]] = [[], [], [], []]
     rivers: list[list[dict]] = [[], [], [], []]
     riichi_declared: list[bool] = [False, False, False, False]
-    riichi_step: list[int | None] = [None, None, None, None]
     scores: list[int] = [25000, 25000, 25000, 25000]
     dora_markers: list[str] = []
     kyotaku = 0
@@ -826,8 +410,9 @@ def review_game(
             "event": ev,
             "hands": [sorted(h, key=sort_key) for h in hands],
             "drawn": list(drawn_tile),
-            "melds": [[dict(m) for m in ms] for ms in melds],
-            "rivers": [[dict(r) for r in rs] for rs in rivers],
+            # Entries are replaced rather than mutated when calls or kans change them.
+            "melds": [list(ms) for ms in melds],
+            "rivers": [list(rs) for rs in rivers],
             "riichi": list(riichi_declared),
             "scores": list(scores),
             "dora_markers": list(dora_markers),
@@ -871,7 +456,6 @@ def review_game(
             melds = [[], [], [], []]
             rivers = [[], [], [], []]
             riichi_declared = [False, False, False, False]
-            riichi_step = [None, None, None, None]
             dora_markers = [ev["dora_marker"]]
             tiles_left = 70
             junme = 0
@@ -939,12 +523,9 @@ def review_game(
             if r_seat == target_actor and ps.last_cans.can_act:
                 obs_4, mask_4 = ps.encode_obs(4, False)
                 if int(mask_4.sum()) > 1:
-                    actual_ev = next_player_action(mjai_events[i + 1 :], target_actor, False, False, False)
+                    actual_ev = next_player_action(mjai_events, target_actor, False, False, False, i + 1)
                     if actual_ev is not None and actual_ev.get("type") == "dahai":
                         obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
-                        meta_a = analyze_candidate_metadata(
-                            ps, obs_4, mask_4, target_actor, bakaze, oya, rivers, riichi_step, melds, dora_markers, tiles_left
-                        )
                         # Separate the riichi declaration from its discard choice,
                         # so both decisions have an independently navigable step.
                         step_ref = len(cur_kyoku["steps"])
@@ -955,14 +536,12 @@ def review_game(
                                 "step_idx": step_ref,
                                 "junme": junme,
                                 "tiles_left": tiles_left,
-                                "shanten": 0,
                                 "at_furiten": bool(ps.at_furiten),
                                 "decision_type": "riichi_discard",
                                 "context_tile": last_tile,
                                 "last_actor": last_actor,
                                 "actual_ev": actual_ev,
                                 "mask": mask_4,
-                                "meta_by_action": meta_a,
                                 "akas_in_hand": list(ps.akas_in_hand),
                                 "ankan_cands": ps.ankan_candidates(),
                                 "kakan_cands": ps.kakan_candidates(),
@@ -990,7 +569,6 @@ def review_game(
             remove_from_hand(seat, pai)
             is_r = pending_riichi_Discard == seat
             if is_r:
-                riichi_step[seat] = len(cur_kyoku["steps"])
                 pending_riichi_Discard = None
             rivers[seat].append(
                 {
@@ -1012,7 +590,7 @@ def review_game(
             for c in consumed:
                 remove_from_hand(seat, c)
             if rivers[target]:
-                rivers[target][-1]["called"] = True
+                rivers[target][-1] = {**rivers[target][-1], "called": True}
             melds[seat].append({"type": etype, "pai": pai, "consumed": consumed, "from": target, "tiles": [pai] + consumed})
             if seat == target_actor and etype in ("chi", "pon"):
                 junme += 1
@@ -1031,11 +609,9 @@ def review_game(
             pai = ev["pai"]
             remove_from_hand(seat, pai)
             base = deaka(pai)
-            for m in melds[seat]:
+            for meld_idx, m in enumerate(melds[seat]):
                 if m["type"] == "pon" and deaka(m["pai"]) == base:
-                    m["type"] = "kakan"
-                    m["added"] = pai
-                    m["tiles"].append(pai)
+                    melds[seat][meld_idx] = {**m, "type": "kakan", "added": pai, "tiles": [*m["tiles"], pai]}
                     break
             last_actor = seat
             last_tile = pai
@@ -1091,7 +667,7 @@ def review_game(
         can_pon_or_kan = bool(mask_4[41] or mask_4[42])
         can_agari = bool(mask_4[43])
         can_ryukyoku = bool(mask_4[44])
-        actual_ev = next_player_action(mjai_events[i + 1 :], target_actor, can_pon_or_kan, can_agari, can_ryukyoku)
+        actual_ev = next_player_action(mjai_events, target_actor, can_pon_or_kan, can_agari, can_ryukyoku, i + 1)
         if actual_ev is None:
             continue
 
@@ -1108,14 +684,6 @@ def review_game(
                 continue
 
         obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
-        meta_a = analyze_candidate_metadata(
-            ps, obs_4, mask_4, target_actor, bakaze, oya, rivers, riichi_step, melds, dora_markers, tiles_left
-        )
-
-        has_next = bool(obs_4[876].any())
-        cur_s = int(ps.shanten)
-        real_s = (cur_s - 1) if (cans.can_discard and cur_s > 0 and has_next) else cur_s
-
         if cans.can_discard:
             dtype = "discard_after_call" if etype in ("chi", "pon") else "self_turn"
         else:
@@ -1127,7 +695,6 @@ def review_game(
                 "step_idx": step_idx,
                 "junme": junme,
                 "tiles_left": tiles_left,
-                "shanten": real_s,
                 "at_furiten": bool(ps.at_furiten),
                 "decision_type": dtype,
                 "context_tile": last_tile,
@@ -1135,7 +702,6 @@ def review_game(
                 "actual_ev": actual_ev,
                 "actual_label": actual_label,
                 "mask": mask_4,
-                "meta_by_action": meta_a,
                 "akas_in_hand": list(ps.akas_in_hand),
                 "ankan_cands": ps.ankan_candidates(),
                 "kakan_cands": ps.kakan_candidates(),
@@ -1191,26 +757,16 @@ def review_game(
                 item["ankan_cands"],
                 item["kakan_cands"],
             )
-            m_info = item["meta_by_action"].get(label, {})
             raw_q = float(q_legal[idx_in_legal])
             candidates.append(
                 {
                     "label": int(label),
                     "action": act_dict,
                     "action_cn": format_action_cn(act_dict),
-                    "short_cn": short_action_cn(act_dict),
                     "pai": act_dict.get("pai"),
                     "raw_q": raw_q,
                     "q_value": round(raw_q, 3),
                     "prob": round(float(probs[idx_in_legal]) * 100.0, 2),
-                    "shanten_after": m_info.get("shanten_after", item["shanten"]),
-                    "ukeire": m_info.get("ukeire", 0),
-                    "ukeire_tiles": m_info.get("ukeire_tiles", []),
-                    "ev": m_info.get("ev", 0),
-                    "win_prob": m_info.get("win_prob", 0.0),
-                    "tenpai_prob": m_info.get("tenpai_prob", 0.0),
-                    "danger": m_info.get("danger", 0.0),
-                    "tags": m_info.get("tags", []),
                 }
             )
 
@@ -1263,13 +819,6 @@ def review_game(
             if 0 <= c["label"] <= 36 and c["pai"]:
                 tile_bars[c["pai"]] = {
                     "prob": c["prob"],
-                    "q_value": c["q_value"],
-                    "rank": c["rank"],
-                    "ukeire": c["ukeire"],
-                    "ev": c["ev"],
-                    "danger": c["danger"],
-                    "is_best": c["label"] == best_cand["label"],
-                    "is_actual": c["label"] == actual_cand["label"],
                 }
 
         kyoku_obj = kyokus[item["kyoku_idx"]]
@@ -1282,7 +831,6 @@ def review_game(
             "step_idx": item["step_idx"],
             "junme": item["junme"],
             "tiles_left": item["tiles_left"],
-            "shanten": item["shanten"],
             "at_furiten": item["at_furiten"],
             "decision_type": item["decision_type"],
             "context_tile": item["context_tile"],
