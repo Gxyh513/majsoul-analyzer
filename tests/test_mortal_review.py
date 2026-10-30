@@ -9,7 +9,6 @@ import pytest
 import torch
 
 from frontend_assets import javascript_source
-from server.app import make_cache_key, resolve_engine_cache_info
 from server.engine.mortal_model import Brain, DQN, LoadedMortal
 from server.engine.reviewer import EngineManager, review_game, softmax
 from server.engine.tiles import action_idx_of_tile, tid, tile_of_action_idx
@@ -154,27 +153,6 @@ def test_engine_manager_resolution(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # 4. Cache Key and Isolation Tests
 # ---------------------------------------------------------------------------
-def test_cache_key_isolation(tmp_path: Path):
-    """Verify cache keys correctly isolate models, parameters, and weight signatures."""
-    # Different engines must produce different cache keys
-    k_akagi = make_cache_key("game1", 0, "akagi", 0.1)
-    k_mortal = make_cache_key("game1", 0, "mortal", 0.1)
-    k_builtin = make_cache_key("game1", 0, "builtin", 0.1)
-    assert k_akagi != k_mortal
-    assert k_akagi != k_builtin
-    assert k_mortal != k_builtin
-
-    # Different temperatures must produce different cache keys
-    k_t01 = make_cache_key("game1", 0, "akagi", 0.1)
-    k_t05 = make_cache_key("game1", 0, "akagi", 0.5)
-    assert k_t01 != k_t05
-
-    # Weight signature changes when file mtime changes
-    k_sig1 = make_cache_key("game1", 0, "akagi", 0.1, weight_sig="akagi_1000")
-    k_sig2 = make_cache_key("game1", 0, "akagi", 0.1, weight_sig="akagi_2000")
-    assert k_sig1 != k_sig2
-
-
 # ---------------------------------------------------------------------------
 # 5. Full Review Flow Test with Builtin Engine (Regression Test)
 # ---------------------------------------------------------------------------
@@ -473,6 +451,11 @@ def isolated_failover(monkeypatch, tmp_path):
     monkeypatch.setattr("server.account_pool._rate_limited_until", {})
     monkeypatch.setattr("server.app.RECORDS_DIR", tmp_path)
     monkeypatch.setattr("server.app.ms_client.logged_in", False)
+    from unittest.mock import AsyncMock
+    from server import app as server_app
+    from server.majsoul.session import SessionLock
+    monkeypatch.setattr(server_app, "_ms_client_lock", SessionLock())
+    monkeypatch.setattr(server_app.ms_client, "close", AsyncMock())
 
 
 @pytest.mark.anyio
@@ -494,6 +477,8 @@ async def test_failover_primary_540_backup_success(monkeypatch, isolated_failove
         server_app.ms_client.logged_in = True
         server_app.ms_client.account_id = acc["account_id"]
         server_app.ms_client.nickname = acc["nickname"]
+        server_app.ms_client.current_account = acc["account"]
+        server_app.ms_client._ws = type("Socket", (), {"closed": False})()
 
     monkeypatch.setattr(server_app, "login_with_account_spec", mock_login)
 
@@ -527,6 +512,8 @@ async def test_failover_all_accounts_540(monkeypatch, isolated_failover):
         server_app.ms_client.logged_in = True
         server_app.ms_client.account_id = acc["account_id"]
         server_app.ms_client.nickname = acc["nickname"]
+        server_app.ms_client.current_account = acc["account"]
+        server_app.ms_client._ws = type("Socket", (), {"closed": False})()
 
     monkeypatch.setattr(server_app, "login_with_account_spec", mock_login)
 
@@ -562,6 +549,8 @@ async def test_auth_or_network_error_not_misreported_as_all_540(monkeypatch, iso
         server_app.ms_client.logged_in = True
         server_app.ms_client.account_id = acc["account_id"]
         server_app.ms_client.nickname = acc["nickname"]
+        server_app.ms_client.current_account = acc["account"]
+        server_app.ms_client._ws = type("Socket", (), {"closed": False})()
 
     monkeypatch.setattr(server_app, "login_with_account_spec", mock_login)
 

@@ -45,7 +45,7 @@ test("analysis injects only the server token and streams SSE without buffering",
   let observed;
   const chunks = [
     'data: {"type":"progress","percent":5}\n\n',
-    'data: {"type":"complete","result":{}}\n\n',
+    'data: {"type":"complete","result":{},"cache_persisted":false}\n\n',
   ];
   const stream = new ReadableStream({
     start(controller) {
@@ -60,6 +60,7 @@ test("analysis injects only the server token and streams SSE without buffering",
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
+        "X-Review-Cache-Persisted": "true",
         "Set-Cookie": "private=1",
         Connection: "keep-alive",
       },
@@ -99,6 +100,7 @@ test("analysis injects only the server token and streams SSE without buffering",
     assert.equal(res.headers.get("content-type"), "text/event-stream; charset=utf-8");
     assert.equal(res.headers.get("cache-control"), "no-cache, no-transform");
     assert.equal(res.headers.get("x-accel-buffering"), "no");
+    assert.equal(res.headers.get("x-review-cache-persisted"), null);
     assert.equal(res.headers.get("set-cookie"), null);
     assert.equal(res.headers.get("connection"), null);
   } finally {
@@ -106,21 +108,28 @@ test("analysis injects only the server token and streams SSE without buffering",
   }
 });
 
-test("analysis forwards only the validated cache persistence header", async () => {
+test("analysis omits the upstream cache persistence header", async () => {
   try {
-    for (const value of ["true", "false", "untrusted"]) {
-      globalThis.fetch = async () => new Response(JSON.stringify({ summary: {} }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "X-Review-Cache-Persisted": value, "Set-Cookie": "secret=hidden" },
-      });
-      const request = new Request("https://pages.example/api/analyze/paipu", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paipu: "demo" }),
-      });
-      const response = await onRequest({ request, env: { MAJSOUL_API_TOKEN: "server-only-secret" } });
-      assert.equal(response.status, 200);
-      assert.equal(response.headers.get("x-review-cache-persisted"), value === "untrusted" ? null : value);
-      assert.equal(response.headers.get("set-cookie"), null);
-      assert.deepEqual(await response.json(), { summary: {} });
+    for (const path of ["paipu", "json"]) {
+      for (const value of ["true", "false", "untrusted"]) {
+        globalThis.fetch = async () => new Response(JSON.stringify({ summary: {} }), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json", "X-Review-Cache-Persisted": value,
+            "Set-Cookie": "secret=hidden", "Retry-After": "3",
+          },
+        });
+        const request = new Request(`https://pages.example/api/analyze/${path}`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paipu: "demo" }),
+        });
+        const response = await onRequest({ request, env: { MAJSOUL_API_TOKEN: "server-only-secret" } });
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get("x-review-cache-persisted"), null);
+        assert.equal(response.headers.get("set-cookie"), null);
+        assert.equal(response.headers.get("retry-after"), "3");
+        assert.equal(response.headers.get("cache-control"), "no-store");
+        assert.deepEqual(await response.json(), { summary: {} });
+      }
     }
   } finally {
     globalThis.fetch = realFetch;

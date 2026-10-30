@@ -18,4 +18,5 @@ data/config.json
 .claude/
 vendor/
 data/cache/*.js
+data/cache/liqi-*.json
 web/demo_review*.json

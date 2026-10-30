@@ -73,7 +73,7 @@ function correctedRoundSummaries(kyoku) {
     const fans = validYakuFans(event);
     const names = fans.map(yakuName);
     const score = yakumanTitle(event, fans) + (names.length ? `（${names.join("、")}）` : "");
-    // Old server/IndexedDB caches stored yiman count as fu/han. Preserve the
+    // Older review data stored yiman count as fu/han. Preserve the
     // original winner, target and delta while replacing only that score field.
     if (legacyScore.test(text)) return text.replace(legacyScore, (_, prefix) => `${prefix}${score}`);
     if (text.includes("役满")) return text;

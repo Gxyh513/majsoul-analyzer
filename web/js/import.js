@@ -117,7 +117,7 @@ function readAndAnalyzeFile(file) {
       return;
     }
     showToast(`正在载入本地牌谱文件: ${file.name}`, "info");
-    startAnalysisFromInput(content.trim(), state.selectedModel);
+    startAnalysisFromInput(content, state.selectedModel);
   };
   reader.onerror = () => {
     showToast(`读取文件失败: ${file.name}`, "error");

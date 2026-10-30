@@ -5,7 +5,6 @@
 
 const state = window.state = {
   reviewData: null,
-  perspectiveCache: {},
   gameId: "demo",
   targetActor: 0,
   kyokuIdx: 0,

@@ -103,10 +103,6 @@ function safeResponseHeaders(upstream, isStream) {
     headers.set("Cache-Control", "no-store");
   }
 
-  const cachePersisted = upstream.headers.get("x-review-cache-persisted");
-  if (cachePersisted === "true" || cachePersisted === "false") {
-    headers.set("X-Review-Cache-Persisted", cachePersisted);
-  }
   const retryAfter = upstream.headers.get("retry-after");
   if (retryAfter) headers.set("Retry-After", retryAfter);
   return headers;

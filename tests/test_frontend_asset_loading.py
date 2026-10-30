@@ -10,7 +10,7 @@ from frontend_assets import WEB_DIR, _page_assets
 
 
 SCRIPT_PATHS = [
-    '/js/replay-state.js', '/js/cache.js', '/js/api.js', '/js/review.js',
+    '/js/replay-state.js', '/js/api.js', '/js/review.js',
     '/js/summary-renderer.js', '/js/replay-controls.js', '/js/board-renderer.js',
     '/js/decision-renderer.js', '/js/replay-navigation.js', '/js/modal-manager.js',
     '/js/import.js', '/js/events.js', '/app.js',
@@ -24,6 +24,7 @@ def test_page_loads_classic_scripts_in_order_with_cache_versions():
     assert len({url.query for url in urls}) == 1
     assert urls[0].query.startswith('v=')
     assert all((WEB_DIR / url.path.lstrip('/')).is_file() for url in urls)
+    assert not (WEB_DIR / 'js/cache.js').exists()
     for attrs in assets.script_attributes:
         assert attrs.get('type', '').lower() in ('', 'text/javascript', 'application/javascript')
         assert 'async' not in attrs and 'defer' not in attrs

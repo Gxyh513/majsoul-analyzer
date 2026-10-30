@@ -80,67 +80,77 @@ def test_ambiguous_kan_is_not_counted_as_agreement(monkeypatch):
     assert result["kyokus"][0]["stats"]["rating"] is None
 
 
-def test_review_cache_key_depends_on_events_and_metadata():
-    from server.app import review_cache_key
-    def key(events, meta):
-        return review_cache_key('same-uuid', events, meta, 0, 'akagi', 0.1, 'v3_' + 'a' * 64)
-    first = [{'type': 'start_game', 'names': ['A']}]
-    second = [{'type': 'start_game', 'names': ['B']}]
-    assert key(first, {'names': ['A']}) != key(second, {'names': ['A']})
-    assert key(first, {'names': ['A']}) != key(first, {'names': ['B']})
-    assert key(first, {'a': 1, 'b': 2}) == key(first, {'b': 2, 'a': 1})
-    assert len(key(first, {'names': ['A']})) < 240
-
-
-def test_memory_cache_resolves_configured_account_seat(monkeypatch):
+def test_stored_record_resolves_configured_account_seat(monkeypatch, tmp_path):
     import asyncio
+    import json
+    from unittest.mock import AsyncMock
     from server import app
+
+    game_uuid = '241026-11111111-2222-3333-4444-555555555555'
+    record = {'head': {'uuid': game_uuid, 'accounts': [
+        {'seat': seat, 'account_id': account_id} for seat, account_id in enumerate([10, 20, 30, 40])
+    ]}, 'actions': []}
+    (tmp_path / f'{game_uuid}.json').write_text(json.dumps(record), encoding='utf8')
+    monkeypatch.setattr(app, 'RECORDS_DIR', tmp_path)
+    monkeypatch.setattr(app, 'LEGACY_RECORDS_DIRS', ())
     monkeypatch.setattr(app.ms_client, 'account_id', 20)
     monkeypatch.setattr(app, 'load_config', lambda: {})
-    game_uuid = '241026-11111111-2222-3333-4444-555555555555'
-    monkeypatch.setattr(app, '_MEMORY_LOGS', {game_uuid: ([{'type': 'start_game'}], {'account_ids': [10, 20, 30, 40]})})
+    fetch = AsyncMock(side_effect=AssertionError('unexpected network fetch'))
+    monkeypatch.setattr(app, 'fetch_record_with_failover', fetch)
     _, _, _, seat = asyncio.run(app.resolve_game_data(paipu=game_uuid))
     assert seat == 1
     _, _, _, seat = asyncio.run(app.resolve_game_data(paipu=game_uuid, target_actor=2))
     assert seat == 2
+    fetch.assert_not_awaited()
 
 
-def test_same_uuid_different_upload_events_do_not_reuse_review(monkeypatch):
+def test_same_uuid_different_upload_events_are_reanalysed(monkeypatch):
     import asyncio
+    from types import SimpleNamespace
     from server import app
+    from server.engine.model_policy import MODEL_FILE, MODEL_ID, REVIEW_SCHEMA
+
+    sha = 'a' * 64
     calls = []
-    cache = {}
-    monkeypatch.setattr(app, 'resolve_engine_cache_info', lambda _: ('akagi', 'v3_' + 'a' * 64))
-    monkeypatch.setattr(app, 'valid_review_source', lambda *_: True)
-    monkeypatch.setattr(app, 'get_cached_review', lambda k: cache.get(k))
-    monkeypatch.setattr(app, 'save_cached_review', lambda k, v: cache.__setitem__(k, v.copy()))
+    monkeypatch.setattr(app, 'review_semaphore', asyncio.Semaphore(1))
+    monkeypatch.setattr(app, '_review_tasks', set())
+    monkeypatch.setattr(app, 'engine_mgr', SimpleNamespace(
+        get_mortal=lambda _: (SimpleNamespace(weight_sha256=sha), MODEL_ID, None),
+    ))
+
     def fake_review(events, seat, mgr, **kwargs):
         calls.append(events)
-        return {'events': events, 'target_actor': seat, 'engine': {}, 'summary': {'match_rate': 0, 'rating': 0}}
+        return {'events': events, 'target_actor': seat, 'summary': {'match_rate': 0, 'rating': 0},
+                'engine': {'type': 'mortal', 'id': MODEL_ID, 'weight_file': MODEL_FILE,
+                           'weight_sha256': sha, 'version': 4, 'steps': 582500,
+                           'q_source': 'neural_network', 'review_schema': REVIEW_SCHEMA}}
+
     monkeypatch.setattr(app, 'review_game', fake_review)
+
     async def run():
-        first = await app._run_review_with_cache('same-uuid', [{'type':'first'}], {'names':['A']}, 0, 'akagi', 0.1)
-        second = await app._run_review_with_cache('same-uuid', [{'type':'second'}], {'names':['A']}, 0, 'akagi', 0.1)
-        return first, second
-    first, second = asyncio.run(run())
-    assert first['events'][0]['type'] == 'first'
-    assert second['events'][0]['type'] == 'second'
-    assert len(calls) == 2
+        first = await app._run_review('same-uuid', [{'type': 'first'}], {'names': ['A']}, 0, MODEL_ID, 0.1)
+        second = await app._run_review('same-uuid', [{'type': 'second'}], {'names': ['A']}, 0, MODEL_ID, 0.1)
+        third = await app._run_review('same-uuid', [{'type': 'first'}], {'names': ['A']}, 0, MODEL_ID, 0.1)
+        return first, second, third
+
+    first, second, third = asyncio.run(run())
+    assert [result['events'][0]['type'] for result in (first, second, third)] == ['first', 'second', 'first']
+    assert len(calls) == 3
 
 
-def test_upload_identity_is_namespaced_and_content_based(monkeypatch):
+def test_upload_identity_is_namespaced_and_unique(monkeypatch):
     import asyncio
     from server import app
-    monkeypatch.setattr(app, '_MEMORY_LOGS', {})
+
+    monkeypatch.setattr(app, 'load_config', lambda: {})
     source = {'head': {'uuid': 'same_uuid', 'accounts': [], 'result': {}, 'config': {}}, 'actions': []}
     other = {'head': {'uuid': 'same_uuid', 'accounts': [], 'result': {'players': [{'seat': 0, 'total_point': 5}]}, 'config': {}}, 'actions': []}
     first, _, first_meta, _ = asyncio.run(app.resolve_game_data(content=source))
     second, _, _, _ = asyncio.run(app.resolve_game_data(content=other))
-    assert first.startswith('upload-') and first != second
-    assert first_meta['uuid'] == 'same_uuid'
-    assert 'same_uuid' not in app._MEMORY_LOGS
-    _, _, _, seat = asyncio.run(app.resolve_game_data(paipu=first, target_actor=1))
-    assert seat == 1
+    third, _, _, seat = asyncio.run(app.resolve_game_data(content=source, target_actor=1))
+    assert all(game_id.startswith('upload-') for game_id in (first, second, third))
+    assert len({first, second, third}) == 3
+    assert first_meta['uuid'] == 'same_uuid' and seat == 1
 
 
 def test_robbing_kakan_records_the_added_tile():

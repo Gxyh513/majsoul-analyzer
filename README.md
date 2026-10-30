@@ -13,7 +13,7 @@ Majsoul Analyzer 将雀魂四人麻将牌谱转换为 MJAI 事件，使用 Morta
 - 在四家视角之间切换，查看牌河、立直、副露、杠、手切/摸切及结算。
 - 显示各合法动作的 Mortal Q 值、候选排序和概率，以及整场和各局的检讨统计。
 - 向听、进张、危险度及其他标签是独立的辅助统计，**不是 Mortal 的 Q 值**。
-- 支持时间轴、播放速度、快捷键和 SSE 分析进度；支持本地牌谱与检讨结果缓存。
+- 支持时间轴、播放速度、快捷键和 SSE 分析进度；永久保存已下载的雀魂原始牌谱。
 
 ## 模型与结果来源
 
@@ -23,7 +23,7 @@ Majsoul Analyzer 将雀魂四人麻将牌谱转换为 MJAI 事件，使用 Morta
 738e0d6e3c0ce9671629554ad39abd147d2ffbac676e80b194c83f2acc0fea20
 ```
 
-权重缺失、损坏或校验失败时，分析会报错，**不会回退到内置启发式引擎或其他模型**。动作概率由模型 Q 值经温度 softmax 得到，并非模型的胜率或校准置信度。后端和浏览器只使用带有匹配模型指纹与结果版本的检讨缓存；升级后旧缓存可能需要重新分析。
+权重缺失、损坏或校验失败时，分析会报错，**不会回退到内置启发式引擎或其他模型**。动作概率由模型 Q 值经温度 softmax 得到，并非模型的胜率或校准置信度。每次请求都会重新分析，后端和浏览器不会持久化检讨结果。
 
 Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - (最佳 Q - 实际 Q))`，整场 Rating 为相对分平均值的平方乘 100。最佳动作得满分，差距越小得分越接近满分，差距达到 1 时该手得 0 分。此分数是基于模型 Q 值的启发式指标，不代表胜率；它与旧版本的候选范围归一化分数不可直接比较。无法判定具体杠牌的决策不计入 Rating。
 
@@ -53,7 +53,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
 
 ## 使用与快捷键
 
-输入牌谱链接或选择文件后点击“开始分析”；也可输入 `demo` 使用示例牌谱。首次只分析当前玩家；点击左侧其他座位时才分析相应视角，已验证的结果会复用缓存。点击对手手牌仅切换明牌/暗牌，不会触发分析。JSON/MJAI 导入的原始内容只在当前页面会话中用于切换视角。
+输入牌谱链接或选择文件后点击“开始分析”；也可输入 `demo` 使用示例牌谱。首次只分析当前玩家；点击左侧其他座位时按需重新分析相应视角，四家共享同一份已下载的原始牌谱。点击对手手牌仅切换明牌/暗牌，不会触发分析。JSON/MJAI 导入的原始内容只在当前页面会话中用于切换视角。
 
 | 按键 | 操作 |
 | --- | --- |
@@ -78,7 +78,7 @@ docker build -t majsoul-analyzer:latest .
 ```
 
 ```bash
-docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_ALLOWED_ORIGINS majsoul-analyzer:latest
+docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspace/majsoul-analyzer -e MAJSOUL_CACHE_ROOT=/mnt/workspace/majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_ALLOWED_ORIGINS majsoul-analyzer:latest
 ```
 
 运行前在当前 shell 中设置 `MAJSOUL_API_TOKEN` 和 `MAJSOUL_ALLOWED_ORIGINS`；不要把真实令牌写入仓库或公开日志。Docker/ModelScope 发布前应配置好环境变量并验证实际启动情况。不要将雀魂账号配置文件打包进镜像。
@@ -105,7 +105,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_
 
 ### Cloudflare Pages
 
-- Pages 前端通过同源 Pages Function 访问 ModelScope 后端；普通访客不需要手动输入 API 令牌。Function 固定代理到 `https://gxyh513-majsoul-analyzer.ms.show`，并在服务端注入 `X-Api-Token`。同源代理仅开放状态和分析接口；账号登录/登出、服务器本地牌谱、共享引擎配置、模型下载与缓存管理不会开放给匿名访问者。
+- Pages 前端通过同源 Pages Function 访问 ModelScope 后端；普通访客不需要手动输入 API 令牌。Function 固定代理到 `https://gxyh513-majsoul-analyzer.ms.show`，并在服务端注入 `X-Api-Token`。同源代理仅开放状态和分析接口；账号登录/登出、服务器本地牌谱、共享引擎配置与模型下载不会开放给匿名访问者。
 - 在 Cloudflare Pages 项目的 **Preview 和 Production** 环境分别设置 Secret `MAJSOUL_API_TOKEN`，并在 ModelScope 后端设置相同的新随机值。不要把令牌写入 `wrangler.toml`、源码、URL、浏览器存储或日志；请在已登录的设置页面中输入，不要粘贴到聊天。
 - 匿名 JSON 分析请求体上限为 4 MiB。按产品选择，不设每 IP 请求限额或等待队列上限；公开接口可被持续调用，可能让共享推理资源一直繁忙或占用等待队列内存。若出现滥用，应另行启用 Cloudflare 限流或队列控制。
 - Pages 静态输出目录为 `web/`，Pages Function 位于仓库根目录的 `functions/`。部署后应检查正式域名的 `/api/status` 版本，并完成一次分析验证。
@@ -122,11 +122,11 @@ docker run -p 7860:7860 --name majsoul-analyzer -e MAJSOUL_API_TOKEN -e MAJSOUL_
 | GET | `/api/records/local` | 列出后端本地牌谱 |
 | POST | `/api/login` | 配置雀魂账号登录 |
 
-分析成功与检讨文件持久化是两个独立状态。非流式分析接口通过响应头 `X-Review-Cache-Persisted: true/false` 报告检讨文件是否已成功写入并验证；SSE 的 `complete` 事件通过同名含义的布尔字段 `cache_persisted` 报告，`result` 内容保持不变。为 `false` 时，分析结果仍然有效，但服务重启后可能需要重新分析。此状态不表示快速查找索引也已写入；索引写入失败时仍可通过原始牌谱查找已保存的检讨。
+每次分析均从原始牌谱重新解码、转换并运行 Mortal；不会保存分析结果。雀魂牌谱下载后会先持久化，保存失败时接口返回错误。
 
 ## 数据与安全
 
-本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；牌谱和分析结果也可能保存在浏览器缓存与后端缓存目录中，请按部署环境保护并清理。后端路径和持久卷注意事项见 [缓存存储配置](CACHE_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
+本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。历史浏览器和后端检讨缓存不再使用，但不会自动删除。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 

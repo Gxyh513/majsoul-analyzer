@@ -1,4 +1,4 @@
-"""Single-model contract shared by inference, API status and review caches."""
+"""Single-model contract shared by inference and API status."""
 from __future__ import annotations
 
 import hashlib

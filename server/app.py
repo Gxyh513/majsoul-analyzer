@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import aclosing, asynccontextmanager, contextmanager
 from contextvars import ContextVar
-import hashlib
 import hmac
 import ipaddress
 import re
@@ -12,9 +11,9 @@ import json
 import logging
 import os
 import threading
-import tempfile
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -24,10 +23,12 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .cache_paths import cache_paths
+from .storage_paths import storage_paths
+from .majsoul.session import SessionLock
+from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
 from .engine.reviewer import EngineManager, review_game
 from .engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file, valid_review_source
-from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu
+from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 
 logging.basicConfig(
@@ -53,15 +54,15 @@ def _measure(stage: str):
 
 
 def _log_performance(stats: dict[str, Any], started: float) -> None:
-    stages = ("UUID解析", "雀魂抓取", "原始牌谱读取", "JSON解析", "MJAI转换", "缓存索引查询", "缓存有效性验证", "检讨JSON读取", "结果返回")
+    stages = ("UUID解析", "雀魂抓取", "原始牌谱读取", "Protobuf解码", "JSON解析", "MJAI转换", "结果返回")
     details = " ".join(f"{stage}={stats[stage]:.1f}ms" for stage in stages if stage in stats)
     log.info("[Paipu Performance] %s %s 总耗时=%.1fms", stats.get("mode", "未完成"), details,
              (time.perf_counter() - started) * 1000)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
-CACHE_DIR, RECORDS_DIR, REVIEWS_DIR = cache_paths(DATA_DIR)
-METADATA_DIR = RECORDS_DIR.parent / "metadata"
+CACHE_DIR, RECORDS_DIR = storage_paths(DATA_DIR)
+LEGACY_RECORDS_DIRS = (DATA_DIR / "records",) if RECORDS_DIR != DATA_DIR / "records" else ()
 MODELS_DIR = DATA_DIR / "models"
 CONFIG_PATH = DATA_DIR / "config.json"
 LOCAL_CONFIG_PATH = DATA_DIR / "config.local.json"
@@ -69,387 +70,12 @@ EXAMPLE_CONFIG_PATH = DATA_DIR / "config.example.json"
 DEMO_PATH = DATA_DIR / "demo_mjai.json"
 WEB_DIR = ROOT_DIR / "web"
 
-for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR, REVIEWS_DIR, METADATA_DIR):
+for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# A review job owns the permit until its worker has finished and cached its result.
+# Inference threads retain their permit until they actually finish.
 review_semaphore = asyncio.Semaphore(1)
 _review_tasks: set[asyncio.Task] = set()
-_review_flights: dict[str, asyncio.Future] = {}
-_review_cache_readers: dict[str, int] = {}
-_rejected_review_digests: dict[str, str] = {}
-_review_progress_lock = threading.Lock()
-_review_progress_listeners: dict[str, set] = {}
-# Windows cannot atomically replace a destination while another local thread
-# has it open without delete sharing.
-_review_cache_io_lock = threading.Lock()
-_active_review_temp_files: set[Path] = set()
-
-
-def make_cache_key(prefix: str, seat: int, engine: str, temperature: float, weight_sig: str | None = None) -> str:
-    safe_engine = str(engine or "auto").replace("/", "_").replace("\\", "_")
-    key = f"{prefix}_{seat}_{safe_engine}_{temperature}"
-    if weight_sig:
-        key += f"_{weight_sig}"
-    return key
-
-
-def review_cache_key(game_id: str, events: list[dict], meta: dict, seat: int, engine: str, temperature: float, weight_sig: str | None) -> str:
-    # Bind a review to the actual input, not just an upload-provided UUID.
-    key_parts = [game_id, events, meta, seat, engine, temperature, weight_sig]
-    if any(
-        isinstance(ev, dict) and ev.get("type") == "hora"
-        and (ev.get("yiman") or ev.get("title_id") == 11)
-        for ev in events
-    ):
-        # Older reviews formatted true yakuman as han/fu and omitted the
-        # counted-yakuman title. Keep ordinary game caches and model provenance.
-        key_parts.append("yakuman-summary-v1")
-    payload = json.dumps(key_parts, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    digest = hashlib.sha256(payload.encode("utf8")).hexdigest()
-    # Keep the filename short enough for Windows paths as well as Unix filesystems.
-    return f"review-{digest}"
-
-
-def resolve_engine_cache_info(requested_engine: str | None) -> tuple[str, str | None]:
-    """
-    Resolves canonical engine ID and weight signature (stem + mtime) to ensure cache isolation.
-    """
-    mortal, resolved_id, _ = engine_mgr.get_mortal(requested_engine)
-    return resolved_id, f"{REVIEW_SCHEMA}_{mortal.weight_sha256}"
-
-
-def _try_file_lock(file) -> None:
-    file.seek(0)
-    if os.name == "nt":
-        import msvcrt
-        msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
-def _unlock_file(file) -> None:
-    file.seek(0)
-    if os.name == "nt":
-        import msvcrt
-        msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(file.fileno(), fcntl.LOCK_UN)
-
-
-@contextmanager
-def _review_process_lock(read_only: bool = False):
-    lock_path = REVIEWS_DIR / ".review-cache.lock"
-    if read_only:
-        try:
-            lock_file = lock_path.open("rb")
-        except FileNotFoundError:
-            lock_file = lock_path.open("a+b")
-    else:
-        lock_file = lock_path.open("a+b")
-    with lock_file:
-        deadline = time.monotonic() + 5.0
-        while True:
-            try:
-                _try_file_lock(lock_file)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.05)
-        try:
-            lock_file.seek(0, os.SEEK_END)
-            if lock_file.tell() == 0 and lock_file.writable():
-                lock_file.write(b"0")
-                lock_file.flush()
-            yield
-        finally:
-            _unlock_file(lock_file)
-
-
-@contextmanager
-def _review_cache_guard(read_only: bool = False):
-    with _review_cache_io_lock:
-        with _review_process_lock(read_only=read_only):
-            yield
-
-
-def _read_cached_review(cache_key: str) -> dict[str, Any] | None:
-    cache_file = REVIEWS_DIR / f"{cache_key}.json"
-    marker = REVIEWS_DIR / f".{cache_key}.invalid"
-    lock_path = REVIEWS_DIR / ".review-cache.lock"
-    try:
-        with _review_cache_guard(read_only=True):
-            if marker.exists() or not cache_file.is_file():
-                return None
-            try:
-                cache_file.touch()
-            except Exception:
-                pass
-            return json.loads(cache_file.read_text(encoding="utf8"))
-    except PermissionError as e:
-        try:
-            # Legacy read-only volumes may predate the lock file. Cooperating
-            # writers cannot publish without first creating that file.
-            with _review_cache_io_lock:
-                if lock_path.exists() or marker.exists():
-                    return None
-                before = cache_file.stat()
-                data = json.loads(cache_file.read_text(encoding="utf8"))
-                after = cache_file.stat()
-                identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-                if identity(before) == identity(after) and not lock_path.exists() and not marker.exists():
-                    return data
-        except (OSError, ValueError):
-            pass
-        log.warning("Failed to read review cache (%s)", _safe_error_context(e))
-        return None
-    except Exception as e:
-        log.warning("Failed to read review cache (%s)", _safe_error_context(e))
-        return None
-
-
-def get_cached_review(cache_key: str) -> dict[str, Any] | None:
-    return _read_cached_review(cache_key)
-
-
-def _create_invalid_marker(marker: Path) -> bool:
-    try:
-        file = marker.open("xb")
-    except FileExistsError:
-        return False
-    try:
-        with file:
-            file.flush()
-            os.fsync(file.fileno())
-        return True
-    except Exception:
-        try:
-            marker.unlink(missing_ok=True)
-        except OSError as e:
-            log.warning("Failed to remove incomplete review marker (%s)", _safe_error_context(e))
-        raise
-
-
-def save_cached_review(cache_key: str, data: dict[str, Any]) -> bool:
-    cache_file = REVIEWS_DIR / f"{cache_key}.json"
-    temp_path = None
-    try:
-        # Register the temp path before releasing the lock, so cache cleanup
-        # cannot delete a long-running write even if its mtime is very old.
-        with _review_cache_io_lock:
-            temp = tempfile.NamedTemporaryFile(mode="w+", encoding="utf8", dir=REVIEWS_DIR, prefix=".review-", suffix=".tmp", delete=False)
-            temp_path = Path(temp.name)
-            _active_review_temp_files.add(temp_path)
-        with temp:
-            _try_file_lock(temp)
-            json.dump(data, temp, ensure_ascii=False)
-            temp.flush()
-            os.fsync(temp.fileno())
-            temp.seek(0)
-            if json.load(temp) != data:
-                raise ValueError("review cache temporary file failed validation")
-            marker = REVIEWS_DIR / f".{cache_key}.invalid"
-            with _review_cache_guard():
-                _unlock_file(temp)
-                temp.close()
-                created_marker = _create_invalid_marker(marker)
-                replaced = False
-                try:
-                    # Antivirus/indexers may temporarily prevent Windows replacement.
-                    for attempt in range(5):
-                        try:
-                            temp_path.replace(cache_file)
-                            replaced = True
-                            break
-                        except OSError as e:
-                            if getattr(e, "winerror", None) not in (5, 32, 33) or attempt == 4:
-                                raise
-                            time.sleep(0.05)
-                    if json.loads(cache_file.read_text(encoding="utf8")) != data:
-                        raise ValueError("review cache failed post-write validation")
-                    marker.unlink()
-                    return True
-                except Exception:
-                    if not replaced and created_marker:
-                        marker.unlink(missing_ok=True)
-                    raise
-    except Exception as e:
-        errno = getattr(e, "errno", None)
-        winerror = getattr(e, "winerror", None)
-        safe_key = cache_key if re.fullmatch(r"review-[0-9a-f]{64}", cache_key) else "unknown"
-        log.warning("Failed to save review cache (key=%s, %s, errno=%s, winerror=%s)",
-                    safe_key, _safe_error_context(e), errno if isinstance(errno, int) else None,
-                    winerror if isinstance(winerror, int) else None)
-        return False
-    finally:
-        if temp_path is not None:
-            with _review_cache_io_lock:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError as e:
-                    log.warning("Failed to remove temporary review cache (%s)", _safe_error_context(e))
-                finally:
-                    _active_review_temp_files.discard(temp_path)
-
-
-def _remove_review_cache_if_unchanged(path: Path, observed: os.stat_result) -> bool:
-    """Do not delete a cache replaced or touched since cleanup inspected it."""
-    if path.parent == RECORDS_DIR:
-        from .account_pool import _record_cache_io_lock
-        lock = _record_cache_io_lock
-    else:
-        lock = _review_cache_guard()
-    with lock:
-        try:
-            current = path.stat()
-        except FileNotFoundError:
-            return False
-        identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-        if identity(current) != identity(observed):
-            return False
-        path.unlink()
-        return True
-
-
-def cleanup_old_caches(
-    max_days: float = 7.0,
-    max_total_mb: float = 3000.0,
-) -> dict[str, int]:
-    """
-    Cleans up cached records and review results:
-    1. Removes files not accessed/modified in > max_days (default 7 days).
-    2. If total size still exceeds max_total_mb (default 3000MB), purges oldest files.
-    """
-    now = time.time()
-    cutoff_time = now - (max_days * 86400)
-    cleaned_count = 0
-    cleaned_bytes = 0
-
-    target_dirs = [REVIEWS_DIR, RECORDS_DIR, CACHE_DIR]
-    if METADATA_DIR.parent == RECORDS_DIR.parent:
-        target_dirs.append(METADATA_DIR)
-    log.info("[缓存自动巡检] 开始巡检本地磁盘缓存 (规则: 清理超过 %.0f 天未访问文件, 容量上限: %.0f MB)", max_days, max_total_mb)
-
-    # Pass 1: Remove files older than cutoff_time
-    for d in target_dirs:
-        if not d.is_dir():
-            continue
-        for f in d.glob("*.json"):
-            try:
-                stat = f.stat()
-                if stat.st_mtime < cutoff_time:
-                    if d in (REVIEWS_DIR, RECORDS_DIR):
-                        if not _remove_review_cache_if_unchanged(f, stat):
-                            continue
-                    else:
-                        f.unlink()
-                    cleaned_count += 1
-                    cleaned_bytes += stat.st_size
-            except Exception as e:
-                log.warning("[缓存清理警告] 检查/删除文件失败 %s: %s", f.name, e)
-
-    # Atomic writes abandoned by a crash also consume space. Only collect our
-    # exact temp naming pattern in REVIEWS_DIR, and never an in-progress write.
-    # New temp files remain protected even when max_days is configured tiny.
-    temp_cutoff = now - max(max_days * 86400, 3600)
-    if REVIEWS_DIR.is_dir():
-        for f in REVIEWS_DIR.glob(".review-????????.tmp"):
-            try:
-                with _review_cache_guard():
-                    if f in _active_review_temp_files or f.is_symlink() or not f.is_file():
-                        continue
-                    stat = f.stat()
-                    if stat.st_mtime < temp_cutoff:
-                        with f.open("r+b") as file:
-                            try:
-                                _try_file_lock(file)
-                            except OSError:
-                                continue
-                            _unlock_file(file)
-                        f.unlink()
-                        cleaned_count += 1
-                        cleaned_bytes += stat.st_size
-            except OSError as e:
-                log.warning("[缓存清理警告] 清理临时文件失败 %s (%s)", f.name, type(e).__name__)
-
-    # Pass 2: Quota check against max_total_mb
-    remaining_files: list[tuple[Path, os.stat_result]] = []
-    total_size = 0
-    for d in target_dirs:
-        if not d.is_dir():
-            continue
-        for f in d.glob("*.json"):
-            try:
-                st = f.stat()
-                remaining_files.append((f, st))
-                total_size += st.st_size
-            except Exception:
-                pass
-
-    if REVIEWS_DIR.is_dir():
-        for f in REVIEWS_DIR.glob(".review-????????.tmp"):
-            with _review_cache_io_lock:
-                try:
-                    if not f.is_symlink() and f.is_file():
-                        # Active and young temp files count towards usage, but
-                        # are not quota eviction candidates.
-                        total_size += f.stat().st_size
-                except OSError:
-                    pass
-
-    max_bytes = int(max_total_mb * 1024 * 1024)
-    if total_size > max_bytes:
-        # Sort by mtime ascending (oldest first)
-        remaining_files.sort(key=lambda x: x[1].st_mtime)
-        for f, st in remaining_files:
-            if total_size <= max_bytes:
-                break
-            try:
-                if f.parent in (REVIEWS_DIR, RECORDS_DIR):
-                    if not _remove_review_cache_if_unchanged(f, st):
-                        continue
-                else:
-                    f.unlink()
-                total_size -= st.st_size
-                cleaned_count += 1
-                cleaned_bytes += st.st_size
-            except Exception as e:
-                log.warning("[缓存配额警告] 腾退超限缓存文件失败 %s: %s", f.name, e)
-
-    if cleaned_count > 0:
-        log.info(
-            "[缓存自动巡检] 巡检完成: 清理了 %d 个长期未访问的冷缓存文件，释放空间 %.2f MB",
-            cleaned_count,
-            cleaned_bytes / (1024 * 1024),
-        )
-    else:
-        log.info("[缓存自动巡检] 巡检完成: 暂无超过 %.0f 天的过期冷数据，无需清理", max_days)
-
-    log.info(
-        "[缓存存储状态] 当前本地有效缓存总占用: %.2f MB / 上限 %.0f MB",
-        total_size / (1024 * 1024),
-        max_total_mb,
-    )
-
-    return {"cleaned_count": cleaned_count, "cleaned_bytes": cleaned_bytes}
-
-
-async def _cache_cleanup_loop():
-    """Background task running cache cleanup every 6 hours."""
-    while True:
-        try:
-            await asyncio.to_thread(cleanup_old_caches)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            log.warning("Background cache cleanup error: %s", e)
-        try:
-            await asyncio.sleep(6 * 3600)
-        except asyncio.CancelledError:
-            break
 
 
 def load_config() -> dict[str, Any]:
@@ -744,7 +370,7 @@ def _download_mortal_if_missing():
     _download_model_sync("mortal")
 
 ms_client = MajsoulClient(CACHE_DIR)
-_ms_client_lock = asyncio.Lock()
+_ms_client_lock = SessionLock()
 
 from .account_pool import (  # noqa: E402
     _account_pool_key,
@@ -759,40 +385,17 @@ from .account_pool import (  # noqa: E402
     login_with_account_spec,
 )
 
-# In-memory LRU cache of converted mjai logs: game_id -> (mjai_events, meta)
-MAX_MEMORY_LOGS = 30
-_MEMORY_LOGS: dict[str, tuple[list[dict], dict]] = {}
-_MEMORY_LOG_FILES: dict[str, tuple[tuple[list[dict], dict], tuple[int, ...] | None]] = {}
-
-
-def set_memory_log(game_id: str, events: list[dict], meta: dict) -> None:
-    if len(_MEMORY_LOGS) >= MAX_MEMORY_LOGS:
-        oldest_key = next(iter(_MEMORY_LOGS))
-        _MEMORY_LOGS.pop(oldest_key, None)
-        _MEMORY_LOG_FILES.pop(oldest_key, None)
-    _MEMORY_LOGS[game_id] = (events, meta)
-    _MEMORY_LOG_FILES.pop(game_id, None)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("==================================================================")
     log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
     st = engine_mgr.status()
     log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), engine_mgr.selected_model)
-    auto_cleanup = os.environ.get("MAJSOUL_CACHE_AUTO_CLEANUP", "").strip() == "1"
-    log.info("数据缓存目录: %s | 自动清理: %s", RECORDS_DIR.parent, "7 天 / 3GB" if auto_cleanup else "关闭")
-    log.info("==================================================================")
-    cleanup_task = asyncio.create_task(_cache_cleanup_loop()) if auto_cleanup else None
-
+    log.info("原始牌谱存储目录: %s", RECORDS_DIR)
     try:
         yield
     finally:
-        if cleanup_task is not None:
-            cleanup_task.cancel()
-            await asyncio.gather(cleanup_task, return_exceptions=True)
-        # Inference threads cannot be cancelled; drain their owning tasks before
-        # shutting down the event loop so completed reviews are still cached.
+        await drain_record_downloads()
         while _review_tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tuple(_review_tasks)), return_exceptions=True)
 
@@ -864,8 +467,6 @@ async def protect_api_and_log(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Private-Network"] = "true"
-        if "X-Review-Cache-Persisted" in response.headers:
-            response.headers["Access-Control-Expose-Headers"] = "X-Review-Cache-Persisted"
     if path == "/api/status":
         # Anonymous and authenticated callers receive different status bodies;
         # neither may be stored by a shared intermediary.
@@ -878,12 +479,6 @@ async def protect_api_and_log(request: Request, call_next):
         cost_ms = (time.time() - t0) * 1000
         log.info("[HTTP响应完成] %s %s -> 状态码: %d (用时: %.1fms)", request.method, path, response.status_code, cost_ms)
     return response
-
-
-@app.post("/api/admin/cleanup_cache")
-async def api_cleanup_cache():
-    res = await asyncio.to_thread(cleanup_old_caches)
-    return {"ok": True, **res}
 
 
 # ---------------------------------------------------------------------------
@@ -996,16 +591,23 @@ async def api_login(req: LoginReq):
         os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
     )):
         raise HTTPException(status_code=400, detail="账号由环境变量管理，无法记住登录；请修改部署密文或选择临时登录")
+    if not req.access_token and not (req.account and req.password):
+        raise HTTPException(status_code=400, detail="请提供雀魂账号密码或 Access Token")
     async with _ms_client_lock:
         try:
-            await ms_client.close()
-            await ms_client.connect()
-            if req.access_token:
-                await ms_client.login_token(req.access_token.strip())
-            elif req.account and req.password:
-                await ms_client.login_password(req.account.strip(), req.password)
-            else:
-                raise HTTPException(status_code=400, detail="请提供雀魂账号密码或 Access Token")
+            cfg = load_config()
+            same_token = bool(req.access_token and req.access_token.strip() == ms_client.access_token)
+            same_password = bool(not req.access_token and req.account and req.password and cfg.get("account") and cfg.get("password")
+                                 and req.account.strip().lower() == str(cfg["account"]).strip().lower()
+                                 and hmac.compare_digest(req.password.encode(), str(cfg["password"]).encode()))
+            live = is_client_logged_in_as({"account": req.account, "access_token": req.access_token}, ms_client)
+            if not (live and (same_token or same_password)):
+                await ms_client.close()
+                await ms_client.connect()
+                if req.access_token:
+                    await ms_client.login_token(req.access_token.strip())
+                else:
+                    await ms_client.login_password(req.account.strip(), req.password)
 
             if req.remember:
                 cfg = load_config()
@@ -1056,51 +658,24 @@ async def api_recent_games():
 
 @app.get("/api/records/local")
 async def api_records_local():
-    """
-    Returns metadata of all locally cached paipu files in data/records/
-    without connecting to any online services.
-    """
-    records: list[dict[str, Any]] = []
-    if RECORDS_DIR.is_dir():
-        for p in RECORDS_DIR.glob("*.json"):
+    records = []
+    seen = set()
+    for directory in (RECORDS_DIR, *LEGACY_RECORDS_DIRS):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.iterdir(), key=lambda item: (item.stem, item.suffix != ".pb")):
+            if path.suffix not in (".pb", ".json") or path.stem in seen:
+                continue
+            seen.add(path.stem)
             try:
-                raw_text = p.read_text(encoding="utf8")
-                data = json.loads(raw_text)
-                if isinstance(data, dict) and "head" in data:
-                    meta = game_meta(data)
-                elif isinstance(data, list) and data and isinstance(data[0], dict) and "type" in data[0]:
-                    names = ["东家", "南家", "西家", "北家"]
-                    for ev in data:
-                        if ev.get("type") == "start_game" and ev.get("names"):
-                            names = list(ev["names"])
-                            break
-                    meta = {
-                        "uuid": p.stem,
-                        "names": names,
-                        "start_time": int(p.stat().st_mtime),
-                    }
-                else:
-                    meta = {
-                        "uuid": p.stem,
-                        "names": data.get("names", ["未知"]),
-                        "start_time": data.get("start_time", int(p.stat().st_mtime)),
-                    }
-                meta["file_size"] = p.stat().st_size
-                meta["file_name"] = p.name
-                if not meta.get("uuid"):
-                    meta["uuid"] = p.stem
-                records.append(meta)
-            except Exception as e:
-                records.append({
-                    "uuid": p.stem,
-                    "file_name": p.name,
-                    "names": ["无法解析"],
-                    "start_time": int(p.stat().st_mtime),
-                    "file_size": p.stat().st_size,
-                    "error": str(e),
-                })
-
-    records.sort(key=lambda r: r.get("start_time") or 0, reverse=True)
+                stored = await asyncio.to_thread(read_record, directory, path.stem)
+                record = await asyncio.to_thread(ms_client.decode_record, stored, path.stem) if isinstance(stored, RawRecord) else stored
+                meta = game_meta(record)
+                meta.update({"uuid": path.stem, "file_name": path.name, "file_size": path.stat().st_size})
+            except Exception:
+                meta = {"uuid": path.stem, "file_name": path.name, "names": ["无法解析"], "error": "牌谱文件不可读取"}
+            records.append(meta)
+    records.sort(key=lambda record: record.get("start_time") or 0, reverse=True)
     return {"records": records, "total": len(records)}
 
 
@@ -1108,233 +683,88 @@ def select_game_seat(meta: dict, target_actor: int | None, url_acc_id: int | Non
     if target_actor is not None:
         return target_actor if 0 <= target_actor <= 3 else 0
     acc_ids = meta.get("account_ids", [])
-    for account_id in (url_acc_id, ms_client.account_id):
+    for account_id in (url_acc_id, ms_client.account_id, load_config().get("account_id")):
         if account_id and account_id in acc_ids:
-            seat = acc_ids.index(account_id)
-            if 0 <= seat <= 3:
-                return seat
-    account_id = load_config().get("account_id")
-    if account_id and account_id in acc_ids:
-        seat = acc_ids.index(account_id)
-        if 0 <= seat <= 3:
-            return seat
+            return acc_ids.index(account_id)
     return 0
 
 
-def _record_file_identity(game_uuid: str) -> tuple[int, ...] | None:
+async def get_or_download_record(game_uuid: str) -> RawRecord | dict:
     try:
-        stat = (RECORDS_DIR / f"{game_uuid}.json").stat()
-        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    except OSError:
-        return None
+        return await _get_or_download_record(
+            game_uuid, RECORDS_DIR, fetch_record_with_failover, legacy_dirs=LEGACY_RECORDS_DIRS
+        )
+    except RecordStorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="无法访问原始牌谱存储目录。") from exc
 
 
-def _verified_record_identity(game_uuid: str, record: dict) -> tuple[int, ...] | None:
-    from .account_pool import _without_credentials
-
-    before = _record_file_identity(game_uuid)
-    if before is None:
-        return None
-    try:
-        with _measure("原始牌谱读取"):
-            raw = (RECORDS_DIR / f"{game_uuid}.json").read_text(encoding="utf8")
-        with _measure("JSON解析"):
-            saved = json.loads(raw)
-        if saved == _without_credentials(record) and _record_file_identity(game_uuid) == before:
-            return before
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
-
-
-def _read_cached_game_input(game_uuid: str) -> tuple[list[dict], dict] | None:
-    try:
-        with _measure("原始牌谱读取"):
-            raw = (RECORDS_DIR / f"{game_uuid}.json").read_text(encoding="utf8")
-        with _measure("JSON解析"):
-            record = json.loads(raw)
-        if (not isinstance(record, dict) or not isinstance(record.get("head"), dict)
-                or record["head"].get("uuid") != game_uuid or not isinstance(record.get("actions"), list)):
-            return None
-        with _measure("MJAI转换"):
-            return to_mjai(record), game_meta(record)
-    except Exception:
-        return None
-
-
-_game_resolve_flights: dict[str, asyncio.Task] = {}
-
-
-async def resolve_game_data(paipu: str | None = None, content: Any | None = None,
-                            target_actor: int | None = None) -> tuple[str, list[dict], dict, int]:
-    raw = (paipu or "").strip()
-    if content is not None or not raw or raw == "demo" or raw.startswith(("demo-", "{", "[", "upload-", "mjai-")):
-        return await _resolve_game_data(paipu, content, target_actor)
-    try:
-        with _measure("UUID解析"):
-            game_id, url_account = parse_paipu(raw)
-    except MajsoulError:
-        return await _resolve_game_data(paipu, content, target_actor)
-    task = _game_resolve_flights.get(game_id)
-    if task is None:
-        task = asyncio.create_task(_resolve_game_data(game_id, None, 0))
-        _game_resolve_flights[game_id] = task
-        def discard(done: asyncio.Task) -> None:
-            if _game_resolve_flights.get(game_id) is done:
-                _game_resolve_flights.pop(game_id, None)
-            if not done.cancelled():
-                done.exception()
-        task.add_done_callback(discard)
-    game_id, events, meta, _ = await asyncio.shield(task)
-    return game_id, events, meta, select_game_seat(meta, target_actor, url_account)
-
-
-async def _resolve_game_data(
-    paipu: str | None = None,
-    content: Any | None = None,
-    target_actor: int | None = None,
+async def resolve_game_data(
+    paipu: str | None = None, content: Any | None = None, target_actor: int | None = None,
 ) -> tuple[str, list[dict], dict, int]:
-    """
-    Resolves input paipu/content into (game_id, mjai_events, meta, seat).
-    Handles demo, raw JSON/JSONL, and Majsoul paipu links/UUIDs.
-    """
     raw_input = (paipu or "").strip()
-    is_demo = False
-    is_json = False
-
-    if content is not None:
-        is_json = True
-    elif raw_input in ("demo", "") or raw_input.startswith("demo-"):
-        is_demo = True
-    elif raw_input.startswith("{") or raw_input.startswith("["):
-        is_json = True
-        content = raw_input
-
-    # 1. Demo Mode
-    if is_demo:
+    if content is None and (not raw_input or raw_input == "demo" or raw_input.startswith("demo-")):
         if not DEMO_PATH.is_file():
             raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
         events = json.loads(DEMO_PATH.read_text(encoding="utf8"))
-        meta = {
-            "uuid": "demo-241024-majsoul-4p",
-            "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
-            "room": "玉之间·四人南 (内置演示)",
-            "start_time": 1729760000,
-        }
-        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
-        set_memory_log("demo", events, meta)
-        log.info("[牌谱解析] 加载官方内置演示牌谱成功 | 目标视角: P%d (%s) | 步数: %d", seat, meta["names"][seat], len(events))
-        return "demo", events, meta, seat
+        meta = {"uuid": "demo-241024-majsoul-4p", "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
+                "room": "玉之间·四人南 (内置演示)", "start_time": 1729760000}
+        return "demo", events, meta, select_game_seat(meta, target_actor)
 
-    # 2. JSON / JSONL Mode
-    if is_json:
+    if content is None and raw_input.startswith(("{", "[")):
+        content = raw_input
+    if content is not None:
         if isinstance(content, str):
             text = content.strip()
-            with _measure("JSON解析"):
-                try:
-                    content = json.loads(text)
-                except json.JSONDecodeError:
-                    try:
-                        content = [json.loads(line) for line in text.splitlines() if line.strip()]
-                    except Exception as e:
-                        raise HTTPException(status_code=400, detail=f"无法解析 JSON / JSONL 格式: {e}") from e
-
-        if isinstance(content, dict) and "head" in content and "actions" in content:
             try:
-                with _measure("MJAI转换"):
-                    mjai_events = to_mjai(content)
-                    meta = game_meta(content)
-                source_uuid = meta.get("uuid")
+                content = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    content = [json.loads(line) for line in text.splitlines() if line.strip()]
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail="无法解析 JSON / JSONL 格式。") from exc
+        try:
+            if isinstance(content, dict) and "head" in content and "actions" in content:
+                source_uuid = content.get("head", {}).get("uuid")
                 if source_uuid and (not isinstance(source_uuid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", source_uuid)):
                     raise HTTPException(status_code=400, detail="牌谱 UUID 格式无效")
-                canonical = json.dumps(content, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-                game_id = "upload-" + hashlib.sha256(canonical.encode("utf8")).hexdigest()
-            except ConvertError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
-        elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
-            mjai_events = content
-            names = ["东家", "南家", "西家", "北家"]
-            for ev in mjai_events:
-                if ev.get("type") == "start_game" and ev.get("names"):
-                    names = list(ev["names"])
-                    break
-            canonical = json.dumps(mjai_events, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-            game_id = "mjai-" + hashlib.sha256(canonical.encode("utf8")).hexdigest()
-            # Raw MJAI uploads have no separate game metadata. Do not invent
-            # a changing game start time from the upload time; this also lets
-            # repeated uploads reuse the same content-bound review cache.
-            meta = {"uuid": game_id, "names": names, "start_time": None}
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="不支持的 JSON 结构：请上传雀魂原始牌谱 JSON (含 head/actions) 或 mjai 事件数组/JSONL。",
-            )
+                events = to_mjai(content)
+                meta = game_meta(content)
+                game_id = "upload-" + uuid.uuid4().hex
+            elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
+                events = content
+                names = next((list(event["names"]) for event in events if event.get("type") == "start_game" and event.get("names")), ["东家", "南家", "西家", "北家"])
+                game_id = "mjai-" + uuid.uuid4().hex
+                meta = {"uuid": game_id, "names": names, "start_time": None}
+            else:
+                raise HTTPException(status_code=400, detail="不支持的 JSON 结构：请上传雀魂原始牌谱 JSON 或 mjai 事件数组/JSONL。")
+        except (ConvertError, ValueError, TypeError, KeyError, IndexError) as exc:
+            raise HTTPException(status_code=400, detail="牌谱数据无法解析，请检查文件。") from exc
+        return game_id, events, meta, select_game_seat(meta, target_actor)
 
-        seat = target_actor if (target_actor is not None and 0 <= target_actor <= 3) else 0
-        set_memory_log(game_id, mjai_events, meta)
-        log.info("[牌谱解析] 本地上传牌谱解析完成 | ID: %s | 目标视角: P%d (%s)", game_id, seat, meta.get("names", ["?"]*4)[seat])
-        return game_id, mjai_events, meta, seat
-
-    # Uploaded inputs use content-derived identifiers, not Mahjong Soul UUIDs.
-    if re.fullmatch(r"(?:upload|mjai)-[0-9a-f]{64}", raw_input) and raw_input in _MEMORY_LOGS:
-        mjai_events, meta = _MEMORY_LOGS[raw_input]
-        return raw_input, mjai_events, meta, select_game_seat(meta, target_actor)
-
-    # 3. Majsoul Paipu URL / UUID
     try:
         with _measure("UUID解析"):
             game_uuid, url_acc_id = parse_paipu(raw_input)
-        log.info("[牌谱识别] 成功提取雀魂牌谱 UUID: %s", game_uuid)
-    except MajsoulError as e:
-        log.warning("[牌谱识别失败] 输入内容无效 (%s)", _safe_error_context(e))
-        raise HTTPException(status_code=400, detail="无法识别的牌谱 ID，请检查输入。") from e
-
-    cached_log = _MEMORY_LOGS.get(game_uuid)
-    if cached_log is not None:
-        known_file = _MEMORY_LOG_FILES.get(game_uuid)
-        if known_file is not None and known_file[0] is cached_log:
-            current_identity = await asyncio.to_thread(_record_file_identity, game_uuid)
-            if current_identity is not None and (known_file[1] is None or current_identity != known_file[1]):
-                disk_log = await asyncio.to_thread(_read_cached_game_input, game_uuid)
-                if disk_log is not None and await asyncio.to_thread(_record_file_identity, game_uuid) == current_identity:
-                    if disk_log != cached_log:
-                        cached_log = disk_log
-                        set_memory_log(game_uuid, *cached_log)
-                        cached_log = _MEMORY_LOGS.get(game_uuid, cached_log)
-                    if _MEMORY_LOGS.get(game_uuid) is cached_log:
-                        _MEMORY_LOG_FILES[game_uuid] = (cached_log, current_identity)
-        mjai_events, meta = cached_log
-        seat = select_game_seat(meta, target_actor, url_acc_id)
-        log.info("[牌谱内存缓存命中] UUID: %s | 视角: P%d", game_uuid, seat)
-        return game_uuid, mjai_events, meta, seat
-
-    from .account_pool import load_cached_record
-    record_identity = await asyncio.to_thread(_record_file_identity, game_uuid)
-    loaded = await asyncio.to_thread(load_cached_record, RECORDS_DIR, game_uuid, include_parsed=True,
-                                     timings=_performance.get())
-    if loaded is None:
-        log.info("[牌谱抓取] 正在连接雀魂服务器请求数据 (UUID: %s)...", game_uuid)
-        with _measure("雀魂抓取"):
-            loaded = await fetch_record_with_failover(game_uuid, include_parsed=True, timings=_performance.get())
-        record, mjai_events, meta = loaded
-        record_identity = await asyncio.to_thread(_verified_record_identity, game_uuid, record)
-        log.info("[牌谱抓取] 雀魂官方牌谱抓取成功 | UUID: %s", game_uuid)
-    else:
-        record, mjai_events, meta = loaded
-        record_identity = await asyncio.to_thread(_verified_record_identity, game_uuid, record)
-
-    log.info("[牌谱转换] 牌谱成功转为 mjai 规范事件流 (共 %d 个动作) | 玩家: %s", len(mjai_events), meta.get("names", []))
-
-    seat = select_game_seat(meta, target_actor, url_acc_id)
-
-    set_memory_log(game_uuid, mjai_events, meta)
-    cached_log = _MEMORY_LOGS.get(game_uuid)
-    current_identity = await asyncio.to_thread(_record_file_identity, game_uuid)
-    verified_identity = current_identity if record_identity is not None and record_identity == current_identity else None
-    if cached_log is not None and _MEMORY_LOGS.get(game_uuid) is cached_log:
-        _MEMORY_LOG_FILES[game_uuid] = (cached_log, verified_identity)
-    log.info("[牌谱准备就绪] 牌谱: %s | 目标视角: P%d (%s) | 准备启动 AI 推理", game_uuid, seat, meta.get("names", ["?"]*4)[seat] if seat < len(meta.get("names", [])) else f"P{seat}")
-    return game_uuid, mjai_events, meta, seat
+    except (MajsoulError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="无法识别的牌谱 ID，请检查输入。") from exc
+    with _measure("原始牌谱读取"):
+        stored = await get_or_download_record(game_uuid)
+    try:
+        if isinstance(stored, RawRecord):
+            with _measure("Protobuf解码"):
+                record = await asyncio.to_thread(ms_client.decode_record, stored, game_uuid)
+        else:
+            record = stored
+        with _measure("MJAI转换"):
+            events, meta = await asyncio.to_thread(lambda: (to_mjai(record), game_meta(record)))
+    except (CorruptRecordError, MajsoulError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except (ConvertError, ValueError, TypeError, KeyError, IndexError) as exc:
+        raise HTTPException(status_code=400, detail="原始牌谱无法转换，请检查牌谱或协议版本。") from exc
+    url_seat = parse_paipu_seat(raw_input)
+    seat = target_actor if target_actor is not None else url_seat
+    return game_uuid, events, meta, select_game_seat(meta, seat, url_acc_id if url_seat is None else None)
 
 
 def _safe_error_context(error: BaseException) -> str:
@@ -1360,21 +790,10 @@ def _safe_error_context(error: BaseException) -> str:
     return f"{type(error).__name__}{safe_code} at {','.join(locations[-4:]) or 'external'}"
 
 
-class _ReviewResult(dict[str, Any]):
-    """Keep persistence state outside the serialized review structure."""
-
-    def __init__(self, result: dict[str, Any], cache_persisted: bool):
-        super().__init__(result)
-        self.cache_persisted = cache_persisted
-
-
 def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Strip engine filesystem details without mutating the cached result."""
     engine = result.get("engine")
     if not isinstance(engine, dict):
         return dict(result)
-    # The proxy authenticates upstream, so its token cannot identify a trusted
-    # end user. All analysis responses use the same path-free engine fields.
     public_engine = {
         key: engine[key]
         for key in ("type", "id", "tag", "weight_file", "weight_sha256", "version", "steps", "q_source", "review_schema", "device")
@@ -1383,380 +802,74 @@ def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
     return {**result, "engine": public_engine}
 
 
-def _valid_cached_review(cache_key: str, weight_sha256: str) -> dict[str, Any] | None:
-    with _measure("检讨JSON读取"):
-        cached = get_cached_review(cache_key)
-    with _measure("缓存有效性验证"):
-        if not valid_review_source(cached, weight_sha256):
-            return None
-        expected = _rejected_review_digests.get(cache_key)
-        if expected is not None and _review_digest(cached) != expected:
-            return None
-        return cached
-
-
-def _valid_review_for_game(cache_key: str, weight_sha256: str, game_id: str, seat: int) -> _ReviewResult | None:
-    cached = _valid_cached_review(cache_key, weight_sha256)
-    if cached is None or cached.get("game_id") != game_id or cached.get("target_actor") != seat:
-        return None
-    return _ReviewResult(cached, True)
-
-
-def _join_review_progress(cache_key: str, flight: asyncio.Future, callback) -> None:
-    if callback is None or _review_flights.get(cache_key) is not flight:
-        return
-    with _review_progress_lock:
-        listeners = _review_progress_listeners.get(cache_key)
-        if listeners is not None:
-            listeners.add(callback)
-
-
-def _leave_review_progress(cache_key: str, callback) -> None:
-    with _review_progress_lock:
-        listeners = _review_progress_listeners.get(cache_key)
-        if listeners is not None:
-            listeners.discard(callback)
-
-
-def _discard_finished_flight(cache_key: str) -> None:
-    # A pending disk lookup may need the job result if persistence failed.
-    if _review_cache_readers.get(cache_key):
-        return
-    flight = _review_flights.get(cache_key)
-    if flight is not None and flight.done():
-        shared = flight.result()
-        if shared is None or shared[0] is not None or shared[1] is None or shared[1].done():
-            _review_flights.pop(cache_key, None)
-
-
-async def _read_review_or_flight(cache_key: str, weight_sha256: str, game_id: str,
-                                 seat: int) -> tuple[_ReviewResult | None, asyncio.Future | None]:
-    _review_cache_readers[cache_key] = _review_cache_readers.get(cache_key, 0) + 1
-    try:
-        cached = await asyncio.to_thread(_valid_review_for_game, cache_key, weight_sha256, game_id, seat)
-        return cached, _review_flights.get(cache_key)
-    finally:
-        remaining = _review_cache_readers[cache_key] - 1
-        if remaining:
-            _review_cache_readers[cache_key] = remaining
-        else:
-            _review_cache_readers.pop(cache_key, None)
-            _discard_finished_flight(cache_key)
-
-
-def _review_digest(review: dict[str, Any]) -> str:
-    payload = json.dumps(review, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf8")).hexdigest()
-
-
-def _review_index_path(game_id: str, seat: int, engine: str, temperature: float, weight_sig: str) -> Path:
-    identity = json.dumps([game_id, seat, engine, temperature, weight_sig], separators=(",", ":"))
-    return METADATA_DIR / ("review-" + hashlib.sha256(identity.encode("utf8")).hexdigest() + ".json")
-
-
-def _save_review_index(game_id: str, meta: dict, seat: int, engine: str, temperature: float,
-                       weight_sig: str, cache_key: str) -> None:
-    try:
-        parsed, _ = parse_paipu(game_id)
-        if parsed != game_id or not re.fullmatch(r"review-[0-9a-f]{64}", cache_key):
-            return
-        cached = _valid_cached_review(cache_key, weight_sig.rsplit("_", 1)[-1])
-        if cached is None or cached.get("game_id") != game_id or cached.get("target_actor") != seat:
-            return
-        record_identity = _record_file_identity(game_id)
-        verified_identity = None
-        if record_identity is not None:
-            known = _MEMORY_LOG_FILES.get(game_id)
-            if known is not None and known[0] is _MEMORY_LOGS.get(game_id) and known[1] == record_identity:
-                disk_log = known[0]
-            else:
-                disk_log = _read_cached_game_input(game_id)
-            if (disk_log is not None
-                    and review_cache_key(game_id, *disk_log, seat, engine, temperature, weight_sig) == cache_key
-                    and _record_file_identity(game_id) == record_identity):
-                verified_identity = record_identity
-        path = _review_index_path(game_id, seat, engine, temperature, weight_sig)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        account_ids = meta.get("account_ids", [])
-        if not isinstance(account_ids, list):
-            account_ids = []
-        account_ids = [value if isinstance(value, int) and not isinstance(value, bool) else 0
-                       for value in account_ids[:4]]
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=path.parent,
-                                             prefix=".index-", suffix=".tmp", delete=False) as f:
-                temp_path = Path(f.name)
-                json.dump({"game_id": game_id, "seat": seat, "engine": engine,
-                           "temperature": temperature, "weight_sig": weight_sig,
-                           "cache_key": cache_key, "account_ids": account_ids,
-                           "record_identity": verified_identity, "review_digest": _review_digest(cached)}, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, path)
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
-    except (OSError, ValueError, TypeError, MajsoulError) as e:
-        log.warning("Failed to save review index (%s)", _safe_error_context(e))
-
-
-def _lookup_indexed_review(paipu: str | None, target_actor: int | None, engine: str,
-                           temperature: float) -> dict[str, Any] | None:
-    if not paipu:
-        return None
-    try:
-        with _measure("UUID解析"):
-            game_id, url_account = parse_paipu(paipu)
-        resolved_id, weight_sig = resolve_engine_cache_info(engine)
-        if not weight_sig:
-            return None
-        seats = range(4) if target_actor is None else (target_actor if 0 <= target_actor <= 3 else 0,)
-        for seat in seats:
-            path = _review_index_path(game_id, seat, resolved_id, temperature, weight_sig)
-            try:
-                with _measure("缓存索引查询"):
-                    index = json.loads(path.read_text(encoding="utf8"))
-                expected = (game_id, seat, resolved_id, temperature, weight_sig)
-                actual = tuple(index.get(k) for k in ("game_id", "seat", "engine", "temperature", "weight_sig"))
-                if actual != expected or select_game_seat(index, target_actor, url_account) != seat:
-                    continue
-                cache_key = index.get("cache_key")
-                if not isinstance(cache_key, str) or not re.fullmatch(r"review-[0-9a-f]{64}", cache_key):
-                    continue
-                cached = _valid_review_for_game(cache_key, weight_sig.rsplit("_", 1)[-1], game_id, seat)
-                if cached is not None:
-                    with _measure("缓存有效性验证"):
-                        digest = index.get("review_digest")
-                        if digest is not None and (not isinstance(digest, str) or digest != _review_digest(cached)):
-                            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
-                                if len(_rejected_review_digests) >= 1024:
-                                    _rejected_review_digests.pop(next(iter(_rejected_review_digests)), None)
-                                _rejected_review_digests[cache_key] = digest
-                            continue
-                        current_identity = _record_file_identity(game_id)
-                        stored_identity = index.get("record_identity")
-                        identity_matches = (digest is not None and current_identity is not None
-                                            and isinstance(stored_identity, list)
-                                            and tuple(stored_identity) == current_identity
-                                            and _record_file_identity(game_id) == current_identity)
-                    if identity_matches:
-                        return cached
-                    disk_log = _read_cached_game_input(game_id)
-                    if disk_log is not None:
-                        record_key = review_cache_key(game_id, *disk_log, seat, resolved_id, temperature, weight_sig)
-                        if record_key != cache_key or _record_file_identity(game_id) != current_identity:
-                            continue
-                        _save_review_index(game_id, disk_log[1], seat, resolved_id, temperature, weight_sig, cache_key)
-                    return cached
-            except (OSError, ValueError, TypeError, AttributeError):
-                continue
-    except (MajsoulError, ValueError, TypeError, FileNotFoundError):
-        return None
-    return None
-
-
-async def _start_review_job(*, observed_flight: asyncio.Future | None = None,
-                            **kwargs: Any) -> tuple[dict[str, Any] | None, asyncio.Future | None]:
-    """Acquire in the request, then transfer the permit to an independent job."""
-    cache_key = kwargs["cache_key"]
-    progress_callback = kwargs.get("progress_callback")
-    if observed_flight is not None:
-        _join_review_progress(cache_key, observed_flight, progress_callback)
-        shared = await asyncio.shield(observed_flight)
-        if shared is not None:
-            return shared
-    while True:
-        flight = _review_flights.get(cache_key)
-        if flight is None:
-            flight = asyncio.get_running_loop().create_future()
-            _review_flights[cache_key] = flight
-            listeners = {progress_callback} if progress_callback else set()
-            with _review_progress_lock:
-                _review_progress_listeners[cache_key] = listeners
-            break
-        _join_review_progress(cache_key, flight, progress_callback)
-        shared = await asyncio.shield(flight)
-        if shared is not None:
-            return shared
-
+async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
+                            engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
     semaphore = review_semaphore
-    acquired = False
-    transferred = False
-    try:
-        await semaphore.acquire()
-        acquired = True
-        cached = await asyncio.to_thread(_valid_review_for_game, cache_key, kwargs["weight_sha256"],
-                                         kwargs["game_id"], kwargs["seat"])
-        if cached is not None:
-            log.info("[复盘缓存命中] 排队后命中缓存 (Key: %s)", cache_key)
-            flight.set_result((cached, None))
-            return cached, None
+    await semaphore.acquire()
+    released = False
 
-        released = False
-
-        def release_once() -> None:
-            nonlocal released
-            if not released:
-                released = True
-                semaphore.release()
-
-        shared_result = asyncio.get_running_loop().create_future()
-        shared_result.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-
-        def report_progress(percent: float, message: str) -> None:
-            with _review_progress_lock:
-                callbacks = tuple(listeners)
-            for callback in callbacks:
-                try:
-                    callback(percent, message)
-                except Exception as e:
-                    log.warning("Failed to deliver review progress (%s)", _safe_error_context(e))
-
-        async def owned_job() -> dict[str, Any]:
-            try:
-                return await _review_job(**{**kwargs, "progress_callback": report_progress}, shared_result=shared_result)
-            finally:
-                release_once()
-
-        task = asyncio.create_task(owned_job())
-        _review_tasks.add(task)
-
-        def job_done(done: asyncio.Task) -> None:
-            # Also handles a task cancelled before its coroutine first ran.
-            release_once()
-            _review_tasks.discard(done)
-            if done.cancelled():
-                if not shared_result.done():
-                    shared_result.cancel()
-            else:
-                error = done.exception()
-                if error is not None:
-                    if not shared_result.done():
-                        shared_result.set_exception(error)
-                    log.error("[AI检讨失败] 后台任务失败 (%s)", _safe_error_context(error))
-                elif not shared_result.done():
-                    shared_result.set_result(done.result())
-            with _review_progress_lock:
-                if _review_progress_listeners.get(cache_key) is listeners:
-                    _review_progress_listeners.pop(cache_key, None)
-            _discard_finished_flight(cache_key)
-
-        task.add_done_callback(job_done)
-        transferred = True
-        flight.set_result((None, shared_result))
-        return None, task
-    finally:
-        if not transferred:
-            if acquired:
-                semaphore.release()
-            if not flight.done():
-                flight.set_result(None)
-            if _review_flights.get(cache_key) is flight:
-                _review_flights.pop(cache_key, None)
-                with _review_progress_lock:
-                    _review_progress_listeners.pop(cache_key, None)
-
-
-async def _review_job(
-    *,
-    game_id: str,
-    mjai_events: list[dict],
-    meta: dict,
-    seat: int,
-    engine: str,
-    temperature: float,
-    cache_key: str,
-    weight_sha256: str,
-    progress_callback=None,
-    shared_result: asyncio.Future | None = None,
-) -> dict[str, Any]:
-    t_start = time.monotonic()
-    log.info("[AI推理启动] 已获取推理并发锁 (牌谱: %s, 视角: P%d)", game_id, seat)
+    def release_once() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            semaphore.release()
 
     def worker() -> dict[str, Any]:
+        mortal, _, _ = engine_mgr.get_mortal(engine)
         kwargs = {"meta": meta, "temperature": temperature, "force_engine": engine}
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
-        res = review_game(mjai_events, seat, engine_mgr, **kwargs)
-        if not valid_review_source(res, weight_sha256):
-            raise RuntimeError("模型权重在分析期间发生变化，结果未保存，请重试。")
-        if res.get("target_actor") != seat:
+        result = review_game(mjai_events, seat, engine_mgr, **kwargs)
+        if not valid_review_source(result, mortal.weight_sha256):
+            raise RuntimeError("模型权重或检讨结果来源不匹配，请重试。")
+        if result.get("target_actor") != seat:
             raise RuntimeError("检讨结果的玩家座位不匹配，请重试。")
-        res["game_id"] = game_id
-        persisted = False
+        result["game_id"] = game_id
+        return result
+
+    async def owned_job():
         try:
-            persisted = save_cached_review(cache_key, res)
-        except Exception as e:
-            log.warning("Failed to save review cache (%s)", _safe_error_context(e))
-        if persisted:
-            _rejected_review_digests.pop(cache_key, None)
-            try:
-                resolved_id, weight_sig = resolve_engine_cache_info(engine)
-                if weight_sig and weight_sig.rsplit("_", 1)[-1] == weight_sha256:
-                    _save_review_index(game_id, meta, seat, resolved_id, temperature, weight_sig, cache_key)
-            except Exception as e:
-                log.warning("Failed to prepare review index (%s)", _safe_error_context(e))
-        return _ReviewResult(res, persisted)
+            future = asyncio.get_running_loop().run_in_executor(None, worker)
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(future)
+                    break
+                except asyncio.CancelledError:
+                    if future.done():
+                        result = future.result()
+                        cancelled = True
+                        break
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        finally:
+            release_once()
 
-    # asyncio cancellation does not stop executor threads. Even if this job
-    # itself is cancelled (e.g. during shutdown), keep its permit until the
-    # actual thread finishes, then propagate cancellation only after caching.
-    future = asyncio.get_running_loop().run_in_executor(None, worker)
-    cancelled = False
-    while True:
-        try:
-            res = await asyncio.shield(future)
-            break
-        except asyncio.CancelledError:
-            if future.done():
-                # The worker itself can raise CancelledError. Its completed
-                # future is not necessarily marked cancelled; retrieve it
-                # rather than repeatedly shielding an already-failed future.
-                res = future.result()
-                cancelled = True
-                break
-            cancelled = True
-    log.info("[AI检讨完成] 牌谱 %s 检讨完毕，用时 %.2f 秒", game_id, time.monotonic() - t_start)
-    if shared_result is not None and not shared_result.done():
-        shared_result.set_result(res)
-    if cancelled:
-        raise asyncio.CancelledError
-    return res
+    try:
+        task = asyncio.create_task(owned_job())
+    except BaseException:
+        release_once()
+        raise
+    _review_tasks.add(task)
+
+    def job_done(done: asyncio.Task) -> None:
+        release_once()
+        _review_tasks.discard(done)
+        if not done.cancelled():
+            error = done.exception()
+            if error is not None:
+                log.error("[AI检讨失败] 后台任务失败 (%s)", _safe_error_context(error))
+
+    task.add_done_callback(job_done)
+    return task
 
 
-async def _run_review_with_cache(
-    game_id: str,
-    mjai_events: list[dict],
-    meta: dict,
-    seat: int,
-    engine: str,
-    temperature: float,
-) -> dict[str, Any]:
-    resolved_id, weight_sig = resolve_engine_cache_info(engine)
-    cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, temperature, weight_sig)
-    weight_sha256 = weight_sig.rsplit("_", 1)[-1]
-    cached, observed_flight = await _read_review_or_flight(cache_key, weight_sha256, game_id, seat)
-    if cached is not None:
-        stats = _performance.get()
-        if stats is not None:
-            stats["mode"] = "常规缓存命中"
-        await asyncio.to_thread(_save_review_index, game_id, meta, seat, resolved_id, temperature, weight_sig, cache_key)
-        log.info("[复盘缓存命中] 牌谱: %s | 视角: P%d", game_id, seat)
-        return cached
-
-    stats = _performance.get()
-    if stats is not None:
-        stats["mode"] = "首次分析"
-    log.info("[AI推理排队] 准备执行牌谱检讨推理: %s (视角: P%d, 请求模型: %s)", game_id, seat, engine)
-    cached, task = await _start_review_job(
-        observed_flight=observed_flight, game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
-        engine=engine, temperature=temperature, cache_key=cache_key,
-        weight_sha256=weight_sha256,
-    )
-    if cached is not None:
-        return cached
-    assert task is not None
+async def _run_review(game_id: str, mjai_events: list[dict], meta: dict, seat: int,
+                      engine: str, temperature: float) -> dict[str, Any]:
+    task = await _start_review_job(game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
+                                   engine=engine, temperature=temperature)
     return await asyncio.shield(task)
 
 
@@ -1782,8 +895,7 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
 async def _run_nonstream_until_disconnect(request: Request, response: Response, work) -> dict[str, Any]:
     """Stop waiting or preparing after a real ASGI disconnect.
 
-    A started review owns its permit independently, so cancelling this request
-    does not stop its worker or prevent the worker from caching its result.
+    A started review owns its permit independently until its worker finishes.
     """
     async def watch_disconnect() -> None:
         while True:
@@ -1802,7 +914,6 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
             disconnect_task.result()
             raise asyncio.CancelledError
         result = await work_task
-        response.headers["X-Review-Cache-Persisted"] = str(getattr(result, "cache_persisted", False)).lower()
         with _measure("结果返回"):
             return _public_review_result(result)
     finally:
@@ -1818,14 +929,8 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
 async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Response):
     async def work():
         await _wait_for_model_download(req.engine)
-        cached = await asyncio.to_thread(_lookup_indexed_review, req.paipu, req.target_actor, req.engine, req.temperature)
-        if cached is not None:
-            stats = _performance.get()
-            if stats is not None:
-                stats["mode"] = "索引缓存命中"
-            return cached
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
-        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
     return await _run_nonstream_until_disconnect(request, response, work())
 
 
@@ -1834,7 +939,7 @@ async def api_analyze_json(req: AnalyzeJsonReq, request: Request, response: Resp
     async def work():
         await _wait_for_model_download(req.engine)
         game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
-        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
     return await _run_nonstream_until_disconnect(request, response, work())
 
 
@@ -1843,7 +948,7 @@ async def api_analyze_demo(req: AnalyzeDemoReq, request: Request, response: Resp
     async def work():
         await _wait_for_model_download(req.engine)
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
-        return await _run_review_with_cache(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
     return await _run_nonstream_until_disconnect(request, response, work())
 
 
@@ -1857,7 +962,7 @@ class _ClosingStreamingResponse(StreamingResponse):
 
 def _complete_review_event(result: dict[str, Any]) -> str:
     with _measure("结果返回"):
-        return f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(result), 'cache_persisted': getattr(result, 'cache_persisted', False)}, ensure_ascii=False)}\n\n"
+        return f"data: {json.dumps({'type': 'complete', 'result': _public_review_result(result)}, ensure_ascii=False)}\n\n"
 
 
 @app.post("/api/analyze/stream")
@@ -1884,14 +989,6 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
             else:
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
 
-            if req.content is None:
-                cached = await asyncio.to_thread(_lookup_indexed_review, req.paipu, req.target_actor, req.engine, req.temperature)
-                if cached is not None:
-                    stats["mode"] = "索引缓存命中"
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                    yield _complete_review_event(cached)
-                    return
-
             try:
                 game_id, mjai_events, meta, seat = await resolve_game_data(
                     paipu=req.paipu, content=req.content, target_actor=req.target_actor
@@ -1904,18 +1001,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 yield f"data: {json.dumps({'type': 'error', 'detail': '牌谱解析失败，请检查输入后重试。'}, ensure_ascii=False)}\n\n"
                 return
 
-            resolved_id, weight_sig = resolve_engine_cache_info(req.engine)
-            cache_key = review_cache_key(game_id, mjai_events, meta, seat, resolved_id, req.temperature, weight_sig)
-            weight_sha256 = weight_sig.rsplit("_", 1)[-1]
-            cached, observed_flight = await _read_review_or_flight(cache_key, weight_sha256, game_id, seat)
-            if cached is not None:
-                stats["mode"] = "常规缓存命中"
-                await asyncio.to_thread(_save_review_index, game_id, meta, seat, resolved_id, req.temperature, weight_sig, cache_key)
-                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                yield _complete_review_event(cached)
-                return
-
-            stats["mode"] = "首次分析"
+            stats["mode"] = "按需分析"
             if review_semaphore.locked():
                 log.info("[AI排队等待] 服务器正忙 (牌谱: %s, 视角: P%d)", game_id, seat)
                 yield f"data: {json.dumps({'type': 'queued', 'message': '服务器正忙，当前正在排队中...'}, ensure_ascii=False)}\n\n"
@@ -1943,17 +1029,10 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                         listening.clear()
 
             try:
-                cached, task = await _start_review_job(
-                    observed_flight=observed_flight, game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
-                    engine=req.engine, temperature=req.temperature, cache_key=cache_key,
-                    weight_sha256=weight_sha256, progress_callback=on_progress,
+                task = await _start_review_job(
+                    game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
+                    engine=req.engine, temperature=req.temperature, progress_callback=on_progress,
                 )
-                if cached is not None:
-                    yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '命中本地检讨缓存，秒开加载...'}, ensure_ascii=False)}\n\n"
-                    yield _complete_review_event(cached)
-                    return
-
-                assert task is not None
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 15, 'message': '牌谱准备就绪，启动 AI 检讨引擎...'}, ensure_ascii=False)}\n\n"
                 while not task.done():
                     try:
@@ -1972,7 +1051,6 @@ async def api_analyze_stream(req: AnalyzeStreamReq):
                 # The worker may outlive this generator. Drop future progress
                 # notifications instead of accumulating an unconsumed queue.
                 listening.clear()
-                _leave_review_progress(cache_key, on_progress)
 
         except Exception as e:
             log.error("SSE analyze error (%s)", _safe_error_context(e))

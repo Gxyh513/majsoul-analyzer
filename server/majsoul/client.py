@@ -112,6 +112,14 @@ def parse_paipu(text: str) -> tuple[str, int | None]:
     return uuid_, target
 
 
+def parse_paipu_seat(text: str) -> int | None:
+    match = re.search(r"paipu=([^&#\s]+)", text)
+    parts = (match.group(1) if match else text.strip()).split("_")
+    if len(parts) > 1 and parts[1] in ("0", "1", "2", "3"):
+        return int(parts[1])
+    return None
+
+
 # --------------------------------------------------------------------------
 class MajsoulClient:
     def __init__(self, cache_dir: Path, base: str = CN_BASE, origin: str = CN_ORIGIN):
@@ -133,7 +141,8 @@ class MajsoulClient:
         self.nickname: str | None = None
         self.access_token: str | None = None
         self.current_account: str | None = None
-        self._lock = asyncio.Lock()
+        self._record_proto: tuple[str, LiqiProto] | None = None
+        self.protocol_version: str | None = None
 
     # ---------------------------------------------------------------- setup
     @property
@@ -166,6 +175,8 @@ class MajsoulClient:
             # 2. Load or fetch liqi.json schema (via legacy version.json if not cached)
             ver_data = await self._http_json(c, f"{self.base}/version.json?randv={random.randint(10**15, 10**16)}")
             legacy_ver = ver_data["version"]
+            if not isinstance(legacy_ver, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", legacy_ver):
+                raise MajsoulError("雀魂协议版本无效")
             liqi_cache = self.cache_dir / f"liqi-{legacy_ver}.json"
             if liqi_cache.exists():
                 liqi = json.loads(liqi_cache.read_text(encoding="utf8"))
@@ -194,6 +205,8 @@ class MajsoulClient:
             except Exception:  # noqa: BLE001
                 pass
             self.proto = LiqiProto(liqi)
+            self.protocol_version = legacy_ver
+            self._record_proto = (legacy_ver, self.proto)
 
             # 3. Fetch active WebSocket gateway routes for WebGL 4.0
             domains: list[str] = []
@@ -304,25 +317,33 @@ class MajsoulClient:
                     fut.set_exception(MajsoulError("连接已断开"))
             self._pending.clear()
 
-    async def call(self, method: str, timeout: float = 20, **fields):
+    async def call(self, method: str, timeout: float = 20, *, return_payload: bool = False, **fields):
         """Call ``.lq.Lobby.<method>`` with keyword fields."""
         full = method if method.startswith(".") else f".lq.Lobby.{method}"
         req_t, res_t = self.proto.methods[full]
         req = self.proto.get(req_t)()
         _fill(req, fields)
-        idx = self._idx
-        self._idx = self._idx % 60007 + 1
+        for _ in range(60007):
+            idx = self._idx
+            self._idx = self._idx % 60007 + 1
+            if idx not in self._pending:
+                break
+        else:
+            raise MajsoulError("雀魂会话的并发请求过多")
         pkt = b"\x02" + idx.to_bytes(2, "little") + self.proto.wrap(full, req.SerializeToString())
         fut = asyncio.get_running_loop().create_future()
         self._pending[idx] = fut
-        await self._ws.send(pkt)
-        raw = await asyncio.wait_for(fut, timeout)
+        try:
+            await self._ws.send(pkt)
+            raw = await asyncio.wait_for(fut, timeout)
+        finally:
+            self._pending.pop(idx, None)
         _, data = self.proto.unwrap(raw)
         res = self.proto.decode(res_t, data)
         if res.HasField("error") and res.error.code:
             code = int(res.error.code)
             raise MajsoulError(f"雀魂接口 {method} 返回错误码 {code}" + _err_hint(code), code=code)
-        return res
+        return (res, data) if return_payload else res
 
     # ---------------------------------------------------------------- auth
     def _device(self, random_key: str):
@@ -409,30 +430,59 @@ class MajsoulClient:
         self.nickname = res.account.nickname if res.HasField("account") else None
 
     # ---------------------------------------------------------------- records
-    async def fetch_record(self, game_uuid: str) -> dict:
-        res = await self.call("fetchGameRecord", game_uuid=game_uuid, client_version_string=self.client_version_string)
-        data = res.data
-        if not data and res.data_url:
+    async def fetch_record(self, game_uuid: str):
+        from server.record_store import RawRecord
+
+        res, payload = await self.call("fetchGameRecord", game_uuid=game_uuid,
+                                       client_version_string=self.client_version_string, return_payload=True)
+        detail = b""
+        if not res.data and res.data_url:
             async with httpx.AsyncClient(follow_redirects=True) as c:
                 r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=60)
                 r.raise_for_status()
-                data = r.content
-        name, payload = self.proto.unwrap(data)
-        detail = self.proto.decode(name, payload)
-        actions = []
-        if getattr(detail, "version", 0) < 210715 and len(detail.records) > 0:
-            for rec in detail.records:
-                n, d = self.proto.unwrap(rec)
-                actions.append(_to_dict(n, self.proto.decode(n, d)))
-        else:
-            for act in detail.actions:
-                if act.result:
-                    n, d = self.proto.unwrap(act.result)
-                    actions.append(_to_dict(n, self.proto.decode(n, d)))
-        from google.protobuf.json_format import MessageToDict
+                detail = r.content
+        if not self.protocol_version or res.head.uuid != game_uuid or not (res.data or detail):
+            raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
+        return RawRecord(self.protocol_version, payload, detail)
 
-        head = MessageToDict(res.head, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
-        return {"head": head, "actions": actions, "fetched_at": int(time.time())}
+    def decode_record(self, record, game_uuid: str) -> dict:
+        from google.protobuf.json_format import MessageToDict
+        from server.record_store import CorruptRecordError
+
+        if self._record_proto is not None and self._record_proto[0] == record.protocol_version:
+            proto = self._record_proto[1]
+        else:
+            filename = f"liqi-{record.protocol_version}.json"
+            paths = (self.cache_dir / filename, Path(__file__).resolve().parents[2] / "data" / "cache" / filename)
+            try:
+                path = next(path for path in paths if path.is_file())
+                proto = LiqiProto(json.loads(path.read_text(encoding="utf8")))
+            except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+                raise MajsoulError("原始牌谱对应的雀魂协议文件不可用，请恢复协议文件。") from exc
+            self._record_proto = (record.protocol_version, proto)
+        try:
+            res = proto.decode("ResGameRecord", record.response)
+            data = res.data or record.detail
+            if res.head.uuid != game_uuid or not data or (res.HasField("error") and res.error.code):
+                raise ValueError("invalid game response")
+            name, payload = proto.unwrap(data)
+            if name not in (".lq.GameDetailRecords", "lq.GameDetailRecords", "GameDetailRecords"):
+                raise ValueError("invalid game detail")
+            detail = proto.decode(name, payload)
+            actions = []
+            if getattr(detail, "version", 0) < 210715 and len(detail.records) > 0:
+                for rec in detail.records:
+                    n, d = proto.unwrap(rec)
+                    actions.append(_to_dict(n, proto.decode(n, d)))
+            else:
+                for act in detail.actions:
+                    if act.result:
+                        n, d = proto.unwrap(act.result)
+                        actions.append(_to_dict(n, proto.decode(n, d)))
+            head = MessageToDict(res.head, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
+            return {"head": head, "actions": actions}
+        except Exception as exc:
+            raise CorruptRecordError("原始牌谱无法解码，请从备份恢复；系统不会自动重新下载。") from exc
 
     async def fetch_recent_records(self, count: int = 15) -> list[dict]:
         from google.protobuf.json_format import MessageToDict
