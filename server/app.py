@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
-from .paipu_performance import measure as _measure, performance as _performance
+from .paipu_performance import measure as _measure, performance as _performance, snapshot as _performance_snapshot
 from .majsoul.session import SessionLock
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
 from .engine.reviewer import EngineManager, ModelInferenceError, review_game
@@ -46,13 +46,41 @@ def _log_performance(stats: dict[str, Any], started: float) -> None:
         ("Protobuf解码", "ms", 1), ("Protobuf实际解码", "ms", 1), ("JSON解析", "ms", 1),
         ("MJAI转换", "ms", 1), ("原始数据大小", "KB", 1024), ("MJAI数据大小", "KB", 1024),
         ("结果返回", "ms", 1),
+        ("本地记录检查", "ms", 1), ("本地文件读取", "ms", 1),
+        ("并发任务等待", "ms", 1), ("文件锁等待", "ms", 1),
+        ("雀魂连接准备", "ms", 1), ("WebSocket连接", "ms", 1), ("雀魂线路握手", "ms", 1),
+        ("雀魂登录", "ms", 1), ("雀魂牌谱请求", "ms", 1),
+        ("外部数据下载", "ms", 1), ("原始牌谱保存", "ms", 1),
     )
-    details = " ".join(
-        f"{stage}={stats[stage] / divisor:.1f}{unit}" if stage in stats else f"{stage}=N/A"
-        for stage, unit, divisor in fields
-    )
+    stats, now = _performance_snapshot(stats)
+    active = stats.get("_active_stages", {})
+
+    def format_field(stage: str, unit: str, divisor: int) -> str:
+        running = tuple(active.get(stage, ()))
+        if stage not in stats and not running:
+            return f"{stage}=N/A"
+        value = stats.get(stage, 0.0) + sum((now - start) * 1000 for start in running)
+        return f"{stage}={value / divisor:.1f}{unit}{'(进行中)' if running else ''}"
+
+    details = " ".join(format_field(*field) for field in fields)
+    indicators = ("牌谱获取方式", "牌谱获取结果", "是否命中本地记录", "是否等待文件锁", "雀魂连接结果",
+                  "雀魂连接准备失败次数", "WebSocket连接失败次数", "雀魂线路握手失败次数", "雀魂登录失败次数",
+                  "雀魂牌谱请求失败次数", "外部数据下载失败次数", "最近雀魂失败类型", "最后失败阶段")
+    def format_indicator(name: str) -> str:
+        value = stats.get(name)
+        if isinstance(value, bool):
+            value = "是" if value else "否"
+        return f"{name}={value if value is not None else 'N/A'}"
+
+    details += " " + " ".join(format_indicator(name) for name in indicators)
+    if "原始牌谱读取" in stats or active.get("原始牌谱读取"):
+        details += " 原始牌谱读取范围=本地检查至获取返回或中断"
+    if "雀魂抓取" in stats or active.get("雀魂抓取"):
+        details += " 雀魂抓取范围=账号选择至抓取返回或失败"
+    if "雀魂牌谱请求" in stats or active.get("雀魂牌谱请求"):
+        details += " 雀魂牌谱请求范围=含响应解码"
     log.info("[Paipu Performance] %s %s 总耗时=%.1fms", stats.get("mode", "未完成"), details,
-             (time.perf_counter() - started) * 1000)
+             (now - started) * 1000)
 
 
 async def _record_mjai_size(events: list[dict]) -> None:
@@ -594,8 +622,27 @@ async def resolve_game_data(
             game_uuid, url_acc_id = parse_paipu(raw_input)
     except (MajsoulError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="无法识别的牌谱 ID，请检查输入。") from exc
-    with _measure("原始牌谱读取"):
-        stored = await get_or_download_record(game_uuid)
+    stats = _performance.get()
+    if stats is not None:
+        stats["牌谱获取结果"] = "进行中"
+    try:
+        with _measure("原始牌谱读取"):
+            stored = await get_or_download_record(game_uuid)
+    except asyncio.CancelledError:
+        if stats is not None:
+            stats["牌谱获取结果"] = "已取消"
+        raise
+    except HTTPException as exc:
+        if stats is not None:
+            stats["牌谱获取结果"] = f"失败(HTTP{exc.status_code})"
+        raise
+    except Exception:
+        if stats is not None:
+            stats["牌谱获取结果"] = "失败"
+        raise
+    else:
+        if stats is not None:
+            stats["牌谱获取结果"] = "成功"
     try:
         if isinstance(stored, RawRecord):
             stats = _performance.get()

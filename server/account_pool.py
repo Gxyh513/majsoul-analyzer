@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import HTTPException
 
 from server.majsoul.client import MajsoulClient, MajsoulError
+from server.paipu_performance import get_value, measure, set_value
 
 if TYPE_CHECKING:
     import server.app as server_app
@@ -280,7 +281,14 @@ async def login_with_account_spec(
 
     log.info("[连接重建] 建立雀魂 WebSocket 会话")
     await client.close()
-    await client.connect()
+    set_value("雀魂连接结果", "进行中")
+    try:
+        await client.connect()
+    except Exception:
+        set_value("雀魂连接结果", "失败")
+        raise
+    else:
+        set_value("雀魂连接结果", "成功")
     token = acc.get("access_token")
     account = acc.get("account")
     password = acc.get("password")
@@ -289,7 +297,8 @@ async def login_with_account_spec(
     logged_in = False
     if token:
         try:
-            await client.login_token(token)
+            with measure("雀魂登录", failure_count="雀魂登录失败次数"):
+                await client.login_token(token)
             client.current_account = account
             logged_in = True
             log.info("[雀魂登录] Token 登录成功 | 账号: %s | 昵称: %s | ID: %s", masked, client.nickname, client.account_id)
@@ -299,7 +308,8 @@ async def login_with_account_spec(
     if not logged_in:
         if account and password:
             try:
-                await client.login_password(account, password)
+                with measure("雀魂登录", failure_count="雀魂登录失败次数"):
+                    await client.login_password(account, password)
                 client.current_account = account
                 logged_in = True
                 log.info("[雀魂登录] 密码登录成功 | 账号: %s | 昵称: %s | ID: %s", masked, client.nickname, client.account_id)
@@ -367,6 +377,7 @@ async def fetch_record_with_failover(
             accounts.insert(0, {"account": client.current_account, "account_id": client.account_id,
                                 "access_token": client.access_token})
     if not accounts:
+        set_value("最近雀魂失败类型", "未配置账号")
         raise HTTPException(status_code=401, detail="雀魂牌谱服务暂不可用，请检查账号设置或上传牌谱 JSON 文件。")
 
     @asynccontextmanager
@@ -390,6 +401,7 @@ async def fetch_record_with_failover(
             if _rate_limited_until.get(cooldown, 0) > time.monotonic():
                 attempted.add(key)
                 outcomes.append("rate_limited")
+                set_value("最近雀魂失败类型", "抓取限流")
             else:
                 _rate_limited_until.pop(cooldown, None)
                 available.append(account)
@@ -419,6 +431,10 @@ async def fetch_record_with_failover(
                     log.warning("[账号登录失败] %s", _redact_error(error, account.get("password"), account.get("access_token")))
                     text = str(error).lower()
                     outcomes.append("network_error" if any(x in text for x in ("timeout", "connect", "network", "getaddrinfo")) else "login_failed")
+                    if get_value("雀魂连接结果") == "失败":
+                        set_value("最近雀魂失败类型", "连接准备或网络失败")
+                    else:
+                        set_value("最近雀魂失败类型", "网络失败" if outcomes[-1] == "network_error" else "登录失败")
                     attempted.add(key)
                     await client.close()
             continue
@@ -427,6 +443,7 @@ async def fetch_record_with_failover(
         code = getattr(failure, "code", None)
         text = str(failure)
         if code == 1203 or "1203" in text:
+            set_value("最近雀魂失败类型", "牌谱不存在或无权访问")
             raise HTTPException(status_code=400, detail="雀魂牌谱不存在、已被删除或属于匿名/私密对局无权查看 (错误码 1203)。") from failure
         attempted.add(key)
         if code == 540 or "540" in text:
@@ -439,6 +456,10 @@ async def fetch_record_with_failover(
             outcomes.append("majsoul_error")
         else:
             outcomes.append("network_error")
+        set_value("最近雀魂失败类型", {
+            "rate_limited": "抓取限流", "auth_error": "登录失效",
+            "majsoul_error": "雀魂接口失败", "network_error": "网络失败",
+        }[outcomes[-1]])
         log.warning("[牌谱抓取失败] %s", _redact_error(failure, account.get("password"), account.get("access_token"), getattr(client, "access_token", None)))
         async with client_lock:
             if client._ws is session:

@@ -238,19 +238,21 @@ class MajsoulClient:
 
     async def connect(self):
         if self.proto is None:
-            await self.prepare()
+            with measure("雀魂连接准备", failure_count="雀魂连接准备失败次数"):
+                await self.prepare()
         last_err = None
         connected_domain = None
         for d in self.domains:
             url = f"wss://{d}/gateway"
             try:
-                self._ws = await websockets.connect(
-                    url,
-                    origin=self.origin,
-                    user_agent_header=UA,
-                    max_size=2**26,
-                    open_timeout=15,
-                )
+                with measure("WebSocket连接", failure_count="WebSocket连接失败次数"):
+                    self._ws = await websockets.connect(
+                        url,
+                        origin=self.origin,
+                        user_agent_header=UA,
+                        max_size=2**26,
+                        open_timeout=15,
+                    )
                 connected_domain = d
                 log.info("connected to %s", url)
                 break
@@ -272,8 +274,9 @@ class MajsoulClient:
         )
         fut = asyncio.get_running_loop().create_future()
         self._pending[idx] = fut
-        await self._ws.send(pkt)
-        await asyncio.wait_for(fut, timeout=15)
+        with measure("雀魂线路握手", failure_count="雀魂线路握手失败次数"):
+            await self._ws.send(pkt)
+            await asyncio.wait_for(fut, timeout=15)
 
     async def close(self):
         self.logged_in = False
@@ -436,14 +439,16 @@ class MajsoulClient:
     async def fetch_record(self, game_uuid: str):
         from server.record_store import RawRecord
 
-        res, payload = await self.call("fetchGameRecord", game_uuid=game_uuid,
-                                       client_version_string=self.client_version_string, return_payload=True)
+        with measure("雀魂牌谱请求", failure_count="雀魂牌谱请求失败次数"):
+            res, payload = await self.call("fetchGameRecord", game_uuid=game_uuid,
+                                           client_version_string=self.client_version_string, return_payload=True)
         detail = b""
         if not res.data and res.data_url:
-            async with httpx.AsyncClient(follow_redirects=True) as c:
-                r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=60)
-                r.raise_for_status()
-                detail = r.content
+            with measure("外部数据下载", failure_count="外部数据下载失败次数"):
+                async with httpx.AsyncClient(follow_redirects=True) as c:
+                    r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=60)
+                    r.raise_for_status()
+                    detail = r.content
         if not self.protocol_version or res.head.uuid != game_uuid or not (res.data or detail):
             raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
         return RawRecord(self.protocol_version, payload, detail)
