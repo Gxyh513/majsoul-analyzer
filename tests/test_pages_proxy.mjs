@@ -206,3 +206,52 @@ test("proxy rejects redirects and masks upstream authentication errors", async (
     globalThis.fetch = realFetch;
   }
 });
+
+test("admin auth errors preserve safe diagnostics while analysis auth errors stay masked", async () => {
+  const makeAdminRequest = (path = "/api/admin/login") => new Request(`https://pages.example${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "wrong-key" }),
+  });
+  const cases = [
+    [401, "管理员密钥错误"],
+    [401, "管理员未登录或登录已过期"],
+    [401, "远程访问需要有效的 MAJSOUL_API_TOKEN"],
+    [403, "来源不允许访问此服务"],
+  ];
+  try {
+    for (const [status, detail] of cases) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ detail }), {
+        status, headers: { "Content-Type": "application/json" },
+      });
+      const response = await onRequest({
+        request: makeAdminRequest(),
+        env: { MAJSOUL_API_TOKEN: "server-only-secret" },
+      });
+      assert.equal(response.status, status);
+      assert.deepEqual(await response.json(), { detail });
+    }
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      detail: "管理员请求未通过鉴权，请检查管理员密钥、登录状态或服务鉴权配置",
+    }), { status: 401, headers: { "Content-Type": "application/json" } });
+    const unknown = await onRequest({
+      request: makeAdminRequest(),
+      env: { MAJSOUL_API_TOKEN: "server-only-secret" },
+    });
+    assert.equal(unknown.status, 401);
+    assert.equal((await unknown.json()).detail.includes("server-only-secret"), false);
+
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      detail: "请先在魔搭环境变量设置 MAJSOUL_ADMIN_KEY",
+    }), { status: 503, headers: { "Content-Type": "application/json" } });
+    const missingAdminKey = await onRequest({
+      request: makeAdminRequest(),
+      env: { MAJSOUL_API_TOKEN: "server-only-secret" },
+    });
+    assert.equal(missingAdminKey.status, 503);
+    assert.equal((await missingAdminKey.json()).detail, "请先在魔搭环境变量设置 MAJSOUL_ADMIN_KEY");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
