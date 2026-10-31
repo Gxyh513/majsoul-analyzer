@@ -46,6 +46,14 @@ LOCAL_PROTOCOL_VERSION = "0.11.252.w"
 LOCAL_PROTOCOL_SHA256 = "3d9191ef064daeed099feb482501e2d24e7c1da80a738e9b671b4618f178fed2"
 BUNDLED_PROTOCOL_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 ROUTES_CACHE_TTL_SECONDS = 300
+# Bound individual network waits and give each download one overall retry budget.
+ROUTES_HTTP_TIMEOUT_SECONDS = 6
+ROUTES_DISCOVERY_TIMEOUT_SECONDS = 15
+WEBSOCKET_OPEN_TIMEOUT_SECONDS = 8
+WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS = 6
+RECORD_RPC_TIMEOUT_SECONDS = 12
+GATEWAY_FAILURE_COOLDOWN_SECONDS = 60
+_GATEWAY_FAILED_UNTIL: dict[str, float] = {}
 _PROTOCOL_LOCK = threading.Lock()
 _PROTOCOL_CACHE: dict[str, LiqiProto] = {}
 _ROUTE_CACHE: dict[tuple, tuple[float, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
@@ -77,6 +85,10 @@ class MajsoulError(Exception):
     def __init__(self, message: str, code: int | None = None):
         super().__init__(message)
         self.code = code
+
+
+class MajsoulTokenInvalid(MajsoulError):
+    """The server explicitly rejected a token; password fallback is allowed."""
 
 
 @lru_cache(maxsize=8)
@@ -214,7 +226,7 @@ class MajsoulClient:
     async def _http_json(self, client: httpx.AsyncClient, url: str, *, request_stage: str | None = None,
                          json_stage: str | None = None):
         with measure(request_stage) if request_stage else nullcontext():
-            r = await client.get(url, headers={"User-Agent": UA}, timeout=20)
+            r = await client.get(url, headers={"User-Agent": UA}, timeout=ROUTES_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         with measure(json_stage) if json_stage else nullcontext():
             return r.json()
@@ -236,23 +248,27 @@ class MajsoulClient:
             route_ids: dict[str, str] = {}
             route_hosts = list(DEFAULT_ROUTE_HOSTS)
             random.shuffle(route_hosts)
-            async with httpx.AsyncClient(follow_redirects=True) as c:
-                for gw in route_hosts:
-                    try:
-                        data = await self._http_json(
-                            c,
-                            f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
-                            request_stage="雀魂routes线路请求耗时",
-                        )
-                        for rt in data.get("data", {}).get("routes", []):
-                            if rt.get("state") != "maintenancing" and rt.get("domain"):
-                                dom = rt["domain"]
-                                domains.append(dom)
-                                route_ids[dom] = rt.get("id") or dom.split(".")[0]
-                        if domains:
-                            break
-                    except Exception as e:  # noqa: BLE001
-                        log_warning(事件="雀魂线路获取", 状态="失败", 网关=gw, 错误原因=str(e))
+            try:
+                async with asyncio.timeout(ROUTES_DISCOVERY_TIMEOUT_SECONDS):
+                    async with httpx.AsyncClient(follow_redirects=True) as c:
+                        for gw in route_hosts:
+                            try:
+                                data = await self._http_json(
+                                    c,
+                                    f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
+                                    request_stage="雀魂routes线路请求耗时",
+                                )
+                                for rt in data.get("data", {}).get("routes", []):
+                                    if rt.get("state") != "maintenancing" and rt.get("domain"):
+                                        dom = rt["domain"]
+                                        domains.append(dom)
+                                        route_ids[dom] = rt.get("id") or dom.split(".")[0]
+                                if domains:
+                                    break
+                            except Exception as e:  # noqa: BLE001
+                                log_warning(事件="雀魂线路获取", 状态="失败", 网关=gw, 错误原因=str(e))
+            except TimeoutError as exc:
+                raise MajsoulError("获取雀魂服务器线路超时") from exc
             if not domains:
                 raise MajsoulError("获取雀魂服务器线路失败")
             cached = (time.monotonic() + ROUTES_CACHE_TTL_SECONDS, tuple(domains), tuple(route_ids.items()))
@@ -265,9 +281,15 @@ class MajsoulClient:
         with measure("雀魂连接准备", failure_count="雀魂连接准备失败次数"):
             await self.prepare()
         last_err = None
-        connected_domain = None
-        for d in self.domains:
-            url = f"wss://{d}/gateway"
+        # Prefer gateways that have not recently timed out, but still attempt all
+        # discovered routes if necessary instead of permanently blacklisting them.
+        now = time.monotonic()
+        domains = sorted(
+            self.domains,
+            key=lambda domain: _GATEWAY_FAILED_UNTIL.get(domain, 0) > now,
+        )
+        for domain in domains:
+            url = f"wss://{domain}/gateway"
             try:
                 with measure("WebSocket连接", failure_count="WebSocket连接失败次数"):
                     self._ws = await websockets.connect(
@@ -275,32 +297,41 @@ class MajsoulClient:
                         origin=self.origin,
                         user_agent_header=UA,
                         max_size=2**26,
-                        open_timeout=15,
+                        open_timeout=WEBSOCKET_OPEN_TIMEOUT_SECONDS,
                     )
-                connected_domain = d
-                log_debug(事件="WebSocket连接", 状态="成功", 地址=url)
-                break
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                log_warning(事件="WebSocket连接", 状态="失败", 地址=url, 错误原因=str(e))
-        else:
-            raise MajsoulError(f"无法连接雀魂服务器: {last_err}")
-        self._reader = asyncio.create_task(self._read_loop())
+                self._reader = asyncio.create_task(self._read_loop())
 
-        # Send Unity WebGL 4.0 Route.requestConnection handshake
-        route_id = self._route_ids.get(connected_domain or "", "route-2")
-        idx = self._idx
-        self._idx = self._idx % 60007 + 1
-        pkt = (
-            b"\x02"
-            + idx.to_bytes(2, "little")
-            + self.proto.wrap(".lq.Route.requestConnection", _build_route_request_connection(route_id))
-        )
-        fut = asyncio.get_running_loop().create_future()
-        self._pending[idx] = fut
-        with measure("雀魂线路握手", failure_count="雀魂线路握手失败次数"):
-            await self._ws.send(pkt)
-            await asyncio.wait_for(fut, timeout=15)
+                # A TCP/WebSocket connection is not usable until the route
+                # handshake succeeds. Try another gateway on handshake failure.
+                route_id = self._route_ids.get(domain, "route-2")
+                idx = self._idx
+                self._idx = self._idx % 60007 + 1
+                pkt = (
+                    b"\x02"
+                    + idx.to_bytes(2, "little")
+                    + self.proto.wrap(".lq.Route.requestConnection", _build_route_request_connection(route_id))
+                )
+                fut = asyncio.get_running_loop().create_future()
+                self._pending[idx] = fut
+                try:
+                    with measure("雀魂线路握手", failure_count="雀魂线路握手失败次数"):
+                        await asyncio.wait_for(self._ws.send(pkt), timeout=WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS)
+                        await asyncio.wait_for(fut, timeout=WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS)
+                finally:
+                    self._pending.pop(idx, None)
+
+                _GATEWAY_FAILED_UNTIL.pop(domain, None)
+                log_debug(事件="WebSocket连接", 状态="成功", 地址=url)
+                return
+            except asyncio.CancelledError:
+                await self.close()
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                _GATEWAY_FAILED_UNTIL[domain] = time.monotonic() + GATEWAY_FAILURE_COOLDOWN_SECONDS
+                log_warning(事件="WebSocket连接", 状态="失败", 地址=url, 错误原因=str(exc))
+                await self.close()
+        raise MajsoulError(f"无法连接雀魂服务器: {last_err}") from last_err
 
     async def close(self):
         self.logged_in = False
@@ -314,7 +345,7 @@ class MajsoulClient:
                 pass
         if self._ws:
             try:
-                await self._ws.close()
+                await asyncio.wait_for(self._ws.close(), timeout=3)
             except Exception:  # noqa: BLE001
                 pass
         self._ws = None
@@ -431,24 +462,34 @@ class MajsoulClient:
         return res
 
     async def login_token(self, token: str):
-        # check token validity first
-        chk = await self.call("oauth2Check", type=0, access_token=token)
+        # Only an explicit token rejection permits a password fallback.
+        try:
+            chk = await self.call("oauth2Check", type=0, access_token=token)
+        except MajsoulError as exc:
+            if exc.code == 109:
+                raise MajsoulTokenInvalid("access_token 无效或已过期", code=109) from exc
+            raise
         if not getattr(chk, "has_account", True):
-            raise MajsoulError("access_token 无效或已过期")
+            raise MajsoulTokenInvalid("access_token 无效或已过期", code=109)
         rkey = str(uuid.uuid4())
-        res = await self.call(
-            "oauth2Login",
-            type=0,
-            access_token=token,
-            reconnect=False,
-            device=self._device(rkey),
-            random_key=rkey,
-            client_version=self.client_version_info,
-            gen_access_token=False,
-            currency_platforms=[1, 2, 5, 6, 8, 10, 11],
-            client_version_string=self.client_version_string,
-            tag="cn",
-        )
+        try:
+            res = await self.call(
+                "oauth2Login",
+                type=0,
+                access_token=token,
+                reconnect=False,
+                device=self._device(rkey),
+                random_key=rkey,
+                client_version=self.client_version_info,
+                gen_access_token=False,
+                currency_platforms=[1, 2, 5, 6, 8, 10, 11],
+                client_version_string=self.client_version_string,
+                tag="cn",
+            )
+        except MajsoulError as exc:
+            if exc.code == 109:
+                raise MajsoulTokenInvalid("access_token 无效或已过期", code=109) from exc
+            raise
         self._after_login(res)
         self.access_token = token
         return res
@@ -466,7 +507,8 @@ class MajsoulClient:
 
         with measure("雀魂牌谱请求", failure_count="雀魂牌谱请求失败次数"):
             res, payload = await self.call("fetchGameRecord", game_uuid=game_uuid,
-                                           client_version_string=self.client_version_string, return_payload=True)
+                                           client_version_string=self.client_version_string,
+                                           timeout=RECORD_RPC_TIMEOUT_SECONDS, return_payload=True)
         detail = b""
         if not res.data and res.data_url:
             with measure("外部数据下载", failure_count="外部数据下载失败次数"):

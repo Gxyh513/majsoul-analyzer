@@ -479,3 +479,61 @@ def test_persist_token_preserves_custom_settings(tmp_path):
         assert saved["password"] == "secret_password"
         assert saved["backup_accounts"][0]["custom_meta"] == "preserve_this"
         assert saved["backup_accounts"][0]["password"] == "backup_secret"
+
+@pytest.mark.anyio
+async def test_token_network_timeout_does_not_fall_back_to_password():
+    from types import SimpleNamespace
+    from server.account_pool import login_with_account_spec
+    client = SimpleNamespace(
+        close=AsyncMock(), connect=AsyncMock(),
+        login_token=AsyncMock(side_effect=TimeoutError()),
+        login_password=AsyncMock(), nickname=None,
+    )
+    with pytest.raises(TimeoutError):
+        await login_with_account_spec(
+            {"account": "demo@example.com", "password": "password", "access_token": "token"},
+            client=client,
+        )
+    client.login_password.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_confirmed_token_rejection_allows_password_fallback():
+    from types import SimpleNamespace
+    from server.account_pool import login_with_account_spec
+    from server.majsoul.client import MajsoulTokenInvalid
+    client = SimpleNamespace(
+        close=AsyncMock(), connect=AsyncMock(),
+        login_token=AsyncMock(side_effect=MajsoulTokenInvalid("expired")),
+        login_password=AsyncMock(), nickname="测试账号", access_token="old",
+        current_account=None,
+    )
+    await login_with_account_spec(
+        {"account": "demo@example.com", "password": "password", "access_token": "old"},
+        client=client,
+    )
+    client.login_password.assert_awaited_once_with("demo@example.com", "password")
+
+
+@pytest.mark.anyio
+async def test_total_record_download_budget(monkeypatch):
+    from types import SimpleNamespace
+    import server.account_pool as pool
+    import server.app as app
+    monkeypatch.setattr(pool, "FETCH_RECORD_TOTAL_TIMEOUT_SECONDS", 0.01)
+    acc = {"account": "demo", "account_id": 12}
+    async def slow_fetch(_uuid):
+        await asyncio.sleep(0.1)
+
+    client = SimpleNamespace(
+        logged_in=True, _ws=SimpleNamespace(closed=False),
+        account_id=12, current_account="demo", access_token="old",
+        fetch_record=AsyncMock(side_effect=slow_fetch),
+    )
+    monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
+    monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: True)
+    with pytest.raises(HTTPException) as exc:
+        await pool.fetch_record_with_failover(
+            "241026-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", client, SessionLock()
+        )
+    assert exc.value.status_code == 503
