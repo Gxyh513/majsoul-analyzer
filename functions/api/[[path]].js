@@ -292,7 +292,7 @@ export async function onRequest({ request, env }) {
   if (upstream.status === 401 || upstream.status === 403) {
     if (route.admin) {
       // Admin endpoints have their own 401 responses (wrong admin key or
-      // expired session). Preserve only known, non-sensitive diagnostics so
+      // invalid key). Preserve only known, non-sensitive diagnostics so
       // the Pages proxy does not mislabel them as an upstream API-token fault.
       let detail = "管理员密钥无效，请检查管理员密钥或服务鉴权配置";
       try {
