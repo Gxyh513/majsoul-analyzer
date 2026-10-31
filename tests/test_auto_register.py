@@ -327,3 +327,36 @@ def test_download_repo_zipball_extracts_files(tmp_path: Path):
     assert ok is True
     assert err == ""
     assert (tmp_path / "majsoul_register.py").is_file()
+def test_ensure_private_repo_force_update(monkeypatch, tmp_path: Path):
+    """测试 force_update=True 能强制重新拉取最新代码并覆盖本地旧文件。"""
+    import io
+    import zipfile
+    from server.account_register import ensure_private_repo
+
+    target_dir = tmp_path / "register"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    old_file = target_dir / "majsoul_register.py"
+    old_file.write_text("# old version\n", encoding="utf-8")
+
+    monkeypatch.setenv("MAJSOUL_REGISTER_DIR", str(target_dir))
+    monkeypatch.setenv("MAJSOUL_REGISTER_GITHUB_TOKEN", "mock_token")
+
+    # 1. 默认 force_update=False，直接复用本地已有文件
+    reg_dir, err = ensure_private_repo(force_update=False)
+    assert reg_dir == target_dir
+    assert old_file.read_text(encoding="utf-8") == "# old version\n"
+
+    # 2. force_update=True，触发下载并覆盖
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("hash/majsoul_register.py", "# new version updated\n")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = buf.getvalue()
+
+    with patch("httpx.Client.get", return_value=mock_resp):
+        reg_dir, err = ensure_private_repo(force_update=True)
+
+    assert reg_dir == target_dir
+    assert old_file.read_text(encoding="utf-8") == "# new version updated\n"
