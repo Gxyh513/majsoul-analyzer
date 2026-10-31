@@ -128,6 +128,22 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 每次分析均从原始牌谱重新解码、转换并运行 Mortal；不会保存分析结果。雀魂牌谱下载后会先持久化，保存失败时接口返回错误。
 
+## 管理员账号池
+
+网站管理员入口为 `/admin`（例如 `https://majsoul.ccwu.cc/admin`）。
+在 ModelScope Studio 后端环境变量中配置 `MAJSOUL_ADMIN_KEY`，然后使用该密钥登录；Pages Functions 仍使用既有的 `MAJSOUL_API_TOKEN` 代理私有接口，公开网页不包含任何后台密钥。
+
+管理员可添加、编辑、删除、启停和批量导入账号。**每条记录必须同时提供雀魂账号、密码和 Access Token**。
+批量文本格式为每行 `账号|密码|Token|备注`，也支持 JSON 账号数组。
+所有启用且空闲的账号平等随机参与牌谱下载，同一账号同时最多处理一个抓谱任务；Token 确认失效才使用密码登录并更新 Token。
+牌谱网络请求超时优先换 WebSocket 线路，账号出现 540 限流则冷却 24 小时。
+每小时针对空闲账号执行一次认证状态检测，不下载牌谱。
+
+账号数据保存在 SQLite：优先使用魔搭已有的 `/mnt/workspace/majsoul-analyzer/admin_accounts.sqlite3`。
+如果目录的挂载方式不能支持 SQLite，可以设置后端环境变量 `MAJSOUL_ADMIN_DB_PATH` 为其他可写位置。若默认持久化目录无法初始化，会记录告警并退回本地 `data/admin_accounts.sqlite3`（重启可能丢失）。
+首次成功初始化会从旧配置导入符合三项必填条件的账号，之后以数据库为唯一账号池来源，删除账号不会被旧环境变量重新添加。
+账号凭据在数据库中按原样保存，不会返回到普通 API 或输出到日志。请不要向他人公开后台或数据库文件。
+
 ## 数据与安全
 
 本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。历史浏览器和后端检讨缓存不再使用，但不会自动删除。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。

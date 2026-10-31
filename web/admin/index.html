@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>雀魂账号管理 · majsoul-analyzer</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar"><div class="brand"><span class="mark">雀</span><div><strong>雀魂账号管理</strong><small>majsoul-analyzer /admin</small></div></div><a href="/">返回分析页面</a></header>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <section id="loginPanel" class="login-panel">
+      <div class="panel"><h1>管理员登录</h1><p>输入魔搭环境变量中配置的管理员密钥。</p>
+        <form id="loginForm"><label for="adminKey">管理员密钥</label><input id="adminKey" type="password" required autocomplete="current-password" placeholder="请输入管理员密钥" /><button type="submit">登录管理后台</button></form>
+      </div>
+    </section>
+    <main id="dashboard" hidden>
+      <div class="section-heading"><div><h1>账号池总览</h1><p>空闲随机选取，每个账号最多处理一个抓谱任务。</p></div><div class="toolbar"><button id="reloadBtn" class="secondary">刷新</button><button id="logoutBtn" class="secondary">退出登录</button></div></div>
+      <section id="metrics" class="metrics" aria-label="账号统计"></section>
+      <section class="panel">
+        <div class="section-heading"><div><h2>账号列表</h2><p>Token 优先，Token 确认失效后才使用密码更新。</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>账号 / 昵称</th><th>状态</th><th>Token</th><th>成功 / 失败</th><th>最近成功</th><th>平均抓谱</th><th>操作</th></tr></thead><tbody id="accountRows"></tbody></table></div>
+      </section>
+      <div class="form-grid">
+        <section class="panel"><h2>添加账号</h2><p>账号、密码、Token 三项全部必填。</p>
+          <form id="addForm">
+            <label for="newAccount">雀魂账号</label><input id="newAccount" required autocomplete="off" />
+            <label for="newPassword">密码</label><input id="newPassword" type="password" required autocomplete="new-password" />
+            <label for="newToken">Access Token</label><input id="newToken" type="password" required autocomplete="off" />
+            <label for="newNickname">备注（选填）</label><input id="newNickname" autocomplete="off" />
+            <button type="submit">添加账号</button>
+          </form>
+        </section>
+        <section class="panel"><h2>批量导入</h2><p>每行格式：<code>账号|密码|Token|备注</code>；或直接粘贴 JSON 账号数组。</p>
+          <form id="bulkForm"><label for="bulkInput">批量账号数据</label>
+            <textarea id="bulkInput" rows="9" placeholder="example@demo.com|password|token|账号一" spellcheck="false"></textarea>
+            <button type="submit">批量导入</button>
+          </form>
+        </section>
+      </div>
+      <footer>每小时检测空闲账号 · 不抢占抓谱任务 · 540 自动冷却</footer>
+    </main>
+  </div>
+  <script src="/admin/admin.js" defer></script>
+</body>
+</html>

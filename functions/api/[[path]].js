@@ -9,6 +9,12 @@ const ROUTES = new Map([
   ["POST /api/analyze/stream", { auth: true, stream: true }],
   ["POST /api/analyze/paipu", { auth: true, stream: false }],
   ["POST /api/analyze/json", { auth: true, stream: false }],
+  ["POST /api/admin/login", { auth: true, stream: false, admin: true }],
+  ["POST /api/admin/logout", { auth: true, stream: false, admin: true }],
+  ["GET /api/admin/status", { auth: true, stream: false, admin: true }],
+  ["GET /api/admin/accounts", { auth: true, stream: false, admin: true }],
+  ["POST /api/admin/accounts", { auth: true, stream: false, admin: true }],
+  ["POST /api/admin/accounts/import", { auth: true, stream: false, admin: true }],
 ]);
 
 const ALLOWED_METHODS = new Map([
@@ -16,6 +22,11 @@ const ALLOWED_METHODS = new Map([
   ["/api/analyze/stream", ["POST"]],
   ["/api/analyze/paipu", ["POST"]],
   ["/api/analyze/json", ["POST"]],
+  ["/api/admin/login", ["POST"]],
+  ["/api/admin/logout", ["POST"]],
+  ["/api/admin/status", ["GET"]],
+  ["/api/admin/accounts", ["GET", "POST"]],
+  ["/api/admin/accounts/import", ["POST"]],
 ]);
 
 function jsonError(status, detail) {
@@ -190,10 +201,12 @@ function monitorSseStream(body, requestId, started, wallOrigin) {
 
 export async function onRequest({ request, env }) {
   const path = new URL(request.url).pathname;
-  const route = ROUTES.get(`${request.method} ${path}`);
+  const accountPath = /^\/api\/admin\/accounts\/[1-9][0-9]*$/.test(path);
+  const route = ROUTES.get(`${request.method} ${path}`) ||
+    (accountPath && ["PATCH", "DELETE"].includes(request.method) ? { auth: true, stream: false, admin: true } : null);
 
   if (!route) {
-    const methods = ALLOWED_METHODS.get(path);
+    const methods = accountPath ? ["PATCH", "DELETE"] : ALLOWED_METHODS.get(path);
     if (methods) {
       return new Response(null, {
         status: 405,
@@ -210,7 +223,7 @@ export async function onRequest({ request, env }) {
   }
 
   let body;
-  if (request.method === "POST") {
+  if (request.method === "POST" || request.method === "PATCH") {
     const contentType = (request.headers.get("content-type") || "")
       .split(";")[0]
       .trim()
@@ -232,8 +245,14 @@ export async function onRequest({ request, env }) {
     Origin: "https://majsoul.ccwu.cc",
     Referer: "https://majsoul.ccwu.cc/",
   });
-  if (request.method === "POST") headers.set("Content-Type", "application/json");
+  if (request.method === "POST" || request.method === "PATCH") headers.set("Content-Type", "application/json");
   if (token) headers.set("X-Api-Token", token);
+  if (route.admin) headers.set("Accept-Encoding", "identity");
+  if (route.admin) {
+    const sessionCookie = (request.headers.get("cookie") || "").split(";").map(part => part.trim())
+      .find(part => /^majsoul_admin_session=[0-9]+\.[a-f0-9]{24}\.[a-f0-9]{64}$/.test(part));
+    if (sessionCookie) headers.set("Cookie", sessionCookie);
+  }
   let requestId = "";
   if (route.stream) {
     const supplied = request.headers.get("X-Request-ID") || "";
@@ -254,7 +273,7 @@ export async function onRequest({ request, env }) {
     upstream = await fetch(upstreamUrl.toString(), {
       method: request.method,
       headers,
-      body: request.method === "POST" ? body : undefined,
+      body: ["POST", "PATCH"].includes(request.method) ? body : undefined,
       signal: request.signal,
       redirect: "manual",
       cache: "no-store",
@@ -295,6 +314,11 @@ export async function onRequest({ request, env }) {
   }
 
   const responseHeaders = safeResponseHeaders(upstream, route.stream);
+  if (route.admin) {
+    const sessionCookie = upstream.headers.get("set-cookie");
+    if (sessionCookie) responseHeaders.set("Set-Cookie", sessionCookie);
+    responseHeaders.set("Cache-Control", "no-store");
+  }
   const upstreamId = route.stream ? upstream.headers.get("X-Request-ID") : null;
   const serverRequestId = typeof upstreamId === "string" && /^[0-9a-f]{32}$/.test(upstreamId) ? upstreamId : null;
   if (serverRequestId) responseHeaders.set("X-Request-ID", serverRequestId);

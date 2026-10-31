@@ -375,6 +375,11 @@ async def fetch_record_with_failover(
     client_lock=None,
 ):
     """Bound the complete remote download, not just individual RPC retries."""
+    if client is None and client_lock is None:
+        from server.admin_accounts import manager as admin_manager
+        current = admin_manager()
+        if current is not None:
+            return await current.fetch_record(game_uuid)
     try:
         async with asyncio.timeout(FETCH_RECORD_TOTAL_TIMEOUT_SECONDS):
             return await _fetch_record_with_failover_inner(game_uuid, client, client_lock)
