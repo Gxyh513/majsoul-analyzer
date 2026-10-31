@@ -211,9 +211,9 @@ $("accountRows").addEventListener("click", async event => {
   try {
     if (button.dataset.action === "delete") {
       if (!confirm("确认删除账号 " + account.account + "？")) return;
-      await request(path, "DELETE");
+      await request(path + "/delete", "POST", {});
     } else if (button.dataset.action === "toggle") {
-      await request(path, "PATCH", {enabled: !account.enabled});
+      await request(path + "/edit", "POST", {enabled: !account.enabled});
     } else if (button.dataset.action === "edit") {
       const nickname = prompt("备注（取消则不修改）", account.nickname || "");
       if (nickname === null) return;
@@ -224,7 +224,7 @@ $("accountRows").addEventListener("click", async event => {
       const edit = {nickname};
       if (password.trim()) edit.password = password;
       if (access_token.trim()) edit.access_token = access_token.trim();
-      await request(path, "PATCH", edit);
+      await request(path + "/edit", "POST", edit);
     }
     await refresh();
     say("操作成功");

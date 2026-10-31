@@ -696,6 +696,7 @@ async def admin_import_accounts(request: Request, data: AdminBulk):
 
 
 @admin_router.patch("/accounts/{account_pk}")
+@admin_router.post("/accounts/{account_pk}/edit")
 async def admin_edit_account(account_pk: int, request: Request, data: AdminEdit):
     _authorize(request)
     current = _get_manager()
@@ -708,6 +709,7 @@ async def admin_edit_account(account_pk: int, request: Request, data: AdminEdit)
 
 
 @admin_router.delete("/accounts/{account_pk}")
+@admin_router.post("/accounts/{account_pk}/delete")
 async def admin_delete_account(account_pk: int, request: Request):
     _authorize(request)
     current = _get_manager()
