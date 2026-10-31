@@ -7,11 +7,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-import hashlib
 import hmac
 import os
 import random
-import secrets
 import sqlite3
 
 import httpx
@@ -20,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .logger import log_warning
@@ -486,10 +484,6 @@ def _get_manager() -> AccountScheduler:
     return current
 
 
-class AdminLogin(BaseModel):
-    key: str
-
-
 class AdminAccount(BaseModel):
     account: str
     password: str
@@ -510,55 +504,28 @@ class AdminEdit(BaseModel):
 
 
 admin_router = APIRouter(prefix="/api/admin", tags=["管理员账号池"])
-_SESSION_COOKIE = "majsoul_admin_session"
-_SESSION_SECONDS = 12 * 3600
-
-
 def _admin_key() -> str:
     return os.environ.get("MAJSOUL_ADMIN_KEY", "").strip()
-
-
-def _sign_session(key: str, timestamp: str, nonce: str) -> str:
-    return hmac.new(key.encode(), f"admin.{timestamp}.{nonce}".encode(), hashlib.sha256).hexdigest()
 
 
 def _authorize(request: Request):
     key = _admin_key()
     if not key:
         raise HTTPException(status_code=503, detail="未配置管理员密钥")
-    cookie = request.cookies.get(_SESSION_COOKIE, "")
-    try:
-        ts, nonce, signature = cookie.split(".")
-        if len(nonce) != 24 or not ts.isdecimal():
-            raise ValueError()
-        if abs(time.time() - int(ts)) > _SESSION_SECONDS:
-            raise ValueError()
-        if not hmac.compare_digest(signature, _sign_session(key, ts, nonce)):
-            raise ValueError()
-    except ValueError:
-        raise HTTPException(status_code=401, detail="管理员未登录或登录已过期") from None
+    supplied = request.headers.get("x-admin-key", "")
+    if not supplied or not hmac.compare_digest(supplied.encode("utf-8"), key.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="管理员密钥错误")
 
 
 @admin_router.post("/login")
-async def admin_login(form: AdminLogin, request: Request, response: Response):
-    key = _admin_key()
-    if not key:
-        raise HTTPException(status_code=503, detail="请先在魔搭环境变量设置 MAJSOUL_ADMIN_KEY")
-    if not hmac.compare_digest(form.key.encode(), key.encode()):
-        raise HTTPException(status_code=401, detail="管理员密钥错误")
-    stamp, nonce = str(int(time.time())), secrets.token_hex(12)
-    token = f"{stamp}.{nonce}.{_sign_session(key, stamp, nonce)}"
-    response.set_cookie(_SESSION_COOKIE, token, max_age=_SESSION_SECONDS,
-        httponly=True, secure=request.url.scheme == "https",
-        samesite="strict", path="/api/admin")
-    response.headers["Cache-Control"] = "no-store"
+async def admin_login(request: Request):
+    _authorize(request)
     return {"ok": True}
 
 
 @admin_router.post("/logout")
-async def admin_logout(request: Request, response: Response):
+async def admin_logout(request: Request):
     _authorize(request)
-    response.delete_cookie(_SESSION_COOKIE, path="/api/admin")
     return {"ok": True}
 
 
