@@ -145,6 +145,13 @@ function logReviewViewCompletion(timings, version) {
     const progressAt = timings.progress100ReceivedAt;
     const completeAt = timings.completeReceivedAt;
     const stream = timings.streamTimings || timings;
+    const pageSwitchDuration = Number.isFinite(completeAt) ? rounded(now - completeAt) : null;
+    timings.viewCompletedAt = rounded(now);
+    timings.pageSwitchDurationMs = pageSwitchDuration;
+    if (stream && stream !== timings) {
+      stream.viewCompletedAt = rounded(now);
+      stream.pageSwitchDurationMs = pageSwitchDuration;
+    }
     try {
       console.groupCollapsed("[Paipu UX Performance] 页面切换性能");
       try {
