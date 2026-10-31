@@ -88,14 +88,64 @@ test("Pages proxy forwards each chunk before the upstream finishes and propagate
   }
 });
 
+test("Pages proxy passes gzip through unread and requests identity when gzip is refused", async () => {
+  const realFetch = globalThis.fetch;
+  const originalInfo = console.info;
+  const raw = gzipSync(Buffer.from(progress + complete));
+  let upstream, upstreamEncoding, controller;
+  console.info = () => {};
+  try {
+    globalThis.fetch = async (_url, init) => {
+      upstreamEncoding = new Headers(init.headers).get("Accept-Encoding");
+      upstream = new Response(new ReadableStream({
+        start(c) { controller = c; c.enqueue(raw); },
+      }, { highWaterMark: 0 }), { headers: { "Content-Type": "text/event-stream", "Content-Encoding": "gzip" } });
+      return upstream;
+    };
+    const makeRequest = encoding => new Request("https://pages.example/api/analyze/stream", {
+      method: "POST", headers: { "Content-Type": "application/json", ...(encoding == null ? {} : { "Accept-Encoding": encoding }), "X-Request-ID": requestId },
+      body: JSON.stringify({ paipu: "demo" }),
+    });
+    const response = await onRequest({ request: makeRequest("gzip"), env: { MAJSOUL_API_TOKEN: "secret" } });
+    assert.equal(upstreamEncoding, "gzip");
+    assert.equal(upstream.bodyUsed, false);
+    assert.equal(response.headers.get("Content-Encoding"), "gzip");
+    assert.equal(response.body, upstream.body);
+    const reader = response.body.getReader();
+    assert.deepEqual(Buffer.from((await reader.read()).value), raw);
+    await reader.cancel();
+
+    for (const encoding of [null, "gzip;q=0", "gzip;q=0, *;q=1", "br"]) {
+      globalThis.fetch = async (_url, init) => {
+        upstreamEncoding = new Headers(init.headers).get("Accept-Encoding");
+        return new Response(progress + complete, { headers: { "Content-Type": "text/event-stream" } });
+      };
+      const identity = await onRequest({ request: makeRequest(encoding), env: { MAJSOUL_API_TOKEN: "secret" } });
+      assert.equal(upstreamEncoding, "identity");
+      assert.equal(identity.headers.get("Content-Encoding"), "identity");
+      assert.equal(await identity.text(), progress + complete);
+    }
+    const debugRequest = new Request("https://pages.example/api/analyze/stream", {
+      method: "POST", headers: { "Content-Type": "application/json", "Accept-Encoding": "gzip", "X-Paipu-Proxy-Debug": "1" },
+      body: JSON.stringify({ paipu: "demo" }),
+    });
+    const debugResponse = await onRequest({ request: debugRequest, env: { MAJSOUL_API_TOKEN: "secret" } });
+    assert.equal(upstreamEncoding, "identity");
+    assert.equal(await debugResponse.text(), progress + complete);
+  } finally {
+    console.info = originalInfo;
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("Pages proxy streams the independent performance frame after complete", async () => {
   const realFetch = globalThis.fetch;
   const originalInfo = console.info;
   let upstreamController;
   const diagnostic = `data: ${JSON.stringify({ type: "performance", performance: {
-    event: "paipu_performance", schema_version: 1, request_id: requestId,
-    timings_ms: { missing: null }, sizes_bytes: { large: Number.MAX_SAFE_INTEGER },
-    status: { label: '中文 "quote"\nbackslash\\' },
+    "事件": "牌谱性能统计", "schema版本": 2, "请求ID": requestId,
+    "耗时_ms": { "未采集": null }, "数据大小_KB": { "结果": Number.MAX_SAFE_INTEGER },
+    "状态": { "标签": '中文 "quote"\nbackslash\\' },
   } })}\n\n`;
   console.info = () => {};
   globalThis.fetch = async () => new Response(new ReadableStream({
@@ -112,7 +162,7 @@ test("Pages proxy streams the independent performance frame after complete", asy
     upstreamController.enqueue(encoder.encode(diagnostic));
     const received = new TextDecoder().decode((await reader.read()).value);
     assert.equal(received, diagnostic);
-    assert.equal(JSON.parse(received.slice(6)).performance.sizes_bytes.large, Number.MAX_SAFE_INTEGER);
+    assert.equal(JSON.parse(received.slice(6)).performance["数据大小_KB"]["结果"], Number.MAX_SAFE_INTEGER);
     upstreamController.close();
     assert.equal((await reader.read()).done, true);
   } finally {
@@ -162,7 +212,11 @@ test("browser metrics use read boundaries and defer 100% until complete parses",
   let cancelled = false;
   const context = {
     TextDecoder, Uint8Array, performance, crypto: globalThis.crypto,
-    console: { info: (...args) => logs.push(args.join(" ")) },
+    console: {
+      groupCollapsed: (title) => logs.push({ title, entries: [] }),
+      log: (label, value) => logs.at(-1).entries.push({ label, value }),
+      groupEnd() {},
+    },
     document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
     getBackendUrl: () => "", buildApiUrl: (_backend, path) => path,
     isPagesProxyMode: () => true, apiAuthHeaders: () => ({}),
@@ -190,60 +244,67 @@ test("browser metrics use read boundaries and defer 100% until complete parses",
   assert.equal(timings.requestId, receivedHeaders["X-Request-ID"]);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(cancelled, false);
-  const summaries = logs.filter(line => line.startsWith("[Paipu SSE Browser] "));
+  const summaries = logs.filter(group => group.title.startsWith("[Paipu SSE Browser] "));
   assert.equal(summaries.length, 1);
-  const summary = JSON.parse(summaries[0].slice("[Paipu SSE Browser] ".length));
-  assert.equal(summary.chunk_count, 3);
-  assert.equal(summary.total_bytes, bytes.byteLength);
-  assert.equal(summary.read_details_enabled, false);
-  assert.equal("read_details" in summary, false);
-  assert.ok(logs.every(line => !line.includes("测试")));
+  const summary = summaries[0].entries.find(entry => entry.label === "汇总").value;
+  const reads = summaries[0].entries.find(entry => entry.label === "读取明细").value;
+  assert.equal(typeof summary, "object");
+  assert.ok(Array.isArray(reads));
+  assert.equal(summary.分块数, 3);
+  assert.equal(summary.总数据大小_KB, (bytes.byteLength / 1024).toFixed(2));
+  assert.equal(reads.length, summary.读取次数);
+  assert.deepEqual(Array.from(reads, read => read.序号), [1, 2, 3, 4]);
+  assert.equal(JSON.stringify(logs).includes("测试"), false);
 });
 
-test("browser negotiates gzip and restores the complete result before 100%", {
-  skip: typeof DecompressionStream !== "function" || typeof atob !== "function" ||
-    typeof Blob !== "function" || typeof Response !== "function",
-}, async () => {
+test("browser receives HTTP-decoded JSON and completes before diagnostics", async () => {
   const source = await readFile(new URL("../web/js/api.js", import.meta.url), "utf8");
   const code = source.slice(source.indexOf("async function fetchReviewStream("), source.indexOf("const DEFAULT_MODELSCOPE_BACKEND"));
   const expected = { text: "牌谱内容", nested: { values: [1, 2, 3] } };
-  const data = gzipSync(Buffer.from(JSON.stringify(expected))).toString("base64");
-  const wire = encoder.encode(progress + `data: ${JSON.stringify({ type: "complete", encoding: "gzip+base64", data })}\n\n`);
-  const chunks = [wire.slice(0, 40), wire.slice(40)];
-  const updates = [];
-  let requestBody;
+  let controller, requestBody;
+  const wire = encoder.encode(progress + `data: ${JSON.stringify({ type: "complete", result: expected })}\n\n`);
+  const stream = new ReadableStream({ start(c) { controller = c; c.enqueue(wire); } });
+  const updates = [], groups = [];
   const context = {
-    TextDecoder, Uint8Array, Blob, Response, DecompressionStream, atob, performance, crypto: globalThis.crypto,
-    console: { info() {} },
+    TextDecoder, Uint8Array, performance, crypto: globalThis.crypto, setTimeout, clearTimeout,
+    console: { groupCollapsed: title => groups.push({ title, entries: [] }),
+      log: (label, value) => groups.at(-1).entries.push({ label, value }), groupEnd() {} },
     document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
     getBackendUrl: () => "", buildApiUrl: (_backend, path) => path,
     isPagesProxyMode: () => true, apiAuthHeaders: () => ({}),
     fetch: async (_url, options) => {
       requestBody = JSON.parse(options.body);
-      return { ok: true, body: { getReader: () => ({
-        read: async () => chunks.length ? { done: false, value: chunks.shift() } : { done: true },
-        cancel: async () => {}, releaseLock() {},
-      }) } };
+      // Fetch exposes automatically decompressed bytes even for a gzip response.
+      return { ok: true, headers: { get: name => name === "Content-Encoding" ? "gzip" : requestId }, body: stream };
     },
   };
   vm.createContext(context);
   vm.runInContext(code + "\nglobalThis.runStream = fetchReviewStream;", context);
   const timings = {};
-  const result = await context.runStream({ paipu: "demo" }, (pct) => updates.push(pct), "/api/analyze/stream", timings);
-  assert.equal(requestBody.accept_compression, "gzip+base64");
+  const result = await Promise.race([
+    context.runStream({ paipu: "demo", accept_compression: "gzip+base64" }, pct => updates.push(pct), "/api/analyze/stream", timings),
+    new Promise((_, reject) => setTimeout(() => reject(Error("complete waited for diagnostics")), 300)),
+  ]);
+  assert.deepEqual(requestBody, { paipu: "demo" });
   assert.deepEqual(JSON.parse(JSON.stringify(result)), expected);
   assert.deepEqual(updates, [99, 100]);
+  assert.equal(groups.length, 0);
   assert.ok(timings.sse.completeParsedAt >= timings.sse.completeEventParsedAt);
-
-  chunks.push(encoder.encode(complete));
-  updates.length = 0;
-  const legacy = await context.runStream({ paipu: "demo" }, (pct) => updates.push(pct), "/api/analyze/stream");
-  assert.equal(requestBody.accept_compression, "gzip+base64");
-  assert.equal(legacy.text, "测试");
-  assert.deepEqual(updates, [100]);
+  const diagnostic = { "请求ID": requestId, "耗时_ms": { "complete Base64编码耗时": null } };
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "performance", performance: diagnostic })}\n\n`));
+  controller.close();
+  for (let attempt = 0; attempt < 100 && !groups.some(item => item.title.startsWith("[Paipu Performance]")); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const group = groups.find(item => item.title.startsWith("[Paipu Performance]"));
+  assert.ok(group, "the asynchronous performance event was logged");
+  const report = group.entries.find(entry => entry.label === "性能统计").value;
+  assert.equal(typeof report, "object");
+  assert.equal(report.请求ID, requestId);
+  assert.equal(report.耗时_ms["complete Base64编码耗时"], null);
 });
 
-test("browser without gzip support requests and accepts the original JSON", async () => {
+test("browser accepts original JSON and rejects a missing complete result", async () => {
   const source = await readFile(new URL("../web/js/api.js", import.meta.url), "utf8");
   const code = source.slice(source.indexOf("async function fetchReviewStream("), source.indexOf("const DEFAULT_MODELSCOPE_BACKEND"));
   const chunks = [encoder.encode(complete)];
@@ -267,8 +328,7 @@ test("browser without gzip support requests and accepts the original JSON", asyn
   const result = await context.runStream({ paipu: "demo", accept_compression: "gzip+base64" }, () => {}, "/api/analyze/stream");
   assert.equal(requestBody.accept_compression, undefined);
   assert.equal(result.text, "测试");
-  const data = gzipSync(Buffer.from(JSON.stringify({ text: "测试" }))).toString("base64");
-  chunks.push(encoder.encode(`data: ${JSON.stringify({ type: "complete", encoding: "gzip+base64", data })}\n\n`));
+  chunks.push(encoder.encode(`data: ${JSON.stringify({ type: "complete" })}\n\n`));
   const updates = [];
   await assert.rejects(context.runStream({ paipu: "demo" }, (pct) => updates.push(pct), "/api/analyze/stream"),
     error => error.receiveError === true);

@@ -53,7 +53,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
 
 雀魂协议从随项目提供的 `data/cache/liqi-0.11.252.w.json` 本地加载并校验；程序不会自动检测版本或下载协议。需要升级时，手动更新协议文件以及 `server/majsoul/client.py` 中的固定协议版本、规范化 SHA-256 和客户端版本配置。规范化摘要对解析后的对象执行 `json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf8")` 再计算 SHA-256。协议不可用时服务会记录明确错误，演示和 MJAI 输入仍可使用。可用 WebSocket 线路仍通过 `clientgate/routes` 获取，并在进程内短暂复用。
 
-浏览器默认只输出 SSE 读取统计汇总。需要逐块排查时，在浏览器控制台设置 `window.__PAIPU_DEBUG_SSE__ = true` 后重新发起分析；设为 `false` 可关闭。
+支持 gzip 的客户端通过 HTTP 流式压缩接收 SSE；每个事件及时刷新，完整结果不使用 Base64。浏览器控制台默认折叠中文性能对象，并保留全部读取分块明细。Cloudflare 代理默认对压缩流原样直通，因此不采集代理侧逐帧计时；需要这些计时时，可在浏览器控制台设置 `window.__PAIPU_DEBUG_PROXY__ = true` 后重新发起分析，临时改用未压缩流并保留原有代理诊断。设为 `false` 可恢复压缩。
 
 ## 使用与快捷键
 

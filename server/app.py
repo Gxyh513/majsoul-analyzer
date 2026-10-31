@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from contextlib import aclosing, asynccontextmanager
-import gzip
 import hmac
 import ipaddress
 import re
@@ -16,6 +14,7 @@ import tempfile
 import time
 import urllib.request
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -338,6 +337,26 @@ async def protect_api_and_log(request: Request, call_next):
     return response
 
 
+def _accepts_gzip(headers) -> bool:
+    encodings: dict[str, float] = {}
+    for key, value in headers:
+        if key.lower() != b"accept-encoding":
+            continue
+        for entry in value.decode("latin1").split(","):
+            parts = entry.strip().lower().split(";")
+            quality = 1.0
+            for option in parts[1:]:
+                name, separator, value = option.partition("=")
+                if name.strip() == "q":
+                    try:
+                        quality = float(value.strip()) if separator else 0.0
+                    except ValueError:
+                        quality = 0.0
+            if parts[0].strip():
+                encodings[parts[0].strip()] = quality if 0 <= quality <= 1 else 0.0
+    return encodings.get("gzip", encodings.get("*", 0.0)) > 0
+
+
 class _SSESendMetricsMiddleware:
     def __init__(self, app):
         self.app = app
@@ -355,14 +374,27 @@ class _SSESendMetricsMiddleware:
         if not re.fullmatch(r"[0-9a-f]{32}", request_id):
             request_id = uuid.uuid4().hex
         request_started = time.perf_counter()
-        scope.setdefault("state", {}).update(sse_request_id=request_id, sse_request_started=request_started)
+        state = scope.setdefault("state", {})
+        complete_sent = asyncio.Event()
+        state.update(sse_request_id=request_id, sse_request_started=request_started, sse_complete_sent=complete_sent)
         progress_started = None
         progress_sent = None
+        compressor = None
 
         async def measured_send(message):
-            nonlocal progress_started, progress_sent
+            nonlocal progress_started, progress_sent, compressor
             if message["type"] == "http.response.start":
                 headers = [(key, value) for key, value in message.get("headers", ()) if key.lower() != b"x-request-id"]
+                content_type = next((value for key, value in headers if key.lower() == b"content-type"), b"")
+                encoding = next((value for key, value in headers if key.lower() == b"content-encoding"), b"")
+                streaming = message.get("status") == 200 and content_type.lower().startswith(b"text/event-stream")
+                if streaming and encoding.lower() in (b"", b"identity") and _accepts_gzip(scope.get("headers", ())):
+                    compressor = zlib.compressobj(level=3, wbits=16 + zlib.MAX_WBITS)
+                    headers = [(key, value) for key, value in headers
+                               if key.lower() not in (b"content-encoding", b"content-length")]
+                    headers.append((b"content-encoding", b"gzip"))
+                if streaming:
+                    headers.append((b"vary", b"Accept-Encoding"))
                 await send({**message, "headers": [*headers, (b"x-request-id", request_id.encode("ascii"))]})
                 return
             if message["type"] != "http.response.body":
@@ -375,31 +407,71 @@ class _SSESendMetricsMiddleware:
             elif body.startswith(b'data: {"type": "complete",'):
                 event = "complete"
             else:
-                await send(message)
-                return
-
-            started = time.perf_counter()
-            started_wall = time.time_ns() / 1_000_000
+                event = None
+            stats = state.get("sse_performance_stats")
+            started = None
+            started_wall = None
             completed = False
+            sent_bytes = 0
+            compression_ms = 0.0
+            send_wait_ms = 0.0
             try:
-                await send(message)
+                # Large complete frames are sent incrementally; every gzip slice
+                # is flushed so downstream can consume it before the stream ends.
+                parts = range(0, len(body), 65536) if event == "complete" else (0,)
+                for offset in parts:
+                    raw = body[offset:offset + 65536] if event == "complete" else body
+                    last = event != "complete" or offset + 65536 >= len(body)
+                    more = message.get("more_body", False) if last else True
+                    if compressor is not None:
+                        compression_started = time.perf_counter()
+                        encoded = compressor.compress(raw)
+                        encoded += compressor.flush(zlib.Z_SYNC_FLUSH if more else zlib.Z_FINISH)
+                        compression_ms += (time.perf_counter() - compression_started) * 1000
+                    else:
+                        encoded = raw
+                    send_started = time.perf_counter()
+                    if started is None:
+                        started = send_started
+                        started_wall = time.time_ns() / 1_000_000
+                    try:
+                        await send({**message, "body": encoded, "more_body": more})
+                    finally:
+                        send_wait_ms += (time.perf_counter() - send_started) * 1000
+                    sent_bytes += len(encoded)
                 completed = True
             finally:
                 finished = time.perf_counter()
-                finished_wall = time.time_ns() / 1_000_000
-                gap = (started - progress_sent) * 1000 if event == "complete" and progress_sent is not None else None
-                start_gap = (started - progress_started) * 1000 if event == "complete" and progress_started is not None else None
-                log.info(
-                    "[Paipu SSE Backend] 请求ID=%s 事件=%s 字节数=%d send开始=%.1fms send完成=%.1fms "
-                    "send开始Unix=%.1fms send完成Unix=%.1fms send等待=%.1fms 100%%至complete发送开始间隔=%s "
-                    "100%%发送完成至complete发送开始=%s 状态=%s 时间基准=ASGI请求到达 范围=ASGI服务器接收，非客户端收到",
-                    request_id, event, len(body), (started - request_started) * 1000,
-                    (finished - request_started) * 1000, started_wall, finished_wall,
-                    (finished - started) * 1000, f"{start_gap:.1f}ms" if start_gap is not None else "N/A",
-                    f"{gap:.1f}ms" if gap is not None else "N/A", "完成" if completed else "中断",
-                )
-                if event == "100%" and completed:
-                    progress_started, progress_sent = started, finished
+                if event is not None and started is not None:
+                    gap = (started - progress_sent) * 1000 if event == "complete" and progress_sent is not None else None
+                    start_gap = (started - progress_started) * 1000 if event == "complete" and progress_started is not None else None
+                    start_ms, finish_ms = (started - request_started) * 1000, (finished - request_started) * 1000
+                    if event == "complete" and stats is not None:
+                        if compressor is not None:
+                            stats["complete压缩耗时"] = compression_ms
+                            stats["结果返回"] = stats.get("结果返回", 0.0) + compression_ms
+                            stats["gzip压缩后字节数"] = sent_bytes
+                        stats["complete传输字节数"] = sent_bytes
+                        stats["complete压缩状态"] = ("成功" if compressor is not None else "未启用") if completed else "中断"
+                        stats["complete ASGI发送开始时间"] = start_ms
+                        stats["complete ASGI发送完成时间"] = finish_ms if completed else None
+                        stats["complete ASGI发送等待耗时"] = send_wait_ms
+                        stats["complete ASGI发送结果"] = "完成" if completed else "中断"
+                    log.info("[Paipu SSE Backend] %s", json.dumps({
+                        "请求ID": request_id, "事件": event, "传输大小_KB": round(sent_bytes / 1024, 2),
+                        "ASGI发送开始时间_ms": start_ms, "ASGI发送完成时间_ms": finish_ms if completed else None,
+                        "ASGI发送开始Unix时间_ms": started_wall,
+                        "ASGI发送完成Unix时间_ms": time.time_ns() / 1_000_000 if completed else None,
+                        "ASGI发送等待_ms": send_wait_ms,
+                        "100%至complete发送开始间隔_ms": start_gap,
+                        "100%发送完成至complete发送开始间隔_ms": gap,
+                        "状态": "完成" if completed else "中断", "时间基准": "ASGI请求到达",
+                        "口径": "ASGI服务器接收，不代表浏览器收到",
+                    }, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    if event == "100%" and completed:
+                        progress_started, progress_sent = started, finished
+                if event == "complete":
+                    complete_sent.set()
 
         await self.app(scope, receive, measured_send)
 
@@ -971,35 +1043,14 @@ class _ClosingStreamingResponse(StreamingResponse):
             await self.background()
 
 
-def _complete_review_event(result: dict[str, Any], accept_compression: bool = False) -> str:
+def _complete_review_event(result: dict[str, Any]) -> str:
     raw_prefix = 'data: {"type": "complete", "result": '
-    compressed_prefix = 'data: {"type": "complete", "encoding": "gzip+base64", "data": "'
     with _measure("结果返回"):
         with _measure("完成结果序列化耗时"):
             result_json = json.dumps(_public_review_result(result), ensure_ascii=False)
             result_bytes = result_json.encode("utf8")
-        raw_size = len(raw_prefix) + len(result_bytes) + len("}\n\n")
-        _set_performance_value("原始complete事件字节数", raw_size)
+        _set_performance_value("原始complete事件字节数", len(raw_prefix) + len(result_bytes) + len("}\n\n"))
         _set_performance_value("原始检讨JSON字节数", len(result_bytes))
-        _set_performance_value("complete压缩状态", "未协商" if not accept_compression else "数据较小")
-        if accept_compression and len(result_bytes) >= 64 * 1024:
-            try:
-                with _measure("complete压缩耗时"):
-                    compressed = gzip.compress(result_bytes, compresslevel=3, mtime=0)
-                with _measure("complete Base64编码耗时"):
-                    encoded = base64.b64encode(compressed).decode("ascii")
-                _set_performance_value("gzip压缩后字节数", len(compressed))
-                _set_performance_value("Base64编码后字节数", len(encoded))
-                _set_performance_value("complete压缩比例", f"{len(compressed) / len(result_bytes) * 100:.1f}%")
-                compressed_size = len(compressed_prefix) + len(encoded) + len('"}\n\n')
-                if compressed_size < raw_size:
-                    _set_performance_value("complete压缩状态", "成功")
-                    _set_performance_value("complete传输字节数", compressed_size)
-                    return f'{compressed_prefix}{encoded}"}}\n\n'
-                _set_performance_value("complete压缩状态", "压缩后未变小，回退原始")
-            except Exception:  # noqa: BLE001
-                _set_performance_value("complete压缩状态", "压缩失败，回退原始")
-        _set_performance_value("complete传输字节数", raw_size)
         return f"{raw_prefix}{result_json}}}\n\n"
 
 
@@ -1124,7 +1175,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 if request_started is not None:
                     stats["ASGI请求至100%事件生成"] = (progress_generated - request_started) * 1000
                 yield progress_event
-                complete_event = _complete_review_event(res, req.accept_compression == "gzip+base64")
+                complete_event = _complete_review_event(res)
                 complete_generated = time.perf_counter()
                 stats["complete事件生成时间"] = (complete_generated - stats["_started"]) * 1000
                 if request_started is not None:
@@ -1146,8 +1197,11 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
         stats: dict[str, Any] = {"mode": "准备中", "request_id": request_id, "AI模型加载次数": 0, "AI模型复用次数": 0}
         started = time.perf_counter()
         stats["_started"] = started
+        if request is not None:
+            request.state.sse_performance_stats = stats
         generator = sse_generator(stats)
         logged = False
+        complete_emitted = False
         try:
             while True:
                 token = _performance.set(stats)
@@ -1158,6 +1212,11 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 finally:
                     _performance.reset(token)
                 yield chunk
+                if chunk.startswith('data: {"type": "complete",'):
+                    complete_emitted = True
+            sent = getattr(request.state, "sse_complete_sent", None) if request is not None else None
+            if complete_emitted and sent is not None:
+                await sent.wait()
             report = _log_performance(stats, started)
             logged = True
             if report is not None:

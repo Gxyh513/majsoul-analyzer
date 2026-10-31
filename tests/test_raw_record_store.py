@@ -203,18 +203,19 @@ def test_stream_reports_download_then_local_record(monkeypatch, isolated_app, pr
         assert complete["result"]["game_id"] == U1
         assert complete["result"]["target_actor"] == 1
         report = next(event["performance"] for event in events if event["type"] == "performance")
-        assert report["request_id"] == request_id
-        assert report["status"]["record_result"] == "success"
-        assert report["sizes_bytes"]["raw_record"] == len(source.response) + len(source.detail)
-        assert report["timings_ms"]["protobuf_decode"] is not None
-        assert report["timings_ms"]["mjai_convert"] is not None
+        assert report["请求ID"] == request_id
+        assert report["状态"]["牌谱获取结果"] == "成功"
+        size = len(source.response) + len(source.detail)
+        assert report["数据大小_KB"]["原始数据大小"] == ((size * 100 + 512) // 1024) / 100
+        assert report["耗时_ms"]["Protobuf解码"] is not None
+        assert report["耗时_ms"]["MJAI转换"] is not None
         reports.append(report)
-    assert reports[0]["status"]["record_source"] == "majsoul_download"
-    assert reports[0]["status"]["local_record_hit"] is False
-    assert reports[0]["timings_ms"]["majsoul_fetch"] is not None
-    assert reports[1]["status"]["record_source"] == "local"
-    assert reports[1]["status"]["local_record_hit"] is True
-    assert reports[1]["timings_ms"]["majsoul_fetch"] is None
+    assert reports[0]["状态"]["牌谱获取方式"] == "雀魂下载"
+    assert reports[0]["状态"]["是否命中本地记录"] is False
+    assert reports[0]["耗时_ms"]["雀魂抓取"] is not None
+    assert reports[1]["状态"]["牌谱获取方式"] == "本地直接读取"
+    assert reports[1]["状态"]["是否命中本地记录"] is True
+    assert reports[1]["耗时_ms"]["雀魂抓取"] is None
     fetch.assert_awaited_once_with(U1)
     assert (tmp_path / f"{U1}.pb").is_file()
 
