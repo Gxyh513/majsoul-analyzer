@@ -247,6 +247,7 @@ export async function onRequest({ request, env }) {
   });
   if (request.method === "POST" || request.method === "PATCH") headers.set("Content-Type", "application/json");
   if (token) headers.set("X-Api-Token", token);
+  if (route.admin) headers.set("Accept-Encoding", "identity");
   if (route.admin) {
     const sessionCookie = (request.headers.get("cookie") || "").split(";").map(part => part.trim())
       .find(part => /^majsoul_admin_session=[0-9]+\.[a-f0-9]{24}\.[a-f0-9]{64}$/.test(part));
