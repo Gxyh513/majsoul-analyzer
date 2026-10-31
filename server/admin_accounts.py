@@ -12,6 +12,9 @@ import os
 import random
 import secrets
 import sqlite3
+
+import httpx
+import websockets
 import threading
 import time
 from pathlib import Path
@@ -324,8 +327,9 @@ class AccountScheduler:
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:
-        return isinstance(error, (TimeoutError, ConnectionError, OSError)) or any(
-            word in str(error).lower() for word in ("timeout", "timed out", "连接已断开", "网络", "超时")
+        return isinstance(error, (TimeoutError, ConnectionError, OSError, httpx.TimeoutException,
+                                  httpx.NetworkError, websockets.ConnectionClosed)) or any(
+            word in str(error).lower() for word in ("timeout", "timed out", "连接", "网络", "超时")
         )
 
     async def _fetch_one(self, acc: dict, game_uuid: str):
@@ -405,14 +409,14 @@ class AccountScheduler:
                 await self.release(acc["id"])
 
     async def periodic(self):
-        try:
-            while True:
-                await asyncio.sleep(3600)
+        while True:
+            await asyncio.sleep(3600)
+            try:
                 await self._check_idle_accounts()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log_warning(事件="账号定时检测", 状态="失败", 错误原因=type(exc).__name__)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log_warning(事件="账号定时检测", 状态="失败", 错误原因=type(exc).__name__)
 
     async def shutdown(self):
         if self.periodic_task:
