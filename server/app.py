@@ -390,7 +390,7 @@ async def protect_api_and_log(request: Request, call_next):
         if origin:
             headers.update({"Access-Control-Allow-Origin": origin,
                             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Api-Token, X-Request-ID",
+                            "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, X-Api-Token, X-Admin-Key, X-Request-ID",
                             "Access-Control-Allow-Private-Network": "true"})
         return Response(status_code=204, headers=headers)
 
