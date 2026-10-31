@@ -522,10 +522,13 @@ async def test_total_record_download_budget(monkeypatch):
     import server.app as app
     monkeypatch.setattr(pool, "FETCH_RECORD_TOTAL_TIMEOUT_SECONDS", 0.01)
     acc = {"account": "demo", "account_id": 12}
+    async def slow_fetch(_uuid):
+        await asyncio.sleep(0.1)
+
     client = SimpleNamespace(
         logged_in=True, _ws=SimpleNamespace(closed=False),
         account_id=12, current_account="demo", access_token="old",
-        fetch_record=AsyncMock(side_effect=lambda _uuid: asyncio.sleep(0.1)),
+        fetch_record=AsyncMock(side_effect=slow_fetch),
     )
     monkeypatch.setattr(app, "get_all_configured_accounts", lambda: [acc])
     monkeypatch.setattr(app, "is_client_logged_in_as", lambda a: True)
