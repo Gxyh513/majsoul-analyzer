@@ -147,7 +147,7 @@ test("default grouped summary retains every read, frames, long tasks and redacte
     takeRecords() { return [{ startTime: 2, duration: 55 }]; }
     disconnect() {}
   }
-  harness = createHarness({ reader, responseId: clientId, clock, observer: LongTaskObserver });
+  harness = createHarness({ reader, responseId: clientId, clock, observer: LongTaskObserver, debug: true });
   const updates = [];
   const timings = {};
   const result = await harness.context.runStream({ paipu: "input-never-logged" }, (...args) => updates.push(args), "/api/analyze/stream", timings);
@@ -240,7 +240,7 @@ test("default grouped summary retains every read, frames, long tasks and redacte
   }
 });
 
-test("all reads remain available without a debug switch and are not truncated", async () => {
+test("default output is concise without read samples, while detailed debug mode retains bounded samples", async () => {
   for (const debug of [false, true]) {
     const clock = { now: 0 };
     const count = 1200;
@@ -250,15 +250,23 @@ test("all reads remain available without a debug switch and are not truncated", 
     const harness = createHarness({ reader, debug, clock });
     const result = await harness.context.runStream({}, () => {}, "/api/analyze/stream");
     assert.equal(result.text.length, "private-result".length * 400);
-    await waitFor(() => entryFor(harness.logs, "[Paipu SSE Browser]", "读取明细").length === 1);
-    const [reads] = entryFor(harness.logs, "[Paipu SSE Browser]", "读取明细");
+    await waitFor(() => entryFor(harness.logs, "[Paipu SSE Browser]", "汇总").length === 1);
     const [summary] = entryFor(harness.logs, "[Paipu SSE Browser]", "汇总");
-    assert.equal(reads.length, count + 1);
     assert.equal(summary.读取次数, count + 1);
-    assert.equal(reads[0].序号, 1);
-    assert.equal(reads[count - 1].序号, count);
-    assert.equal(reads[count].序号, count + 1);
-    assert.equal(reads[count].状态, "流结束");
+    if (!debug) {
+      assert.equal(entryFor(harness.logs, "[Paipu SSE Browser]", "读取明细").length, 0);
+      assert.equal("明细" in summary.长任务, false);
+      assert.equal("变化" in summary.可见状态, false);
+    } else {
+      await waitFor(() => entryFor(harness.logs, "[Paipu SSE Browser]", "读取明细").length === 1);
+      const [reads] = entryFor(harness.logs, "[Paipu SSE Browser]", "读取明细");
+      assert.equal(reads.length, 200);
+      assert.equal(reads.总记录数, count + 1);
+      assert.equal(reads.是否截断, true);
+      assert.equal(reads.采样上限, 200);
+      assert.equal(reads[0].序号, 1);
+      assert.equal(reads[199].序号, 200);
+    }
     assert.equal(JSON.stringify(harness.logs).includes("private-result"), false);
   }
 });
@@ -267,7 +275,7 @@ test("failed reads record safe error information without leaking the original er
   const clock = { now: 0 };
   const failure = new TypeError("secret-read-error https://example.test/?token=private");
   const reader = recordedReader([encoder.encode('data: {"type":"progress","percent":42}\n\n'), failure], [7, 13], clock);
-  const harness = createHarness({ reader, clock });
+  const harness = createHarness({ reader, clock, debug: true });
   await assert.rejects(harness.context.runStream({}, () => {}, "/api/analyze/stream"), (error) => error.receiveError === true);
   await waitFor(() => entryFor(harness.logs, "[Paipu SSE Browser]", "汇总").length === 1);
   const [summary] = entryFor(harness.logs, "[Paipu SSE Browser]", "汇总");
@@ -341,7 +349,7 @@ test("stalled diagnostic tail times out and releases the reader without delaying
     clearTimeout(id) { if (id !== 9999) clearTimeout(id); },
   };
   const body = new ReadableStream({ start(controller) { controller.enqueue(encoder.encode(complete)); } });
-  const harness = createHarness({ reader: body.getReader(), timers });
+  const harness = createHarness({ reader: body.getReader(), timers, debug: true });
   const result = await harness.context.runStream({}, () => {}, "/api/analyze/stream");
   assert.equal(result.text, "private-result");
   await waitFor(() => timeoutCallback, "tail timeout installation");

@@ -219,6 +219,32 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   let lineHasContent = false;
   let tailStatus = "not_started";
   let performanceLogged = false;
+  let serverBusinessStatus = null;
+
+  function isDetailedDiagnosticMode() {
+    try {
+      if (timings && (timings.debug === true || timings.debug_sse === true)) return true;
+      if (typeof window !== "undefined") {
+        if (window.__PAIPU_DEBUG_SSE__ === true || window.__PAIPU_DEBUG__ === true) return true;
+        if (typeof window.location?.search === "string" && /(?:[?&])debug(?:_sse)?=(?:1|true)\b/i.test(window.location.search)) return true;
+        if (window.localStorage && window.localStorage.getItem("paipu_debug_sse") === "true") return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function limitDiagnosticArray(items, maxLimit) {
+    if (!Array.isArray(items)) return null;
+    const total = items.length;
+    const isTruncated = total > maxLimit;
+    const list = isTruncated ? items.slice(0, maxLimit) : items.slice();
+    Object.defineProperty(list, "总记录数", { value: total, enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(list, "已输出数", { value: list.length, enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(list, "是否截断", { value: isTruncated, enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(list, "采样上限", { value: maxLimit, enumerable: true, configurable: true, writable: true });
+    Object.defineProperty(list, "明细", { value: list, enumerable: true, configurable: true, writable: true });
+    return list;
+  }
   const sensitiveValues = [];
   const sensitiveKey = /token|secret|password|passwd|authorization|cookie|credential|api[-_]?key/i;
   const sensitiveUrlKey = /(?:^|[_-])(key|signature|sig|auth|credential|session)(?:$|[_-])|token|secret|password/i;
@@ -300,6 +326,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   function reportDiagnostics() {
     if (!monitorFinished || !streamFinished || summaryLogged) return;
     summaryLogged = true;
+    const debugMode = isDetailedDiagnosticMode();
     const sortedWaits = [...readWaits].sort((a, b) => a - b);
     const p95 = sortedWaits.length ? sortedWaits[Math.ceil(sortedWaits.length * 0.95) - 1] : null;
     const sse = timings.sse || {};
@@ -308,24 +335,124 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     const tailStates = { not_started: "未开始", fetch_error: "请求失败", http_error: "HTTP错误", no_body: "响应体缺失",
       reader_error: "读取器不可用", timeout: "超时", read_error: "读取失败", diagnostic_error: "诊断失败",
       eof: "流结束", business_error: "业务失败", pending: "待读取" };
+    const requestStatus = delivered ? "成功" : (tailStates[tailStatus] || "失败");
+    const progress100At = timings.progress100ReceivedAt ?? progressFrame?.lastAt ?? null;
+    const completeAt = timings.completeReceivedAt ?? completeFrame?.lastAt ?? null;
+    const progress100ToCompleteMs = Number.isFinite(progress100At) && Number.isFinite(completeAt)
+      ? roundMs(completeAt - progress100At) : null;
+    const totalReadWaitMs = readWaits.reduce((sum, wait) => sum + wait, 0);
+    const maxReadWaitMs = sortedWaits.length ? sortedWaits[sortedWaits.length - 1] : null;
+
+    const requestInfo = {
+      客户端请求ID: clientRequestId,
+      服务端请求ID: serverRequestId,
+      请求结果状态: requestStatus,
+    };
+
+    const businessInfo = {
+      牌谱获取方式: serverBusinessStatus?.牌谱获取方式 ?? null,
+      牌谱获取结果: serverBusinessStatus?.牌谱获取结果 ?? null,
+      是否命中本地记录: serverBusinessStatus?.是否命中本地记录 ?? null,
+      是否等待文件锁: serverBusinessStatus?.是否等待文件锁 ?? null,
+    };
+    if (serverBusinessStatus?.牌谱获取HTTP状态码 !== undefined && serverBusinessStatus?.牌谱获取HTTP状态码 !== null) {
+      businessInfo.牌谱获取HTTP状态码 = serverBusinessStatus.牌谱获取HTTP状态码;
+    }
+
+    const getPageSwitchDuration = () => {
+      if (Number.isFinite(timings.pageSwitchDurationMs)) return roundMs(timings.pageSwitchDurationMs);
+      if (Number.isFinite(timings.viewCompletedAt) && Number.isFinite(completeAt)) {
+        return roundMs(timings.viewCompletedAt - completeAt);
+      }
+      return null;
+    };
+
+    const timingInfo = {
+      首个分块接收时间_ms: roundMs(firstChunkAt),
+      complete接收时间_ms: roundMs(completeAt),
+      "100%至complete接收间隔_ms": progress100ToCompleteMs,
+      JSON解析耗时_ms: roundMs(sse.completeJsonParseMs),
+    };
+    Object.defineProperty(timingInfo, "页面切换完成耗时_ms", {
+      enumerable: true,
+      configurable: true,
+      get: getPageSwitchDuration,
+    });
+
+    const transferInfo = {
+      分块数量: chunkCount,
+      读取次数: readCount,
+      浏览器实际读取数据总量_KB: sizeKB(totalBytes),
+      读取等待总耗时_ms: roundMs(totalReadWaitMs),
+      最大读取等待时间_ms: roundMs(maxReadWaitMs),
+      P95读取等待时间_ms: roundMs(p95),
+      数据口径: "HTTP自动解压后的SSE数据，非传输压缩大小",
+    };
+
+    const visibilityReport = {
+      初始: displayVisibility(initialVisibility),
+      最终: displayVisibility(visibility()),
+      状态集合: [...visibilityStates].map(displayVisibility),
+    };
+    if (debugMode) {
+      visibilityReport.变化 = limitDiagnosticArray(visibilityChanges, 100);
+      visibilityReport.总记录数 = visibilityChanges.length;
+      visibilityReport.是否截断 = visibilityChanges.length > 100;
+      visibilityReport.采样上限 = 100;
+    }
+
+    const longTaskReport = {
+      次数: longTaskCount,
+      总耗时_ms: roundMs(longTaskMs),
+      最大耗时_ms: roundMs(longestTaskMs),
+    };
+    if (debugMode) {
+      longTaskReport.明细 = limitDiagnosticArray(longTasks, 100);
+      longTaskReport.总记录数 = longTasks.length;
+      longTaskReport.是否截断 = longTasks.length > 100;
+      longTaskReport.采样上限 = 100;
+    }
+
+    const browserStatus = {
+      长任务次数: longTaskCount,
+      长任务总耗时_ms: roundMs(longTaskMs),
+      最长长任务耗时_ms: roundMs(longestTaskMs),
+      页面可见状态: visibilityReport,
+      读取错误次数: readErrorCount,
+      诊断错误次数: diagnosticErrorCount,
+    };
+
     const summary = {
       事件: "浏览器SSE性能统计", 版本: 1,
+      请求信息: requestInfo,
+      牌谱业务: businessInfo,
+      时间信息: timingInfo,
+      数据传输: transferInfo,
+      浏览器状态: browserStatus,
+      // 保留原有兼容字段，确保已有测试与排查脚本可用
       客户端请求ID: clientRequestId, 服务端请求ID: serverRequestId,
+      请求结果状态: requestStatus,
+      牌谱获取方式: businessInfo.牌谱获取方式,
+      牌谱获取结果: businessInfo.牌谱获取结果,
+      是否命中本地记录: businessInfo.是否命中本地记录,
+      是否等待文件锁: businessInfo.是否等待文件锁,
       读取次数: readCount, 分块数: chunkCount, 总数据大小_KB: sizeKB(totalBytes),
       首分块接收时间_ms: roundMs(firstChunkAt), 末分块接收时间_ms: roundMs(lastChunkAt),
       首末分块间隔_ms: firstChunkAt !== null && lastChunkAt !== null ? roundMs(lastChunkAt - firstChunkAt) : null,
+      首个分块接收时间_ms: roundMs(firstChunkAt),
+      complete接收时间_ms: roundMs(completeAt),
+      "100%至complete接收间隔_ms": progress100ToCompleteMs,
       分块计时口径: "浏览器 performance.now()，以读取完成时间为准",
       数据口径: "HTTP自动解压后的SSE数据，非传输压缩大小",
-      读取等待总耗时_ms: roundMs(readWaits.reduce((sum, wait) => sum + wait, 0)),
-      读取等待最大耗时_ms: sortedWaits.length ? roundMs(sortedWaits[sortedWaits.length - 1]) : null,
+      读取等待总耗时_ms: roundMs(totalReadWaitMs),
+      读取等待最大耗时_ms: roundMs(maxReadWaitMs),
       读取等待P95耗时_ms: roundMs(p95), 读取错误次数: readErrorCount, 错误总次数: errorCount,
       诊断错误次数: diagnosticErrorCount, 首分块: firstChunk, 末分块: lastChunk,
-      可见状态: { 初始: displayVisibility(initialVisibility), 最终: displayVisibility(visibility()),
-        状态集合: [...visibilityStates].map(displayVisibility), 变化: visibilityChanges },
+      可见状态: visibilityReport,
       监测: { 开始时间_ms: roundMs(monitorStarted), 结束时间_ms: roundMs(monitorEnded),
         时间原点_Unix_ms: roundMs(wallOrigin), 已启用长任务监测: longTaskMonitoring,
         范围: "从请求开始到结果解析完成", 计时口径: "浏览器未校准的 performance.now()" },
-      长任务: { 次数: longTaskCount, 总耗时_ms: roundMs(longTaskMs), 最大耗时_ms: roundMs(longestTaskMs), 明细: longTasks },
+      长任务: longTaskReport,
       事件帧: { 进度100: frameSummary(progressFrame), complete: frameSummary(completeFrame),
         位于同一分块: typeof sse.sameChunk === "boolean" ? sse.sameChunk : null,
         complete事件解析完成时间_ms: roundMs(sse.completeEventParsedAt),
@@ -341,8 +468,17 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         计时口径: "HTTP压缩由浏览器自动处理；原始complete事件与结果只解析一次，两个JSON耗时相同且不可相加" },
       尾部状态: tailStates[tailStatus] || "未知",
     };
-    // The complete read array is emitted once, separately from the summary.
-    safeLog("[Paipu SSE Browser] 浏览器SSE性能", [["汇总", summary], ["读取明细", readSamples]]);
+    Object.defineProperty(summary, "页面切换完成耗时_ms", {
+      enumerable: true,
+      configurable: true,
+      get: getPageSwitchDuration,
+    });
+
+    const logEntries = [["汇总", summary]];
+    if (debugMode) {
+      logEntries.push(["读取明细", limitDiagnosticArray(readSamples, 200)]);
+    }
+    safeLog("[Paipu SSE Browser] 浏览器SSE性能", logEntries);
   }
   function stopMonitoring() {
     if (monitorEnded !== Infinity) return;
@@ -542,6 +678,22 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         serverRequestId = eventRequestId;
         timings.serverRequestId = serverRequestId;
       }
+      const rawStatus = ev.performance["状态"];
+      if (rawStatus && typeof rawStatus === "object" && !Array.isArray(rawStatus)) {
+        serverBusinessStatus = {
+          牌谱获取方式: (typeof rawStatus["牌谱获取方式"] === "string" ? rawStatus["牌谱获取方式"] : null)
+            ?? (typeof ev.performance["牌谱获取方式"] === "string" ? ev.performance["牌谱获取方式"] : null),
+          牌谱获取结果: (typeof rawStatus["牌谱获取结果"] === "string" ? rawStatus["牌谱获取结果"] : null)
+            ?? (typeof ev.performance["牌谱获取结果"] === "string" ? ev.performance["牌谱获取结果"] : null),
+          是否命中本地记录: (typeof rawStatus["是否命中本地记录"] === "boolean" ? rawStatus["是否命中本地记录"] : null)
+            ?? (typeof ev.performance["是否命中本地记录"] === "boolean" ? ev.performance["是否命中本地记录"] : null),
+          是否等待文件锁: (typeof rawStatus["是否等待文件锁"] === "boolean" ? rawStatus["是否等待文件锁"] : null)
+            ?? (typeof ev.performance["是否等待文件锁"] === "boolean" ? ev.performance["是否等待文件锁"] : null),
+          牌谱获取HTTP状态码: (typeof rawStatus["牌谱获取HTTP状态码"] === "number" ? rawStatus["牌谱获取HTTP状态码"] : null)
+            ?? (typeof ev.performance["牌谱获取HTTP状态码"] === "number" ? ev.performance["牌谱获取HTTP状态码"] : null),
+        };
+      }
+      if (performanceLogged) return;
       performanceLogged = true;
       try {
         const report = {};
