@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
+from .admin_accounts import admin_router, start_manager, stop_manager, manager as admin_manager
 from .paipu_performance import (
     build_report as _build_performance_report, measure as _measure, performance as _performance,
     set_value as _set_performance_value, snapshot as _performance_snapshot,
@@ -319,6 +320,10 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(ms_client.preload_protocol)
     except MajsoulError as exc:
         log_error(事件="雀魂本地协议初始化失败", 错误原因=str(exc))
+    try:
+        await start_manager(CACHE_DIR, get_all_configured_accounts())
+    except Exception as exc:
+        log_error(事件="管理员账号池初始化失败", 错误原因=type(exc).__name__)
     st = engine_mgr.status()
     device = st.get("device", "CPUExecutionProvider")
     if device in ("N/A", "CPU"):
@@ -334,12 +339,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await drain_record_downloads()
+        await stop_manager()
         while _review_tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tuple(_review_tasks)), return_exceptions=True)
 
 
 app = FastAPI(title="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.include_router(admin_router)
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -664,7 +671,7 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         "ok": True,
         "majsoul": {
             "logged_in": ms_client.logged_in,
-            "account_pool_count": len(get_all_configured_accounts()),
+            "account_pool_count": admin_manager().overview()["total"] if admin_manager() else len(get_all_configured_accounts()),
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
@@ -783,7 +790,9 @@ def select_game_seat(meta: dict, target_actor: int | None, url_acc_id: int | Non
     if target_actor is not None:
         return target_actor if 0 <= target_actor <= 3 else 0
     acc_ids = meta.get("account_ids", [])
-    for account_id in (url_acc_id, ms_client.account_id, load_config().get("account_id")):
+    # A randomly assigned downloader account must not determine the reviewed player's seat.
+    candidates = (url_acc_id,) if admin_manager() else (url_acc_id, ms_client.account_id, load_config().get("account_id"))
+    for account_id in candidates:
         if account_id and account_id in acc_ids:
             return acc_ids.index(account_id)
     return 0
