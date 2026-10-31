@@ -114,65 +114,69 @@ def _download_repo_zipball(token: str, repo_identifier: str, reg_dir: Path) -> t
     if not clean_repo or "/" not in clean_repo:
         clean_repo = "Gxyh513/majsoul-register"
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "majsoul-analyzer",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
+    token = token.strip().strip("'\"")
     api_base = os.environ.get("MAJSOUL_GITHUB_API_BASE", "").strip().rstrip("/") or "https://api.github.com"
     branches = ["main", "master"]
+    auth_variants = [f"Bearer {token}", f"token {token}"]
     last_err = ""
 
     for branch in branches:
         url = f"{api_base}/repos/{clean_repo}/zipball/{branch}"
-        for attempt in range(3):
-            try:
-                with httpx.Client(headers=headers, follow_redirects=True, timeout=45) as client:
-                    resp = client.get(url)
-                    if resp.status_code == 200 and resp.content:
-                        reg_dir.mkdir(parents=True, exist_ok=True)
-                        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                            for member in z.infolist():
-                                parts = Path(member.filename).parts
-                                if len(parts) <= 1:
-                                    continue
-                                rel_path = Path(*parts[1:])
-                                target_path = reg_dir / rel_path
-                                if member.is_dir():
-                                    target_path.mkdir(parents=True, exist_ok=True)
-                                else:
-                                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                                    with z.open(member) as src, open(target_path, "wb") as dst:
-                                        shutil.copyfileobj(src, dst)
-                        if (reg_dir / "majsoul_register.py").is_file():
-                            log_info(事件="私有注册仓库API拉取", 状态="成功", 分支=branch)
-                            return True, ""
-                    elif resp.status_code == 404:
-                        last_err = f"HTTP 404（分支 {branch} 不存在或 Token 无权访问此私有仓库）"
-                        break
-                    elif resp.status_code == 401:
-                        return False, "HTTP 401 Unauthorized（MAJSOUL_REGISTER_GITHUB_TOKEN 无效或已过期）"
-                    elif resp.status_code == 403:
-                        return False, f"HTTP 403 Forbidden（Token 权限不足或被限流: {resp.text[:100]}）"
-                    else:
-                        last_err = f"HTTP {resp.status_code}: {resp.text[:100]}"
-            except Exception as exc:
-                last_err = str(exc)
-                time.sleep(1)
+        for auth_header in auth_variants:
+            headers = {
+                "Authorization": auth_header,
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "majsoul-analyzer",
+                "X-GitHub-Api-Version": "2022-11-28",
+            }
+            for attempt in range(2):
+                try:
+                    with httpx.Client(headers=headers, follow_redirects=True, timeout=45) as client:
+                        resp = client.get(url)
+                        if resp.status_code == 200 and resp.content:
+                            reg_dir.mkdir(parents=True, exist_ok=True)
+                            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                                for member in z.infolist():
+                                    parts = Path(member.filename).parts
+                                    if len(parts) <= 1:
+                                        continue
+                                    rel_path = Path(*parts[1:])
+                                    target_path = reg_dir / rel_path
+                                    if member.is_dir():
+                                        target_path.mkdir(parents=True, exist_ok=True)
+                                    else:
+                                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                                        with z.open(member) as src, open(target_path, "wb") as dst:
+                                            shutil.copyfileobj(src, dst)
+                            if (reg_dir / "majsoul_register.py").is_file():
+                                log_info(事件="私有注册仓库API拉取", 状态="成功", 分支=branch)
+                                return True, ""
+                        elif resp.status_code == 404:
+                            last_err = f"HTTP 404（分支 {branch} 不存在或 Token 无权访问此私有仓库）"
+                            break
+                        elif resp.status_code == 401:
+                            last_err = "HTTP 401 Unauthorized（MAJSOUL_REGISTER_GITHUB_TOKEN 无效或已过期）"
+                            break
+                        elif resp.status_code == 403:
+                            last_err = f"HTTP 403 Forbidden（Token 权限不足或被限流: {resp.text[:100]}）"
+                            break
+                        else:
+                            last_err = f"HTTP {resp.status_code}: {resp.text[:100]}"
+                except Exception as exc:
+                    last_err = str(exc)
+                    time.sleep(1)
 
     return False, last_err
 
 
-def ensure_private_repo() -> tuple[Path | None, str]:
+def ensure_private_repo(force_update: bool = False) -> tuple[Path | None, str]:
     """
     检查私有注册仓库是否存在；若不存在且配置了 GitHub Token，优先通过 GitHub REST API 下载解压，
     备选通过 git clone 拉取。返回 (reg_dir_or_none, failure_reason)。
     """
     reg_dir = get_register_dir()
     script_path = reg_dir / "majsoul_register.py"
-    if script_path.is_file():
+    if not force_update and script_path.is_file():
         return reg_dir, ""
 
     token = (
@@ -180,8 +184,8 @@ def ensure_private_repo() -> tuple[Path | None, str]:
         or os.environ.get("GITHUB_TOKEN")
         or os.environ.get("GH_TOKEN")
         or ""
-    ).strip()
-    repo_url = os.environ.get("MAJSOUL_REGISTER_REPO", "https://github.com/Gxyh513/majsoul-register.git").strip()
+    ).strip().strip("'\"")
+    repo_url = os.environ.get("MAJSOUL_REGISTER_REPO", "https://github.com/Gxyh513/majsoul-register.git").strip().strip("'\"")
 
     if not token:
         if shutil.which("git"):
@@ -226,8 +230,9 @@ def ensure_private_repo() -> tuple[Path | None, str]:
 class RegisterRunner:
     """注册任务执行器，负责与私有注册模块或私有服务交互。"""
 
-    def __init__(self, register_dir: Path | None = None):
+    def __init__(self, register_dir: Path | None = None, cache_dir: Path | None = None):
         self.register_dir = register_dir or get_register_dir()
+        self.cache_dir = cache_dir or (resolve_project_root() / "data" / "cache")
 
     async def execute(self) -> dict[str, Any]:
         """
@@ -265,6 +270,29 @@ class RegisterRunner:
                 f"未找到私有注册脚本 (majsoul_register.py){err_hint}。请检查 MAJSOUL_REGISTER_GITHUB_TOKEN 权限或配置 MAJSOUL_REGISTER_DIR。"
             )
 
+        token = (
+            os.environ.get("MAJSOUL_REGISTER_GITHUB_TOKEN")
+            or os.environ.get("GITHUB_TOKEN")
+            or os.environ.get("GH_TOKEN")
+            or ""
+        ).strip().strip("'\"")
+
+        mailtd_token = (
+            os.environ.get("MAJSOUL_MAILTD_TOKEN")
+            or os.environ.get("MAILTD_TOKEN")
+            or ""
+        ).strip().strip("'\"")
+
+        project_root = resolve_project_root()
+        cache_dir = getattr(self, "cache_dir", None) or (project_root / "data" / "cache")
+
+        env = dict(os.environ)
+        # 确保子进程能正确加载父级项目模块与私有模块，以及注入缓存路径与项目根路径
+        env["PYTHONPATH"] = f"{str(reg_dir)}{os.pathsep}{str(project_root)}"
+        env["MAJSOUL_CACHE_DIR"] = str(cache_dir)
+        env["MAJSOUL_PROJECT_ROOT"] = str(project_root)
+        env["PROJECT_ROOT"] = str(project_root)
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_out_txt = Path(temp_dir) / "output.txt"
             temp_out_json = Path(temp_dir) / "output.json"
@@ -277,21 +305,8 @@ class RegisterRunner:
                 "--save-to",
                 str(temp_out_txt),
             ]
-
-            mailtd_token = (
-                os.environ.get("MAJSOUL_MAILTD_TOKEN")
-                or os.environ.get("MAILTD_TOKEN")
-                or ""
-            ).strip()
             if mailtd_token:
                 cmd.extend(["--mailtd-token", mailtd_token])
-
-            env = dict(os.environ)
-            project_root = resolve_project_root()
-            # 确保子进程能正确加载父级项目模块与私有模块
-            env["PYTHONPATH"] = f"{str(reg_dir)}{os.pathsep}{str(project_root)}"
-
-            log_info(事件="自动注册任务", 状态="正在执行底层注册流程")
 
             def _run():
                 return subprocess.run(
@@ -305,15 +320,25 @@ class RegisterRunner:
                     errors="replace",
                 )
 
+            log_info(事件="自动注册任务", 状态="正在执行底层注册流程")
             try:
                 proc = await asyncio.to_thread(_run)
             except subprocess.TimeoutExpired as exc:
                 raise TimeoutError(f"注册流程超时（超过 {REGISTER_TASK_TIMEOUT_SECONDS} 秒）") from exc
 
+            # 若首次执行失败（如本地持久化目录残留旧版本脚本），且配置了 Token，尝试强制拉取最新仓库代码并重试一次
+            if proc.returncode != 0 and token:
+                log_warning(事件="注册脚本首次执行失败，尝试强制拉取最新仓库代码", 退出码=proc.returncode)
+                updated_dir, update_err = ensure_private_repo(force_update=True)
+                if updated_dir and (updated_dir / "majsoul_register.py").is_file():
+                    try:
+                        proc = await asyncio.to_thread(_run)
+                    except subprocess.TimeoutExpired as exc:
+                        raise TimeoutError(f"重试注册流程超时（超过 {REGISTER_TASK_TIMEOUT_SECONDS} 秒）") from exc
+
             if proc.returncode != 0:
-                err_msg = (proc.stderr or proc.stdout or "").strip()
-                # 检查平台封禁或验证码等限制提示
-                sanitized = redact_secrets(err_msg, mailtd_token)
+                err_msg = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+                sanitized = redact_secrets(err_msg, mailtd_token, token)
                 raise RuntimeError(f"注册脚本执行失败 (退出码 {proc.returncode}): {sanitized[-300:]}")
 
             # 解析结果
@@ -436,7 +461,7 @@ async def register_and_ingest(
     """
     执行完整的注册 -> 凭据验证 -> 去重检查 -> 写入账号池 -> 更新状态与历史记录。
     """
-    runner = runner or RegisterRunner()
+    runner = runner or RegisterRunner(cache_dir=cache_dir)
     start_time = time.monotonic()
     raw_credentials = None
 
@@ -583,7 +608,7 @@ class AutoRegisterScheduler:
         self.store = store
         self.cache_dir = cache_dir
         self.scheduler = scheduler
-        self.runner = runner or RegisterRunner()
+        self.runner = runner or RegisterRunner(cache_dir=cache_dir)
         self.instance_id = f"inst-{uuid.uuid4().hex[:8]}"
         self.task: asyncio.Task | None = None
         self._stopped = False
