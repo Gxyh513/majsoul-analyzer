@@ -87,20 +87,31 @@ $("loginForm").addEventListener("submit", async event => {
   clearAdminKey();
   try {
     await request("/login", "POST", {}, key);
-    if (!saveAdminKey(key)) throw new Error("浏览器无法保存当前标签页的管理员密钥");
-    $("adminKey").value = "";
-    showDashboard();
-    await refresh();
-    say("登录成功");
   } catch (error) {
     clearAdminKey();
     showLogin();
     say(error.message, true);
+    return;
+  }
+  if (!saveAdminKey(key)) {
+    showLogin();
+    say("浏览器无法保存当前标签页的管理员密钥", true);
+    return;
+  }
+  $("adminKey").value = "";
+  showDashboard();
+  try {
+    await refresh();
+    say("登录成功");
+  } catch (error) {
+    // Keep the validated key for recoverable backend/account-pool errors.
+    // A 401 from request() already clears the key and returns to the login panel.
+    say(error.message, true);
   }
 });
-$("logoutBtn").addEventListener("click", async () => {
-  try { await request("/logout", "POST", {}); } catch (_) {}
-  showLogin(); say("已退出管理员后台");
+$("logoutBtn").addEventListener("click", () => {
+  showLogin();
+  say("已退出管理员后台");
 });
 $("reloadBtn").addEventListener("click", () => refresh().catch(err => say(err.message, true)));
 $("addForm").addEventListener("submit", async event => {
@@ -169,4 +180,9 @@ $("accountRows").addEventListener("click", async event => {
     say("操作成功");
   } catch (err) { say(err.message, true); }
 });
-refresh().catch(() => showLogin());
+if (storedAdminKey()) {
+  showDashboard();
+  refresh().catch(error => say(error.message, true));
+} else {
+  showLogin();
+}
