@@ -376,7 +376,7 @@ async def test_connect_preserves_discovered_route_failover_and_handshake(monkeyp
         assert [call.args[0] for call in connect.await_args_list] == [
             "wss://ws-a.example:443/gateway", "wss://ws-b.example:8443/gateway"
         ]
-        assert connect.await_args_list[1].kwargs["open_timeout"] == 15
+        assert connect.await_args_list[1].kwargs["open_timeout"] == ms.WEBSOCKET_OPEN_TIMEOUT_SECONDS
         assert stats["WebSocket连接失败次数"] == 1
         assert stats["雀魂线路握手失败次数"] == 0
     finally:
@@ -401,3 +401,37 @@ async def test_token_login_keeps_check_and_success_flow(tmp_path):
     assert [call.args[0] for call in client.call.await_args_list] == ["oauth2Check", "oauth2Login"]
     assert client.logged_in and client.account_id == 42 and client.nickname == "test"
     assert client.access_token == "valid-test-token"
+
+@pytest.mark.anyio
+async def test_handshake_timeout_switches_gateway_and_cleans_pending(monkeypatch, tmp_path, route_service):
+    client = ms.MajsoulClient(tmp_path)
+    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.01)
+    routes_seen = []
+    first = HandshakeSocket(client, routes_seen)
+    second = HandshakeSocket(client, routes_seen)
+    async def no_reply(_packet):
+        return None
+    first.send = AsyncMock(side_effect=no_reply)
+    connect = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(ms.websockets, "connect", connect)
+    try:
+        await client.connect()
+        assert connect.await_count == 2
+        assert routes_seen == ["logical-b"]
+        assert not client._pending
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_token_server_rejection_is_distinct_from_network_failure(tmp_path):
+    client = ms.MajsoulClient(tmp_path)
+    client.call = AsyncMock(return_value=SimpleNamespace(has_account=False))
+    with pytest.raises(ms.MajsoulTokenInvalid):
+        await client.login_token("invalid")
+    client.call = AsyncMock(side_effect=TimeoutError())
+    with pytest.raises(TimeoutError):
+        await client.login_token("unreachable")
+    client.call = AsyncMock(side_effect=ms.MajsoulError("token invalid", code=109))
+    with pytest.raises(ms.MajsoulTokenInvalid):
+        await client.login_token("expired")

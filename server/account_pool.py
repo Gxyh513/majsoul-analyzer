@@ -6,6 +6,8 @@ and in-memory token refreshes for environment-managed pools.
 """
 from __future__ import annotations
 
+import asyncio
+
 import hashlib
 import json
 import logging
@@ -16,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import HTTPException
 
 from server.logger import log_debug, log_info, log_warning
-from server.majsoul.client import MajsoulClient, MajsoulError
+from server.majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
 from server.paipu_performance import get_value, measure, set_value
 
 if TYPE_CHECKING:
@@ -28,6 +30,8 @@ log = logging.getLogger(__name__)
 _env_pool_token_overrides: dict[str, tuple[str | None, str]] = {}
 # A 540 response has no reliable reset timestamp; avoid retrying it for a full day.
 _RATE_LIMIT_COOLDOWN = 24 * 60 * 60
+# Entire remote record download, including route lookup, logins and failovers.
+FETCH_RECORD_TOTAL_TIMEOUT_SECONDS = 60
 _rate_limited_until: dict[str, float] = {}
 
 
@@ -303,8 +307,12 @@ async def login_with_account_spec(
             client.current_account = account
             logged_in = True
             log_info(事件="雀魂登录", 状态="成功", 登录方式="令牌登录", 账号=masked, 昵称=client.nickname)
-        except Exception as e:
-            log_warning(事件="雀魂登录", 状态="失败", 登录方式="令牌登录", 失败阶段="令牌验证", 账号=masked, 错误原因=_redact_error(e, token, password))
+        except MajsoulTokenInvalid as e:
+            log_warning(事件="雀魂登录", 状态="失败", 登录方式="令牌登录", 失败阶段="令牌失效", 账号=masked, 错误原因=_redact_error(e, token, password))
+        except BaseException:
+            # Transient errors and cancellation must never trigger password login.
+            await client.close()
+            raise
 
     if not logged_in:
         if account and password:
@@ -362,6 +370,20 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
 
 
 async def fetch_record_with_failover(
+    game_uuid: str,
+    client: MajsoulClient | None = None,
+    client_lock=None,
+):
+    """Bound the complete remote download, not just individual RPC retries."""
+    try:
+        async with asyncio.timeout(FETCH_RECORD_TOTAL_TIMEOUT_SECONDS):
+            return await _fetch_record_with_failover_inner(game_uuid, client, client_lock)
+    except TimeoutError as exc:
+        set_value("最近雀魂失败类型", "网络失败")
+        raise HTTPException(status_code=503, detail="连接雀魂服务器超时，请稍后重试。") from exc
+
+
+async def _fetch_record_with_failover_inner(
     game_uuid: str,
     client: MajsoulClient | None = None,
     client_lock=None,
@@ -441,7 +463,10 @@ async def fetch_record_with_failover(
                         错误原因=_redact_error(error, account.get("password"), account.get("access_token")),
                     )
                     text = str(error).lower()
-                    outcomes.append("network_error" if any(x in text for x in ("timeout", "connect", "network", "getaddrinfo")) else "login_failed")
+                    network_failure = isinstance(error, (TimeoutError, ConnectionError, OSError)) or any(
+                        x in text for x in ("timeout", "timed out", "connect", "network", "getaddrinfo", "超时", "连接", "断开", "线路")
+                    )
+                    outcomes.append("network_error" if network_failure else "login_failed")
                     if get_value("雀魂连接结果") == "失败":
                         set_value("最近雀魂失败类型", "连接准备或网络失败")
                     else:
