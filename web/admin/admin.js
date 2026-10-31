@@ -126,10 +126,18 @@ function renderAutoRegister(reg) {
       '</tr>';
   }).join("") : '<tr><td colspan="5">暂无近期注册记录。</td></tr>';
 }
-async function refresh() {
-  const data = await request("/status");
-  if (!loggedIn) showDashboard();
-  render(data);
+let refreshPromise = null;
+function refresh() {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = request("/status")
+    .then(data => {
+      if (!loggedIn) showDashboard();
+      render(data);
+    })
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
 }
 $("loginForm").addEventListener("submit", async event => {
   event.preventDefault();
