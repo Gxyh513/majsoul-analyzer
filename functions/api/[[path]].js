@@ -291,6 +291,23 @@ export async function onRequest({ request, env }) {
     return jsonError(502, "分析服务返回了不支持的重定向");
   }
   if (upstream.status === 401 || upstream.status === 403) {
+    if (route.admin) {
+      // Admin endpoints have their own 401 responses (wrong admin key or
+      // expired session). Preserve only known, non-sensitive diagnostics so
+      // the Pages proxy does not mislabel them as an upstream API-token fault.
+      let detail = "管理员请求未通过鉴权，请检查管理员密钥、登录状态或服务鉴权配置";
+      try {
+        const payload = await upstream.json();
+        const safeDetails = new Set([
+          "管理员密钥错误",
+          "管理员未登录或登录已过期",
+          "远程访问需要有效的 MAJSOUL_API_TOKEN",
+          "来源不允许访问此服务",
+        ]);
+        if (safeDetails.has(payload?.detail)) detail = payload.detail;
+      } catch (_) {}
+      return jsonError(upstream.status, detail);
+    }
     try { await upstream.body?.cancel(); } catch (_) {}
     return jsonError(502, "分析服务鉴权配置异常，请联系管理员");
   }
