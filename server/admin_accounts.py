@@ -504,6 +504,8 @@ class AdminEdit(BaseModel):
 
 
 admin_router = APIRouter(prefix="/api/admin", tags=["管理员账号池"])
+
+
 def _admin_key() -> str:
     return os.environ.get("MAJSOUL_ADMIN_KEY", "").strip()
 
