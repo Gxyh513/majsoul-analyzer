@@ -246,12 +246,11 @@ test("admin routes forward the key header and never forward or set cookies", asy
 test("admin auth errors preserve safe diagnostics while analysis auth errors stay masked", async () => {
   const makeAdminRequest = (path = "/api/admin/login") => new Request(`https://pages.example${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: "wrong-key" }),
+    headers: { "Content-Type": "application/json", "X-Admin-Key": "wrong-key" },
+    body: "{}",
   });
   const cases = [
     [401, "管理员密钥错误"],
-    [401, "管理员未登录或登录已过期"],
     [401, "远程访问需要有效的 MAJSOUL_API_TOKEN"],
     [403, "来源不允许访问此服务"],
   ];
