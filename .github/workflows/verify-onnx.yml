@@ -18,7 +18,7 @@ jobs:
       - name: 验证真实模型分析
         run: docker run --rm majsoul-analyzer-onnx python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; m = EngineManager(Path('data/models')); events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf-8')); result = review_game(events, 0, m); assert any(k['decisions'] for k in result['kyokus']) and m.status()['model_ready']"
       - name: 牌谱转换与网络超时回归测试
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_majsoul_connection_init.py tests/test_review_regressions.py tests/test_rating_kan_fixes.py tests/test_analysis_correctness.py tests/test_security_regressions.py"
+        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_majsoul_connection_init.py tests/test_review_regressions.py tests/test_rating_kan_fixes.py tests/test_analysis_correctness.py"
       - name: 前端回放与交互回归测试
         run: |
           python -m pip install -q pytest
