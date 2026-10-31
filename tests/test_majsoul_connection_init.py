@@ -24,6 +24,7 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 def isolate_initialization_caches(monkeypatch):
     monkeypatch.setattr(ms, "_ROUTE_CACHE", {})
+    monkeypatch.setattr(ms, "_GATEWAY_FAILED_UNTIL", {})
     monkeypatch.setattr(ms, "_PROTOCOL_CACHE", {})
     ms._load_local_protocol.cache_clear()
     yield
@@ -435,3 +436,40 @@ async def test_token_server_rejection_is_distinct_from_network_failure(tmp_path)
     client.call = AsyncMock(side_effect=ms.MajsoulError("token invalid", code=109))
     with pytest.raises(ms.MajsoulTokenInvalid):
         await client.login_token("expired")
+
+@pytest.mark.anyio
+async def test_rpc_timeout_includes_websocket_send_and_cleans_pending(tmp_path, route_service):
+    client = ms.MajsoulClient(tmp_path)
+    await client.prepare()
+
+    async def blocked_send(_packet):
+        await asyncio.sleep(1)
+
+    client._ws = SimpleNamespace(send=blocked_send)
+    with pytest.raises(TimeoutError):
+        await client.call("oauth2Check", timeout=0.01, type=0, access_token="token")
+    assert client._pending == {}
+
+
+@pytest.mark.anyio
+async def test_handshake_send_and_reply_share_budget(monkeypatch, tmp_path, route_service):
+    client = ms.MajsoulClient(tmp_path)
+    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.025)
+    seen = []
+    first, second = HandshakeSocket(client, seen), HandshakeSocket(client, seen)
+
+    async def slow_send(packet):
+        await asyncio.sleep(0.018)
+        await HandshakeSocket.send(first, packet)
+        await asyncio.sleep(0.018)
+
+    first.send = slow_send
+    connect = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(ms.websockets, "connect", connect)
+    try:
+        await client.connect()
+        assert connect.await_count == 2
+        assert seen == ["logical-a", "logical-b"]
+        assert not client._pending
+    finally:
+        await client.close()

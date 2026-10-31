@@ -168,9 +168,29 @@ function setPerspectiveLoading(title) {
   }
 }
 
+// Different seats can insert different riichi-decision snapshots.
+// Preserve the underlying MJAI event rather than a seat-specific array index.
+function findPerspectiveStep(steps, eventIndex, fallbackStep) {
+  const fallback = Math.min(fallbackStep, Math.max(0, (steps?.length || 1) - 1));
+  if (!Number.isInteger(eventIndex) || !Array.isArray(steps) || !steps.length) return fallback;
+  let nearest = 0;
+  let found = false;
+  for (let i = 0; i < steps.length; i++) {
+    const idx = steps[i]?.event_idx;
+    if (!Number.isInteger(idx)) continue;
+    if (idx > eventIndex) break;
+    nearest = i;
+    found = true;
+  }
+  return found ? nearest : fallback;
+}
+
 function applyPerspective(result, preservePosition) {
   const round = preservePosition ? state.kyokuIdx : 0;
   const step = preservePosition ? state.stepIdx : 0;
+  const sourceEventIndex = preservePosition
+    ? state.reviewData?.kyokus?.[round]?.steps?.[step]?.event_idx
+    : null;
   if (state.isPlaying) togglePlay(false);
   cancelScheduledStep();
   state.reviewData = result;
@@ -182,7 +202,7 @@ function applyPerspective(result, preservePosition) {
   const index = Math.min(round, Math.max(0, (result.kyokus?.length || 1) - 1));
   renderSummaryDashboard();
   selectKyoku(index, !preservePosition);
-  if (preservePosition) setStep(Math.min(step, Math.max(0, (result.kyokus?.[index]?.steps?.length || 1) - 1)));
+  if (preservePosition) setStep(findPerspectiveStep(result.kyokus?.[index]?.steps, sourceEventIndex, step));
   if ($("roundModal") && !$("roundModal").classList.contains("hidden")) renderKyokuTable();
 }
 

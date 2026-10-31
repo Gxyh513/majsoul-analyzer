@@ -217,3 +217,15 @@ def test_round_summary_formats_yakuman_as_multiples(monkeypatch, fields, expecte
     assert expected in summary
     assert forbidden not in summary
     assert kyoku["steps"][-1]["event"] == hora
+
+def test_perspective_snapshots_reference_stable_mjai_event_indices(monkeypatch):
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}, start_round(),
+              {"type": "tsumo", "actor": 0, "pai": "1m"},
+              {"type": "reach", "actor": 0},
+              {"type": "dahai", "actor": 0, "pai": "1m", "tsumogiri": True},
+              {"type": "end_kyoku"}, {"type": "end_game"}]
+    first = reviewer.review_game(events, 0, FakeManager())["kyokus"][0]["steps"]
+    second = reviewer.review_game(events, 1, FakeManager())["kyokus"][0]["steps"]
+    assert [s["event_idx"] for s in first] == [1, 2, 3, 4]
+    assert [s["event_idx"] for s in second] == [1, 2, 4]

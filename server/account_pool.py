@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 import hashlib
 import json
 import logging
@@ -448,7 +450,7 @@ async def _fetch_record_with_failover_inner(
                 except Exception as error:
                     failure = error
 
-        if account is not None and isinstance(failure, TimeoutError):
+        if account is not None and isinstance(failure, (TimeoutError, httpx.TimeoutException)):
             # A stalled RPC usually indicates a bad route, not a bad account.
             # Retry the same account on a different gateway before switching accounts.
             async with client_lock:
@@ -485,7 +487,7 @@ async def _fetch_record_with_failover_inner(
                         错误原因=_redact_error(error, account.get("password"), account.get("access_token")),
                     )
                     text = str(error).lower()
-                    network_failure = isinstance(error, (TimeoutError, ConnectionError, OSError)) or any(
+                    network_failure = isinstance(error, (TimeoutError, ConnectionError, OSError, httpx.TimeoutException, httpx.NetworkError)) or any(
                         x in text for x in ("timeout", "timed out", "connect", "network", "getaddrinfo", "超时", "连接", "断开", "线路")
                     )
                     outcomes.append("network_error" if network_failure else "login_failed")
