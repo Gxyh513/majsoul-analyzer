@@ -243,6 +243,44 @@ test("admin routes forward the key header and never forward or set cookies", asy
   }
 });
 
+test("admin register routes are properly proxied and authorized", async () => {
+  let observed = [];
+  globalThis.fetch = async (url, init) => {
+    observed.push({ url: String(url), method: init.method, headers: new Headers(init.headers) });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const endpoints = [
+      ["GET", "/api/admin/register/status", undefined],
+      ["POST", "/api/admin/register/toggle", JSON.stringify({ enabled: false })],
+      ["POST", "/api/admin/register/trigger", "{}"],
+      ["GET", "/api/admin/register/history", undefined],
+    ];
+    for (const [method, routePath, body] of endpoints) {
+      const req = new Request(`https://pages.example${routePath}`, {
+        method,
+        headers: {
+          "X-Admin-Key": "test-admin-key",
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        body,
+      });
+      const res = await onRequest({ request: req, env: { MAJSOUL_API_TOKEN: "backend-token" } });
+      assert.equal(res.status, 200);
+    }
+    assert.equal(observed.length, 4);
+    assert.equal(observed[0].url, `${UPSTREAM}/api/admin/register/status`);
+    assert.equal(observed[1].url, `${UPSTREAM}/api/admin/register/toggle`);
+    assert.equal(observed[2].url, `${UPSTREAM}/api/admin/register/trigger`);
+    assert.equal(observed[3].url, `${UPSTREAM}/api/admin/register/history`);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("admin auth errors preserve safe diagnostics while analysis auth errors stay masked", async () => {
   const makeAdminRequest = (path = "/api/admin/login") => new Request(`https://pages.example${path}`, {
     method: "POST",

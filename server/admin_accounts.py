@@ -66,7 +66,30 @@ class AccountStore:
                     failure_count INTEGER NOT NULL DEFAULT 0,
                     total_fetch_ms REAL NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS auto_register_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_run_at REAL,
+                    next_run_at REAL,
+                    last_status TEXT,
+                    last_error TEXT,
+                    last_account_masked TEXT,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    locked_until REAL NOT NULL DEFAULT 0,
+                    locked_by TEXT
+                );
+                CREATE TABLE IF NOT EXISTS auto_register_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    executed_at REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    account_masked TEXT NOT NULL DEFAULT '',
+                    duration_ms REAL NOT NULL DEFAULT 0,
+                    error_message TEXT,
+                    details TEXT
+                );
             """)
+            db.execute("INSERT OR IGNORE INTO auto_register_state (id, enabled, next_run_at) VALUES (1, 1, ?)", (time.time() + 3600,))
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -108,17 +131,101 @@ class AccountStore:
 
     def add(self, item: dict) -> int:
         account, password, token = self._required(item)
+        nickname = str(item.get("nickname") or "").strip()[:100]
+        account_id = item.get("account_id")
         with self.lock, self._connect() as db:
             try:
                 cur = db.execute(
-                    """INSERT INTO accounts(account,password,access_token,nickname,created_at,token_updated_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (account, password, token, str(item.get("nickname") or "").strip()[:100], time.time(), time.time()),
+                    """INSERT INTO accounts(account,password,access_token,nickname,account_id,created_at,token_updated_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (account, password, token, nickname, account_id, time.time(), time.time()),
                 )
                 db.commit()
                 return cur.lastrowid
             except sqlite3.IntegrityError as exc:
                 raise ValueError("账号已存在") from exc
+
+    def has_account(self, account: str, token: str | None = None) -> bool:
+        acc_norm = str(account or "").strip().lower()
+        tok_norm = str(token or "").strip()
+        with self.lock, self._connect() as db:
+            if acc_norm and tok_norm:
+                row = db.execute("SELECT id FROM accounts WHERE LOWER(account)=? OR access_token=?", (acc_norm, tok_norm)).fetchone()
+            elif acc_norm:
+                row = db.execute("SELECT id FROM accounts WHERE LOWER(account)=?", (acc_norm,)).fetchone()
+            elif tok_norm:
+                row = db.execute("SELECT id FROM accounts WHERE access_token=?", (tok_norm,)).fetchone()
+            else:
+                return False
+            return bool(row)
+
+    def get_auto_register_state(self) -> dict:
+        with self.lock, self._connect() as db:
+            row = db.execute("SELECT * FROM auto_register_state WHERE id=1").fetchone()
+            if not row:
+                now = time.time()
+                db.execute("INSERT OR IGNORE INTO auto_register_state (id, enabled, next_run_at) VALUES (1, 1, ?)", (now + 3600,))
+                db.commit()
+                row = db.execute("SELECT * FROM auto_register_state WHERE id=1").fetchone()
+            return dict(row)
+
+    def update_auto_register_state(self, **kwargs):
+        permitted = {
+            "enabled", "last_run_at", "next_run_at", "last_status",
+            "last_error", "last_account_masked", "success_count",
+            "failure_count", "locked_until", "locked_by",
+        }
+        changes = {k: v for k, v in kwargs.items() if k in permitted}
+        if not changes:
+            return
+        columns = ", ".join(f"{name}=?" for name in changes)
+        with self.lock, self._connect() as db:
+            db.execute(f"UPDATE auto_register_state SET {columns} WHERE id=1", (*changes.values(),))
+            db.commit()
+
+    def acquire_auto_register_lock(self, instance_id: str, timeout_sec: float = 300) -> bool:
+        now = time.time()
+        with self.lock, self._connect() as db:
+            cur = db.execute(
+                """UPDATE auto_register_state
+                   SET locked_until=?, locked_by=?
+                   WHERE id=1 AND (locked_until < ? OR locked_by=?)""",
+                (now + timeout_sec, instance_id, now, instance_id),
+            )
+            db.commit()
+            return cur.rowcount > 0
+
+    def release_auto_register_lock(self, instance_id: str):
+        with self.lock, self._connect() as db:
+            db.execute(
+                """UPDATE auto_register_state
+                   SET locked_until=0, locked_by=NULL
+                   WHERE id=1 AND locked_by=?""",
+                (instance_id,),
+            )
+            db.commit()
+
+    def add_auto_register_log(
+        self,
+        status: str,
+        account_masked: str,
+        duration_ms: float,
+        error_message: str | None = None,
+        details: str | None = None,
+    ):
+        with self.lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO auto_register_logs(executed_at, status, account_masked, duration_ms, error_message, details)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (time.time(), status, account_masked, duration_ms, (error_message or "")[:256], (details or "")[:1024]),
+            )
+            db.execute("DELETE FROM auto_register_logs WHERE id NOT IN (SELECT id FROM auto_register_logs ORDER BY id DESC LIMIT 200)")
+            db.commit()
+
+    def get_auto_register_logs(self, limit: int = 50) -> list[dict]:
+        with self.lock, self._connect() as db:
+            rows = db.execute("SELECT * FROM auto_register_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
 
     def bulk_add(self, items: list[dict]) -> dict:
         valid = [(*self._required(item), str(item.get("nickname") or "").strip()[:100]) for item in items]
@@ -264,7 +371,7 @@ class AccountScheduler:
     def overview(self) -> dict:
         accounts = self.store.all()
         public = [_public_account(acc, acc["id"] in self.busy) for acc in accounts]
-        return {
+        res = {
             "accounts": public,
             "total": len(public),
             "idle": sum(a["status"] == "空闲" for a in public),
@@ -272,6 +379,9 @@ class AccountScheduler:
             "cooldown": sum(a["status"] == "540冷却" for a in public),
             "waiting": self.waiting,
         }
+        if _auto_register_scheduler:
+            res["auto_register"] = _auto_register_scheduler.overview()
+        return res
 
     async def reserve(self, attempted: set[int]):
         async with self.condition:
@@ -445,14 +555,20 @@ class AccountScheduler:
 
 
 _manager: AccountScheduler | None = None
+_auto_register_scheduler: Any | None = None
 
 
 def manager() -> AccountScheduler | None:
     return _manager
 
 
+def auto_register_scheduler() -> Any | None:
+    return _auto_register_scheduler
+
+
 async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> AccountScheduler:
-    global _manager
+    global _manager, _auto_register_scheduler
+    from .account_register import AutoRegisterScheduler
     path = _db_path()
     try:
         store = AccountStore(path)
@@ -467,14 +583,26 @@ async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> Account
     store.bootstrap(legacy_accounts)
     _manager = AccountScheduler(store, cache_dir)
     _manager.periodic_task = asyncio.create_task(_manager.periodic())
+    _auto_register_scheduler = AutoRegisterScheduler(store, cache_dir, _manager)
+    _auto_register_scheduler.start()
     return _manager
 
 
 async def stop_manager():
-    global _manager
+    global _manager, _auto_register_scheduler
+    current_reg, _auto_register_scheduler = _auto_register_scheduler, None
+    if current_reg:
+        await current_reg.stop()
     current, _manager = _manager, None
     if current:
         await current.shutdown()
+
+
+def _get_auto_register_scheduler():
+    current = auto_register_scheduler()
+    if current is None:
+        raise HTTPException(status_code=503, detail="自动注册调度器尚未初始化")
+    return current
 
 
 def _get_manager() -> AccountScheduler:
@@ -589,3 +717,31 @@ async def admin_delete_account(account_pk: int, request: Request):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await current.changed(account_pk)
     return {"ok": True}
+
+
+class AdminRegisterToggle(BaseModel):
+    enabled: bool
+
+
+@admin_router.get("/register/status")
+async def admin_register_status(request: Request):
+    _authorize(request)
+    return _get_auto_register_scheduler().overview()
+
+
+@admin_router.post("/register/toggle")
+async def admin_register_toggle(request: Request, data: AdminRegisterToggle):
+    _authorize(request)
+    return _get_auto_register_scheduler().toggle(data.enabled)
+
+
+@admin_router.post("/register/trigger")
+async def admin_register_trigger(request: Request):
+    _authorize(request)
+    return await _get_auto_register_scheduler().trigger_manual()
+
+
+@admin_router.get("/register/history")
+async def admin_register_history(request: Request):
+    _authorize(request)
+    return _get_manager().store.get_auto_register_logs(limit=100)

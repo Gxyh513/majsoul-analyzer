@@ -21,3 +21,9 @@ web/demo_review*.json
 *.sqlite3-journal
 *.sqlite3-wal
 *.sqlite3-shm
+
+# 自动注册私有仓库与临时凭据不得纳入镜像
+data/register/
+data/private_register/
+registered_accounts.txt
+registered_accounts.json
