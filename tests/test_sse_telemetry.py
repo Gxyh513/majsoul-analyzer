@@ -1,6 +1,11 @@
 import asyncio
 import logging
+from pathlib import Path
 import re
+import shutil
+import subprocess
+
+import pytest
 
 from server import app as server_app
 
@@ -58,3 +63,13 @@ def test_asgi_replaces_invalid_request_ids():
     assert ids[0] != ids[1]
     assert ids[2] == "1234567890abcdef1234567890abcdef"
     assert server_app.app.user_middleware[0].cls is server_app._SSESendMetricsMiddleware
+
+
+@pytest.mark.parametrize("filename", ["test_sse_telemetry.mjs", "test_sse_browser_performance.mjs"])
+def test_sse_node_suites(filename):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js not installed")
+    proc = subprocess.run([node, "--test", str(Path(__file__).with_name(filename))],
+                          capture_output=True, text=True, encoding="utf8", errors="replace")
+    assert proc.returncode == 0, proc.stdout + proc.stderr

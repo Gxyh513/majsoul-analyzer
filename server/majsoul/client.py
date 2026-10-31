@@ -1,9 +1,7 @@
 """Mahjong Soul (CN server) client: login + fetch game records.
 
 Protocol notes (web client):
-  * ``https://game.maj-soul.com/1/version.json`` -> current version
-  * ``/1/resversion{ver}.json`` -> prefix of ``res/proto/liqi.json``
-  * ``/1/v{ver}/config.json`` -> ``ip[0].gateways`` (route urls)
+  * the bundled, verified ``liqi`` schema provides protobuf descriptors
   * ``{route}/api/clientgate/routes?platform=Web&version=...`` -> ws domains
   * websocket ``wss://{domain}/gateway``; frames:
       0x01 + Wrapper            notify
@@ -14,14 +12,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
+from functools import lru_cache
 import hashlib
 import hmac
 import json
 import logging
-import os
-import tempfile
 import random
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -42,6 +40,14 @@ CN_BASE = "https://game.maj-soul.com/1"
 CN_ORIGIN = "https://game.maj-soul.com"
 DEFAULT_RES_VERSION = "0.16.289"
 DEFAULT_PKG_VERSION = "4.0.51"
+LOCAL_PROTOCOL_VERSION = "0.11.252.w"
+# Hash of the parsed schema serialized with sorted keys and no extra whitespace.
+LOCAL_PROTOCOL_SHA256 = "3d9191ef064daeed099feb482501e2d24e7c1da80a738e9b671b4618f178fed2"
+BUNDLED_PROTOCOL_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
+ROUTES_CACHE_TTL_SECONDS = 300
+_PROTOCOL_LOCK = threading.Lock()
+_PROTOCOL_CACHE: dict[str, LiqiProto] = {}
+_ROUTE_CACHE: dict[tuple, tuple[float, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
 DEFAULT_ROUTE_HOSTS = [
     "https://route-2.maj-soul.com",
     "https://route-4.maj-soul.com",
@@ -70,6 +76,53 @@ class MajsoulError(Exception):
     def __init__(self, message: str, code: int | None = None):
         super().__init__(message)
         self.code = code
+
+
+@lru_cache(maxsize=8)
+def _load_local_protocol(path: Path, file_state: tuple[int, int, int]) -> LiqiProto:
+    """Read and build the pinned schema once per unchanged file in this process."""
+    try:
+        with measure("Protobuf协议本地缓存读取耗时"):
+            raw = path.read_bytes()
+    except OSError as exc:
+        raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
+    try:
+        with measure("Protobuf JSON解析及协议初始化耗时"):
+            liqi = json.loads(raw)
+        normalized = json.dumps(liqi, sort_keys=True, separators=(",", ":")).encode("utf8")
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
+    if hashlib.sha256(normalized).hexdigest() != LOCAL_PROTOCOL_SHA256:
+        raise MajsoulError(f"本地雀魂协议文件 {path} 完整性校验失败，请恢复原文件。")
+    proto = _PROTOCOL_CACHE.get(LOCAL_PROTOCOL_SHA256)
+    if proto is not None:
+        return proto
+    try:
+        with measure("Protobuf JSON解析及协议初始化耗时"):
+            # The bundled schema predates the Unity WebGL device UUID field.
+            fields = liqi["nested"]["lq"]["nested"]["ClientDeviceInfo"]["fields"]
+            fields.setdefault("uuid", {"type": "string", "id": 14})
+            proto = LiqiProto(liqi)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
+    _PROTOCOL_CACHE[LOCAL_PROTOCOL_SHA256] = proto
+    return proto
+
+
+def _local_protocol(cache_dir: Path) -> LiqiProto:
+    filename = f"liqi-{LOCAL_PROTOCOL_VERSION}.json"
+    # lru_cache alone can construct the same entry twice under concurrent calls.
+    with _PROTOCOL_LOCK:
+        for path in (cache_dir / filename, BUNDLED_PROTOCOL_DIR / filename):
+            try:
+                path = path.resolve()
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
+            return _load_local_protocol(path, (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+    raise MajsoulError(f"找不到本地雀魂协议文件 {filename}，请恢复随项目提供的协议文件。")
 
 
 # --------------------------------------------------------------------------
@@ -165,97 +218,51 @@ class MajsoulClient:
         with measure(json_stage) if json_stage else nullcontext():
             return r.json()
 
+    def preload_protocol(self) -> LiqiProto:
+        """Validate and cache the local schema without connecting to Mahjong Soul."""
+        proto = _local_protocol(self.cache_dir)
+        self._record_proto = (LOCAL_PROTOCOL_VERSION, proto)
+        return proto
+
     async def prepare(self):
-        """Fetch version, protobuf schema and gateway list."""
-        async with httpx.AsyncClient(follow_redirects=True) as c:
-            # 1. Check live WebGL productVersion from index.html if available
-            try:
-                with measure("雀魂首页请求耗时"):
-                    idx_resp = await c.get(f"{self.base}/", headers={"User-Agent": UA}, timeout=15)
-                m_pkg = re.search(r'__webglProductVersion\s*=\s*"([^"]+)"', idx_resp.text)
-                if m_pkg:
-                    self.package_version = m_pkg.group(1)
-            except Exception as e:  # noqa: BLE001
-                log.warning("fetch index.html package version failed: %s", e)
-
-            # 2. Load or fetch liqi.json schema (via legacy version.json if not cached)
-            ver_data = await self._http_json(
-                c, f"{self.base}/version.json?randv={random.randint(10**15, 10**16)}",
-                request_stage="version.json请求耗时",
-            )
-            legacy_ver = ver_data["version"]
-            if not isinstance(legacy_ver, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", legacy_ver):
-                raise MajsoulError("雀魂协议版本无效")
-            liqi_cache = self.cache_dir / f"liqi-{legacy_ver}.json"
-            if liqi_cache.exists():
-                with measure("Protobuf协议本地缓存读取耗时"):
-                    liqi_text = liqi_cache.read_text(encoding="utf8")
-                with measure("Protobuf JSON解析及协议初始化耗时"):
-                    liqi = json.loads(liqi_text)
-            else:
-                with measure("协议资源索引请求耗时"):
-                    r = await c.get(f"{self.base}/resversion{legacy_ver}.json", headers={"User-Agent": UA}, timeout=30)
-                prefix = r.json()["res"]["res/proto/liqi.json"]["prefix"]
-                liqi = await self._http_json(
-                    c, f"{self.base}/{prefix}/res/proto/liqi.json",
-                    request_stage="协议文件下载耗时", json_stage="Protobuf JSON解析及协议初始化耗时",
-                )
-                temp_path = None
-                try:
-                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", dir=self.cache_dir,
-                                                     prefix=".liqi-", suffix=".tmp", delete=False) as f:
-                        temp_path = Path(f.name)
-                        json.dump(liqi, f)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(temp_path, liqi_cache)
-                finally:
-                    if temp_path is not None:
-                        temp_path.unlink(missing_ok=True)
-
-            # Ensure Unity WebGL 4.0 fields exist on ClientDeviceInfo
-            try:
-                dev_fields = liqi["nested"]["lq"]["nested"]["ClientDeviceInfo"]["fields"]
-                if "uuid" not in dev_fields:
-                    dev_fields["uuid"] = {"type": "string", "id": 14}
-            except Exception:  # noqa: BLE001
-                pass
-            with measure("Protobuf JSON解析及协议初始化耗时"):
-                self.proto = LiqiProto(liqi)
-            self.protocol_version = legacy_ver
-            self._record_proto = (legacy_ver, self.proto)
-
-            # 3. Fetch active WebSocket gateway routes for WebGL 4.0
+        """Load the verified local schema and discover WebSocket gateway routes."""
+        self.proto = self.preload_protocol()
+        self.protocol_version = LOCAL_PROTOCOL_VERSION
+        cache_key = (self.package_version, tuple(DEFAULT_ROUTE_HOSTS))
+        cached = _ROUTE_CACHE.get(cache_key)
+        if cached is None or cached[0] <= time.monotonic():
             domains: list[str] = []
             route_ids: dict[str, str] = {}
             route_hosts = list(DEFAULT_ROUTE_HOSTS)
             random.shuffle(route_hosts)
-            for gw in route_hosts:
-                try:
-                    data = await self._http_json(
-                        c,
-                        f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
-                        request_stage="雀魂routes线路请求耗时",
-                    )
-                    for rt in data.get("data", {}).get("routes", []):
-                        if rt.get("state") != "maintenancing" and rt.get("domain"):
-                            dom = rt["domain"]
-                            domains.append(dom)
-                            route_ids[dom] = rt.get("id") or dom.split(".")[0]
-                    if domains:
-                        break
-                except Exception as e:  # noqa: BLE001
-                    log.warning("route fetch from %s failed: %s", gw, e)
-
+            async with httpx.AsyncClient(follow_redirects=True) as c:
+                for gw in route_hosts:
+                    try:
+                        data = await self._http_json(
+                            c,
+                            f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
+                            request_stage="雀魂routes线路请求耗时",
+                        )
+                        for rt in data.get("data", {}).get("routes", []):
+                            if rt.get("state") != "maintenancing" and rt.get("domain"):
+                                dom = rt["domain"]
+                                domains.append(dom)
+                                route_ids[dom] = rt.get("id") or dom.split(".")[0]
+                        if domains:
+                            break
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("route fetch from %s failed: %s", gw, e)
             if not domains:
                 raise MajsoulError("获取雀魂服务器线路失败")
-            self.domains = domains
-            self._route_ids = route_ids
+            cached = (time.monotonic() + ROUTES_CACHE_TTL_SECONDS, tuple(domains), tuple(route_ids.items()))
+            _ROUTE_CACHE[cache_key] = cached
+
+        self.domains = list(cached[1])
+        self._route_ids = dict(cached[2])
 
     async def connect(self):
-        if self.proto is None:
-            with measure("雀魂连接准备", failure_count="雀魂连接准备失败次数"):
-                await self.prepare()
+        with measure("雀魂连接准备", failure_count="雀魂连接准备失败次数"):
+            await self.prepare()
         last_err = None
         connected_domain = None
         for d in self.domains:
