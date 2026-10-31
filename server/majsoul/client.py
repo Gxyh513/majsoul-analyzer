@@ -202,6 +202,7 @@ class MajsoulClient:
         self.domains: list[str] = []
         self._route_ids: dict[str, str] = {}
         self._ws = None
+        self._connected_domain: str | None = None
         self._idx = 1
         self._pending: dict[int, asyncio.Future] = {}
         self._reader: asyncio.Task | None = None
@@ -322,6 +323,7 @@ class MajsoulClient:
                     self._pending.pop(idx, None)
 
                 _GATEWAY_FAILED_UNTIL.pop(domain, None)
+                self._connected_domain = domain
                 log_debug(事件="WebSocket连接", 状态="成功", 地址=url)
                 return
             except asyncio.CancelledError:
@@ -334,7 +336,13 @@ class MajsoulClient:
                 await self.close()
         raise MajsoulError(f"无法连接雀魂服务器: {last_err}") from last_err
 
+    def mark_current_gateway_unhealthy(self):
+        """After a stalled RPC, prefer a different gateway on reconnect."""
+        if self._connected_domain:
+            _GATEWAY_FAILED_UNTIL[self._connected_domain] = time.monotonic() + GATEWAY_FAILURE_COOLDOWN_SECONDS
+
     async def close(self):
+        self._connected_domain = None
         self.logged_in = False
         self.current_account = None
         if self._reader:

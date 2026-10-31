@@ -443,6 +443,23 @@ async def _fetch_record_with_failover_inner(
                 except Exception as error:
                     failure = error
 
+        if account is not None and isinstance(failure, TimeoutError):
+            # A stalled RPC usually indicates a bad route, not a bad account.
+            # Retry the same account on a different gateway before switching accounts.
+            async with client_lock:
+                if client._ws is session:
+                    mark_unhealthy = getattr(client, "mark_current_gateway_unhealthy", None)
+                    if callable(mark_unhealthy):
+                        mark_unhealthy()
+                    await client.close()
+                    try:
+                        await login(account)
+                        if not is_logged_in(account):
+                            raise MajsoulError("更换线路后雀魂会话不可用")
+                        return await client.fetch_record(game_uuid)
+                    except Exception as retry_error:
+                        failure = retry_error
+
         if account is None:
             async with client_lock:
                 if any(is_logged_in(a) for a in available):
