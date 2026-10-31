@@ -55,7 +55,9 @@ function render(data) {
     const total = Number(acc.success_count || 0) + Number(acc.failure_count || 0);
     const pct = total ? Math.round(100 * acc.success_count / total) + "%" : "—";
     const status = escapeHTML(acc.status);
-    const details = acc.status === "540冷却" ? ' <span class="sub">至 ' + date(acc.cooldown_until) + '</span>' : "";
+    const details = (acc.status === "540冷却" ? ' <span class="sub">至 ' + date(acc.cooldown_until) + '</span>' : "") +
+      '<span class="sub">上次检测 ' + date(acc.last_checked_at) + '</span>' +
+      (acc.last_error ? '<span class="sub">最近错误：' + escapeHTML(acc.last_error) + '</span>' : "");
     return '<tr><td><span class="title">' + escapeHTML(acc.nickname || acc.account) +
       '</span><span class="sub">' + escapeHTML(acc.account) + '</span></td>' +
       '<td><span class="status ' + statusClass(acc.status) + '">' + status + '</span>' + details + '</td>' +
