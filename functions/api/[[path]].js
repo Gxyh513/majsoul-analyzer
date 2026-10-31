@@ -209,12 +209,14 @@ function monitorSseStream(body, requestId, started, wallOrigin) {
 
 export async function onRequest({ request, env }) {
   const path = new URL(request.url).pathname;
-  const accountPath = /^\/api\/admin\/accounts\/[1-9][0-9]*$/.test(path);
+  const accountMatch = /^\/api\/admin\/accounts\/([1-9][0-9]*)$/.exec(path);
+  const accountActionMatch = /^\/api\/admin\/accounts\/([1-9][0-9]*)\/(delete|edit)$/.exec(path);
   const route = ROUTES.get(`${request.method} ${path}`) ||
-    (accountPath && ["PATCH", "DELETE"].includes(request.method) ? { auth: true, stream: false, admin: true } : null);
+    (accountMatch && ["PATCH", "DELETE"].includes(request.method) ? { auth: true, stream: false, admin: true } : null) ||
+    (accountActionMatch && request.method === "POST" ? { auth: true, stream: false, admin: true } : null);
 
   if (!route) {
-    const methods = accountPath ? ["PATCH", "DELETE"] : ALLOWED_METHODS.get(path);
+    const methods = accountMatch ? ["PATCH", "DELETE"] : (accountActionMatch ? ["POST"] : ALLOWED_METHODS.get(path));
     if (methods) {
       return new Response(null, {
         status: 405,
@@ -230,8 +232,9 @@ export async function onRequest({ request, env }) {
     if (!token) return jsonError(503, "分析服务暂未完成配置，请稍后重试");
   }
 
+  const isAccountDeleteAction = accountActionMatch && accountActionMatch[2] === "delete";
   let body;
-  if (request.method === "POST" || request.method === "PATCH") {
+  if ((request.method === "POST" || request.method === "PATCH") && (!isAccountDeleteAction || request.headers.has("content-type"))) {
     const contentType = (request.headers.get("content-type") || "")
       .split(";")[0]
       .trim()
@@ -270,17 +273,37 @@ export async function onRequest({ request, env }) {
     headers.set("Accept-Encoding", !debugProxy && acceptsGzip(clientEncoding) ? "gzip" : "identity");
   }
 
+  let upstreamPath = path;
+  let upstreamMethod = request.method;
+  let upstreamBody = body;
+
+  if (accountMatch) {
+    // ModelScope FC API gateway rejects DELETE and PATCH. Rewrite to upstream POST actions.
+    if (request.method === "DELETE") {
+      upstreamPath = `/api/admin/accounts/${accountMatch[1]}/delete`;
+      upstreamMethod = "POST";
+      upstreamBody = new TextEncoder().encode("{}");
+      headers.set("Content-Type", "application/json");
+    } else if (request.method === "PATCH") {
+      upstreamPath = `/api/admin/accounts/${accountMatch[1]}/edit`;
+      upstreamMethod = "POST";
+    }
+  } else if (isAccountDeleteAction && (!upstreamBody || upstreamBody.byteLength === 0)) {
+    upstreamBody = new TextEncoder().encode("{}");
+    headers.set("Content-Type", "application/json");
+  }
+
   // The path comes from the exact allowlist. Query strings, cookies, Origin,
   // client auth headers, and forwarding headers are never copied upstream.
-  const upstreamUrl = new URL(path, UPSTREAM_ORIGIN);
+  const upstreamUrl = new URL(upstreamPath, UPSTREAM_ORIGIN);
   const started = performance.now();
   const wallOrigin = Date.now() - started;
   let upstream;
   try {
     upstream = await fetch(upstreamUrl.toString(), {
-      method: request.method,
+      method: upstreamMethod,
       headers,
-      body: ["POST", "PATCH"].includes(request.method) ? body : undefined,
+      body: ["POST", "PATCH"].includes(upstreamMethod) ? upstreamBody : undefined,
       signal: request.signal,
       redirect: "manual",
       cache: "no-store",

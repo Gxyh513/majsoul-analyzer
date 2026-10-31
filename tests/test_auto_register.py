@@ -267,6 +267,41 @@ def test_admin_api_endpoints_and_auth(monkeypatch, tmp_path: Path):
         assert "auto_register" in overview_resp.json()
         assert overview_resp.json()["auto_register"]["enabled"] is True
 
+        # 6. 添加账号及通过 POST action 编辑、删除测试
+        add_resp = c.post(
+            "/api/admin/accounts",
+            headers=headers,
+            json={
+                "account": "test_act@example.com",
+                "password": "pass",
+                "access_token": "token123",
+                "nickname": "测试账号",
+            },
+        )
+        assert add_resp.status_code == 200
+        acc_id = add_resp.json()["id"]
+
+        edit_resp = c.post(
+            f"/api/admin/accounts/{acc_id}/edit",
+            headers=headers,
+            json={"nickname": "已修改备注", "enabled": False},
+        )
+        assert edit_resp.status_code == 200
+
+        del_resp = c.post(
+            f"/api/admin/accounts/{acc_id}/delete",
+            headers=headers,
+            json={},
+        )
+        assert del_resp.status_code == 200
+
+        del_again = c.post(
+            f"/api/admin/accounts/{acc_id}/delete",
+            headers=headers,
+            json={},
+        )
+        assert del_again.status_code == 404
+
     finally:
         asyncio.run(stop_manager())
 

@@ -328,3 +328,68 @@ test("admin auth errors preserve safe diagnostics while analysis auth errors sta
     globalThis.fetch = realFetch;
   }
 });
+test("admin account action routes support POST /delete and /edit, and rewrite DELETE and PATCH for gateway compatibility", async () => {
+  let observed = [];
+  globalThis.fetch = async (url, init) => {
+    observed.push({
+      url: String(url),
+      method: init.method,
+      headers: new Headers(init.headers),
+      body: init.body ? new TextDecoder().decode(init.body) : undefined,
+    });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const req1 = new Request("https://pages.example/api/admin/accounts/1/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Key": "test-admin-key" },
+      body: "{}",
+    });
+    const res1 = await onRequest({ request: req1, env: { MAJSOUL_API_TOKEN: "backend-token" } });
+    assert.equal(res1.status, 200);
+
+    const req2 = new Request("https://pages.example/api/admin/accounts/1/edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    const res2 = await onRequest({ request: req2, env: { MAJSOUL_API_TOKEN: "backend-token" } });
+    assert.equal(res2.status, 200);
+
+    const req3 = new Request("https://pages.example/api/admin/accounts/2", {
+      method: "DELETE",
+      headers: { "X-Admin-Key": "test-admin-key" },
+    });
+    const res3 = await onRequest({ request: req3, env: { MAJSOUL_API_TOKEN: "backend-token" } });
+    assert.equal(res3.status, 200);
+
+    const req4 = new Request("https://pages.example/api/admin/accounts/2", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Admin-Key": "test-admin-key" },
+      body: JSON.stringify({ nickname: "new-nick" }),
+    });
+    const res4 = await onRequest({ request: req4, env: { MAJSOUL_API_TOKEN: "backend-token" } });
+    assert.equal(res4.status, 200);
+
+    assert.equal(observed.length, 4);
+    assert.equal(observed[0].url, `${UPSTREAM}/api/admin/accounts/1/delete`);
+    assert.equal(observed[0].method, "POST");
+
+    assert.equal(observed[1].url, `${UPSTREAM}/api/admin/accounts/1/edit`);
+    assert.equal(observed[1].method, "POST");
+    assert.equal(observed[1].body, JSON.stringify({ enabled: false }));
+
+    assert.equal(observed[2].url, `${UPSTREAM}/api/admin/accounts/2/delete`);
+    assert.equal(observed[2].method, "POST");
+    assert.equal(observed[2].body, "{}");
+
+    assert.equal(observed[3].url, `${UPSTREAM}/api/admin/accounts/2/edit`);
+    assert.equal(observed[3].method, "POST");
+    assert.equal(observed[3].body, JSON.stringify({ nickname: "new-nick" }));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
