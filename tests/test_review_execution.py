@@ -1,8 +1,6 @@
 """Review requests execute independently, without persisted review results."""
 import asyncio
-import base64
 import copy
-import gzip
 import json
 import threading
 from types import SimpleNamespace
@@ -97,8 +95,11 @@ def test_stream_send_metrics_wrap_the_actual_app(review_environment, caplog):
     assert response.status_code == 200
     assert response.headers["X-Request-ID"] == request_id
     messages = [record.getMessage() for record in caplog.records]
-    for event in ("100%", "complete"):
-        assert any(f"请求ID={request_id} 事件={event}" in message and "send等待=" in message for message in messages)
+    send_logs = [json.loads(message.removeprefix("[Paipu SSE Backend] ")) for message in messages
+                 if message.startswith("[Paipu SSE Backend] ")]
+    assert [entry["事件"] for entry in send_logs] == ["100%", "complete"]
+    assert all(entry["请求ID"] == request_id and entry["状态"] == "完成" for entry in send_logs)
+    assert all(entry["ASGI发送等待_ms"] >= 0 for entry in send_logs)
     performance_logs = [json.loads(message.removeprefix("[Paipu Performance] ")) for message in messages
                         if message.startswith("[Paipu Performance] ")]
     events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
@@ -106,7 +107,15 @@ def test_stream_send_metrics_wrap_the_actual_app(review_environment, caplog):
     reports = [event["performance"] for event in events if event["type"] == "performance"]
     assert len(performance_logs) == len(reports) == 1
     assert reports[0] == performance_logs[0]
-    assert reports[0]["request_id"] == request_id
+    report = reports[0]
+    assert report["请求ID"] == request_id
+    assert report["耗时_ms"]["complete ASGI发送开始时间"] == send_logs[1]["ASGI发送开始时间_ms"]
+    assert report["耗时_ms"]["complete ASGI发送完成时间"] == send_logs[1]["ASGI发送完成时间_ms"]
+    assert report["耗时_ms"]["complete ASGI发送等待耗时"] == send_logs[1]["ASGI发送等待_ms"]
+    assert 0 <= report["耗时_ms"]["complete ASGI发送开始时间"] <= report["耗时_ms"]["complete ASGI发送完成时间"]
+    assert report["耗时_ms"]["complete Base64编码耗时"] is None
+    assert report["数据大小_KB"]["Base64编码后大小"] is None
+    assert report["状态"]["是否使用Base64"] is False
     assert events.index(next(event for event in events if event["type"] == "complete")) < events.index(
         next(event for event in events if event["type"] == "performance"))
 
@@ -117,20 +126,23 @@ def test_stream_compresses_only_when_client_negotiates(review_environment, monke
     monkeypatch.setattr(app, "review_game", lambda *args, **kwargs: copy.deepcopy(large))
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
 
-    def complete(payload):
-        response = client.post("/api/analyze/stream", json=payload)
+    def complete(accept_encoding, payload):
+        response = client.post("/api/analyze/stream", json=payload, headers={"Accept-Encoding": accept_encoding})
         assert response.status_code == 200
+        # TestClient transparently decodes Content-Encoding; raw wire bytes are covered at ASGI level.
+        assert response.headers.get("Content-Encoding") == ("gzip" if accept_encoding == "gzip" else "identity")
         events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
                   if line.startswith("data: ")]
-        return next(event for event in events if event["type"] == "complete")
+        assert any(event.get("type") == "progress" and event.get("percent") == 100 for event in events)
+        completed = [event for event in events if event["type"] == "complete"]
+        assert len(completed) == 1
+        return completed[0]
 
     payload = analyze_payload("stream")
-    legacy = complete(payload)
-    assert legacy["result"] == {**large, "game_id": UUID}
-    negotiated = complete({**payload, "accept_compression": "gzip+base64"})
-    assert negotiated["encoding"] == "gzip+base64"
-    restored = json.loads(gzip.decompress(base64.b64decode(negotiated["data"])))
-    assert restored == {**large, "game_id": UUID}
+    identity = complete("identity", payload)
+    refused = complete("gzip;q=0", payload)
+    compressed = complete("gzip", {**payload, "accept_compression": "gzip+base64"})
+    assert identity == refused == compressed == {"type": "complete", "result": {**large, "game_id": UUID}}
 
 
 def test_start_review_job_returns_task_that_owns_permit(review_environment, monkeypatch):

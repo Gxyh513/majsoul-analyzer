@@ -146,17 +146,23 @@ function logReviewViewCompletion(timings, version) {
     const completeAt = timings.completeReceivedAt;
     const stream = timings.streamTimings || timings;
     try {
-      console.info(`[Paipu UX Performance] ${JSON.stringify({
-        event: "paipu_ux_performance", schema_version: 1,
-        client_request_id: stream.clientRequestId || timings.clientRequestId || timings.requestId || null,
-        server_request_id: stream.serverRequestId || null,
-        progress100_received_at_ms: rounded(progressAt), complete_received_at_ms: rounded(completeAt),
-        complete_parsed_at_ms: rounded(timings.completeParsedAt), view_completed_at_ms: rounded(now),
-        progress100_to_complete_ms: Number.isFinite(progressAt) ? rounded(completeAt - progressAt) : null,
-        complete_to_view_ms: rounded(now - completeAt),
-        progress100_to_view_ms: Number.isFinite(progressAt) ? rounded(now - progressAt) : null,
-        view_scope: "second_animation_frame_after_update", time_basis: "browser_performance_now",
-      })}`);
+      console.groupCollapsed("[Paipu UX Performance] 页面切换性能");
+      try {
+        console.log("页面切换统计", {
+          事件: "页面切换性能统计", 版本: 1,
+          客户端请求ID: stream.clientRequestId || timings.clientRequestId || timings.requestId || null,
+          服务端请求ID: stream.serverRequestId || null,
+          进度100接收时间_ms: rounded(progressAt), complete接收时间_ms: rounded(completeAt),
+          complete解析完成时间_ms: rounded(timings.completeParsedAt), 页面切换完成时间_ms: rounded(now),
+          complete事件JSON解析耗时_ms: rounded(stream.sse?.completeJsonParseMs),
+          进度100至complete耗时_ms: Number.isFinite(progressAt) ? rounded(completeAt - progressAt) : null,
+          complete至页面切换耗时_ms: rounded(now - completeAt),
+          进度100至页面切换耗时_ms: Number.isFinite(progressAt) ? rounded(now - progressAt) : null,
+          范围: "页面更新后的第二个动画帧", 计时口径: "浏览器 performance.now()",
+        });
+      } finally {
+        console.groupEnd();
+      }
     } catch (_) {}
   }));
 }

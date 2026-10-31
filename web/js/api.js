@@ -169,15 +169,6 @@ function apiAuthHeaders() {
 
 async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
-  let supportsCompression = false;
-  try {
-    if (typeof DecompressionStream === "function" && typeof Blob === "function" &&
-        typeof Blob.prototype.stream === "function" && typeof Response === "function" &&
-        typeof Response.prototype.arrayBuffer === "function" && typeof atob === "function") {
-      new DecompressionStream("gzip");
-      supportsCompression = true;
-    }
-  } catch (_) {}
   const clientRequestId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
@@ -187,11 +178,11 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   timings.requestId = clientRequestId;
   timings.clientRequestId = clientRequestId;
   timings.serverRequestId = null;
-  const debugReads = typeof window !== "undefined" && window.__PAIPU_DEBUG_SSE__ === true;
   const visibility = () => {
-    const value = typeof document === "undefined" ? "unknown" : document.visibilityState;
+    const value = typeof document === "undefined" ? null : document.visibilityState;
     return ["visible", "hidden", "prerender", "unloaded"].includes(value) ? value : "unknown";
   };
+  const displayVisibility = (value) => ({ visible: "可见", hidden: "隐藏", prerender: "预渲染", unloaded: "已卸载" }[value] || "未知");
   const initialVisibility = visibility();
   const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
   const monitorStarted = performance.now();
@@ -201,7 +192,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   let summaryLogged = false;
   let observer = null;
   let longTaskMonitoring = false;
-  const readSamples = debugReads ? [] : null;
+  const readSamples = [];
   const readWaits = [];
   let readCount = 0;
   let readErrorCount = 0;
@@ -232,21 +223,59 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   const sensitiveKey = /token|secret|password|passwd|authorization|cookie|credential|api[-_]?key/i;
   const sensitiveUrlKey = /(?:^|[_-])(key|signature|sig|auth|credential|session)(?:$|[_-])|token|secret|password/i;
   const roundMs = (value) => Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
+  const sizeKB = (value) => Number.isFinite(value) ? Number((value / 1024).toFixed(2)) : null;
   const validRequestId = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+  const privateDataKey = /(?:^|[_-])(?:result|review|content|data|payload)(?:$|[_-])|^(?:原始牌谱|原始数据|牌谱内容|牌谱数据|完整牌谱|分析结果|检讨结果|错误信息|错误详情|异常信息|异常详情|堆栈|牌谱|原文)$/i;
+  const privateText = /https?:\/\/|\b(?:bearer|basic)\s+\S+|(?:token|secret|password|authorization|cookie|api[-_]?key)\s*[:=]\s*\S+|^\s*[\[{]/i;
 
-  function safeLog(prefix, payload) {
+  // Only server performance fields are passed here. Copy them before logging so
+  // the console never holds the original potentially sensitive payload.
+  function sanitizeDiagnostic(value, key = "") {
+    if (value == null) return null;
+    if (sensitiveKey.test(key) || (privateDataKey.test(key) && typeof value !== "number" && typeof value !== "boolean")) {
+      return "[已脱敏]";
+    }
+    if (typeof value === "string") {
+      return privateText.test(value) || sensitiveValues.some((secret) => value.includes(secret)) ? "[已脱敏]" : value;
+    }
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "boolean") return value;
+    if (Array.isArray(value)) return value.map((item) => sanitizeDiagnostic(item));
+    if (typeof value === "object") {
+      const clean = Object.create(null);
+      for (const [name, item] of Object.entries(value)) {
+        const safeName = privateText.test(name) || sensitiveValues.some((secret) => name.includes(secret))
+          ? "已脱敏字段" : name;
+        clean[safeName] = sanitizeDiagnostic(item, name);
+      }
+      return clean;
+    }
+    return null;
+  }
+  function safeReadError(error) {
+    // Arbitrary browser/network error text can contain URLs, credentials or the
+    // response body. Retain its safe error category, never the original text.
     try {
-      const json = JSON.stringify(payload, (key, value) => {
-        if (sensitiveKey.test(key)) return "[REDACTED]";
-        if (typeof value === "string" && (sensitiveValues.some((secret) => value.includes(secret)) ||
-            /https?:\/\/|\b(?:bearer|basic)\s+\S+|(?:token|secret|password|authorization|cookie|api[-_]?key)\s*[:=]\s*\S+/i.test(value))) {
-          return "[REDACTED]";
-        }
-        return value;
-      });
-      console.info(`${prefix} ${json}`);
+      const categories = { AbortError: "读取中止", NetworkError: "网络错误", TimeoutError: "读取超时", TypeError: "读取异常" };
+      const name = error?.name;
+      const category = Object.prototype.hasOwnProperty.call(categories, name) ? categories[name] : "读取失败";
+      return `${category}（详细信息已脱敏）`;
+    } catch (_) {
+      return "读取失败（详细信息已脱敏）";
+    }
+  }
+  function safeLog(title, entries) {
+    let grouped = false;
+    try {
+      console.groupCollapsed(title);
+      grouped = true;
+      for (const [label, value] of entries) console.log(label, value);
     } catch (_) {
       // Diagnostics must never prevent displaying a completed review.
+    } finally {
+      if (grouped) {
+        try { console.groupEnd(); } catch (_) {}
+      }
     }
   }
   function recordLongTasks(entries) {
@@ -255,18 +284,18 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       longTaskCount++;
       longTaskMs += entry.duration;
       longestTaskMs = Math.max(longestTaskMs, entry.duration);
-      longTasks.push({ start_ms: roundMs(entry.startTime), duration_ms: roundMs(entry.duration), visibility: visibility() });
+      longTasks.push({ 开始时间_ms: roundMs(entry.startTime), 耗时_ms: roundMs(entry.duration), 可见状态: displayVisibility(visibility()) });
     }
   }
   function visibilityChanged() {
     const state = visibility();
     visibilityStates.add(state);
-    visibilityChanges.push({ state, at_ms: roundMs(performance.now()) });
+    visibilityChanges.push({ 状态: displayVisibility(state), 时间_ms: roundMs(performance.now()) });
   }
   function frameSummary(item) {
-    return item ? { bytes: item.bytes, first_chunk: item.firstChunk, last_chunk: item.lastChunk,
-      first_at_ms: roundMs(item.firstAt), last_at_ms: roundMs(item.lastAt),
-      first_at_unix_ms: roundMs(wallOrigin + item.firstAt) } : null;
+    return item ? { 数据大小_KB: sizeKB(item.bytes), 首分块序号: item.firstChunk, 末分块序号: item.lastChunk,
+      首分块接收时间_ms: roundMs(item.firstAt), 末分块接收时间_ms: roundMs(item.lastAt),
+      首分块接收时间_Unix_ms: roundMs(wallOrigin + item.firstAt) } : null;
   }
   function reportDiagnostics() {
     if (!monitorFinished || !streamFinished || summaryLogged) return;
@@ -276,32 +305,44 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     const sse = timings.sse || {};
     timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
       visibilityStates: [...visibilityStates] };
+    const tailStates = { not_started: "未开始", fetch_error: "请求失败", http_error: "HTTP错误", no_body: "响应体缺失",
+      reader_error: "读取器不可用", timeout: "超时", read_error: "读取失败", diagnostic_error: "诊断失败",
+      eof: "流结束", business_error: "业务失败", pending: "待读取" };
     const summary = {
-      event: "paipu_sse_browser", schema_version: 1,
-      client_request_id: clientRequestId, server_request_id: serverRequestId,
-      read_count: readCount, chunk_count: chunkCount, total_bytes: totalBytes,
-      first_chunk_ms: firstChunk?.received_at_ms ?? null, last_chunk_ms: lastChunk?.received_at_ms ?? null,
-      first_to_last_ms: firstChunkAt !== null && lastChunkAt !== null ? roundMs(lastChunkAt - firstChunkAt) : null,
-      chunk_time_basis: "browser_performance_now_ms_at_read_completion",
-      read_wait_total_ms: roundMs(readWaits.reduce((sum, wait) => sum + wait, 0)),
-      read_wait_max_ms: sortedWaits.length ? roundMs(sortedWaits[sortedWaits.length - 1]) : null,
-      read_wait_p95_ms: roundMs(p95), read_error_count: readErrorCount, error_count: errorCount,
-      diagnostic_error_count: diagnosticErrorCount, first_chunk: firstChunk, last_chunk: lastChunk,
-      visibility: { initial: initialVisibility, final: visibility(), states: [...visibilityStates], changes: visibilityChanges },
-      monitor: { started_at_ms: roundMs(monitorStarted), ended_at_ms: roundMs(monitorEnded),
-        time_origin_unix_ms: roundMs(wallOrigin), long_task_enabled: longTaskMonitoring,
-        scope: "request_to_result_parsed", time_basis: "browser_performance_now_uncalibrated" },
-      long_tasks: { count: longTaskCount, total_ms: roundMs(longTaskMs), max_ms: roundMs(longestTaskMs), entries: longTasks },
-      frames: { progress100: frameSummary(progressFrame), complete: frameSummary(completeFrame),
-        same_chunk: typeof sse.sameChunk === "boolean" ? sse.sameChunk : null,
-        complete_event_parsed_at_ms: roundMs(sse.completeEventParsedAt),
-        complete_first_to_event_parsed_ms: Number.isFinite(sse.completeFirstAt)
+      事件: "浏览器SSE性能统计", 版本: 1,
+      客户端请求ID: clientRequestId, 服务端请求ID: serverRequestId,
+      读取次数: readCount, 分块数: chunkCount, 总数据大小_KB: sizeKB(totalBytes),
+      首分块接收时间_ms: roundMs(firstChunkAt), 末分块接收时间_ms: roundMs(lastChunkAt),
+      首末分块间隔_ms: firstChunkAt !== null && lastChunkAt !== null ? roundMs(lastChunkAt - firstChunkAt) : null,
+      分块计时口径: "浏览器 performance.now()，以读取完成时间为准",
+      数据口径: "HTTP自动解压后的SSE数据，非传输压缩大小",
+      读取等待总耗时_ms: roundMs(readWaits.reduce((sum, wait) => sum + wait, 0)),
+      读取等待最大耗时_ms: sortedWaits.length ? roundMs(sortedWaits[sortedWaits.length - 1]) : null,
+      读取等待P95耗时_ms: roundMs(p95), 读取错误次数: readErrorCount, 错误总次数: errorCount,
+      诊断错误次数: diagnosticErrorCount, 首分块: firstChunk, 末分块: lastChunk,
+      可见状态: { 初始: displayVisibility(initialVisibility), 最终: displayVisibility(visibility()),
+        状态集合: [...visibilityStates].map(displayVisibility), 变化: visibilityChanges },
+      监测: { 开始时间_ms: roundMs(monitorStarted), 结束时间_ms: roundMs(monitorEnded),
+        时间原点_Unix_ms: roundMs(wallOrigin), 已启用长任务监测: longTaskMonitoring,
+        范围: "从请求开始到结果解析完成", 计时口径: "浏览器未校准的 performance.now()" },
+      长任务: { 次数: longTaskCount, 总耗时_ms: roundMs(longTaskMs), 最大耗时_ms: roundMs(longestTaskMs), 明细: longTasks },
+      事件帧: { 进度100: frameSummary(progressFrame), complete: frameSummary(completeFrame),
+        位于同一分块: typeof sse.sameChunk === "boolean" ? sse.sameChunk : null,
+        complete事件解析完成时间_ms: roundMs(sse.completeEventParsedAt),
+        complete结果解析完成时间_ms: roundMs(sse.completeParsedAt),
+        complete事件JSON解析耗时_ms: roundMs(sse.completeJsonParseMs),
+        complete首分块至事件解析完成耗时_ms: Number.isFinite(sse.completeFirstAt)
           ? roundMs(sse.completeEventParsedAt - sse.completeFirstAt) : null,
-        complete_read_wait_ms: roundMs(completeReadWaitMs), complete_between_reads_ms: roundMs(completeBetweenReadsMs) },
-      tail_status: tailStatus, read_details_enabled: debugReads,
+        complete读取等待耗时_ms: roundMs(completeReadWaitMs), complete分块间处理耗时_ms: roundMs(completeBetweenReadsMs) },
+      结果传输: { 格式: Number.isFinite(sse.completeEventParsedAt) ? "原始JSON SSE" : null,
+        压缩后数据大小_KB: null, Base64数据大小_KB: null, Base64解码耗时_ms: null,
+        手动解压耗时_ms: null, 手动解压后数据大小_KB: null,
+        JSON解析耗时_ms: roundMs(sse.completeJsonParseMs), 事件JSON解析耗时_ms: roundMs(sse.completeJsonParseMs),
+        计时口径: "HTTP压缩由浏览器自动处理；原始complete事件与结果只解析一次，两个JSON耗时相同且不可相加" },
+      尾部状态: tailStates[tailStatus] || "未知",
     };
-    if (debugReads) summary.read_details = readSamples;
-    safeLog("[Paipu SSE Browser]", summary);
+    // The complete read array is emitted once, separately from the summary.
+    safeLog("[Paipu SSE Browser] 浏览器SSE性能", [["汇总", summary], ["读取明细", readSamples]]);
   }
   function stopMonitoring() {
     if (monitorEnded !== Infinity) return;
@@ -376,8 +417,8 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   }
 
   const requestBody = { ...postBody };
+  // HTTP Content-Encoding is decoded by fetch; do not negotiate an embedded encoding.
   delete requestBody.accept_compression;
-  if (supportsCompression) requestBody.accept_compression = "gzip+base64";
   let sameOrigin = true;
   if (typeof window !== "undefined" && window.location) {
     try {
@@ -409,6 +450,8 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
         Accept: "text/event-stream",
         ...authHeaders,
         ...(sameOrigin ? { "X-Request-ID": clientRequestId } : {}),
+        ...(isPagesProxyMode() && typeof window !== "undefined" && window.__PAIPU_DEBUG_PROXY__ === true
+          ? { "X-Paipu-Proxy-Debug": "1" } : {}),
       },
       body: JSON.stringify(requestBody),
     });
@@ -494,14 +537,26 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       if (performanceLogged) return;
       // The performance payload is emitted by the backend itself and therefore
       // takes precedence over a response header supplied by an intermediary.
-      const eventRequestId = ev.performance.request_id;
+      const eventRequestId = ev.performance["请求ID"];
       if (validRequestId(eventRequestId)) {
         serverRequestId = eventRequestId;
         timings.serverRequestId = serverRequestId;
       }
       performanceLogged = true;
-      safeLog("[Paipu Performance]", { client_request_id: clientRequestId,
-        server_request_id: serverRequestId, performance: ev.performance });
+      try {
+        const report = {};
+        for (const key of ["事件", "schema版本", "请求ID", "总耗时_ms", "耗时_ms", "数据大小_KB", "计数", "状态", "压缩比例", "计时口径", "当前进行中阶段"]) {
+          const value = key === "请求ID" && !validRequestId(eventRequestId) ? null : ev.performance[key];
+          report[key] = sanitizeDiagnostic(value, key);
+        }
+        safeLog("[Paipu Performance] 服务端性能", [["请求关联", {
+          客户端请求ID: clientRequestId, 服务端请求ID: serverRequestId,
+        }], ["性能统计", report]]);
+      } catch (_) {
+        // Even a malformed optional diagnostic must not affect the review.
+        diagnosticErrorCount++;
+        errorCount++;
+      }
       return;
     }
     // Once complete has been received, trailing progress/errors are diagnostic
@@ -517,54 +572,21 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       timings.completeReceivedAt = completeFrame?.lastAt ?? receivedAt;
       const progressAt = timings.progress100ReceivedAt;
       const first = completeFrame?.firstAt;
-      const sameChunk = progressFrame && completeFrame ? progressFrame.lastChunk === completeFrame.firstChunk : "N/A";
+      const sameChunk = progressFrame && completeFrame ? progressFrame.lastChunk === completeFrame.firstChunk : null;
       timings.sse = {
         completeBytes: completeFrame?.bytes ?? null,
         completeFirstAt: first ?? null,
         completeLastAt: timings.completeReceivedAt,
         completeEventParsedAt: parsedAt,
+        completeJsonParseMs: parsedAt - eventParseStarted,
         progressLastAt: progressAt ?? null,
         sameChunk,
         chunkCount,
         totalBytes,
       };
-      completionEvent = { event: ev, eventParseMs: parsedAt - eventParseStarted };
+      completionEvent = ev;
     } else if (type === "error") {
       throw Object.assign(new Error(`服务器分析失败：${ev.detail || "分析发生错误"}`), { serverReported: true });
-    }
-  }
-
-  async function restoreComplete({ event, eventParseMs }) {
-    if (event.encoding == null) {
-      safeLog("[Paipu Compression]", { client_request_id: clientRequestId, server_request_id: serverRequestId,
-        format: "raw_json", compressed_bytes: null, decompression_ms: 0, decompressed_bytes: null,
-        json_parse_ms: roundMs(eventParseMs) });
-      return event.result;
-    }
-    if (event.encoding !== "gzip+base64" || typeof event.data !== "string" || !supportsCompression) {
-      throw receiveError("接收的压缩分析结果格式不受支持，请刷新页面后重试。");
-    }
-    try {
-      const base64Started = performance.now();
-      const binary = atob(event.data);
-      const compressed = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) compressed[i] = binary.charCodeAt(i);
-      const base64Ms = performance.now() - base64Started;
-      const decompressStarted = performance.now();
-      const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
-      const decoded = await new Response(stream).arrayBuffer();
-      const decompressMs = performance.now() - decompressStarted;
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
-      const parseStarted = performance.now();
-      const result = JSON.parse(text);
-      const parseMs = performance.now() - parseStarted;
-      safeLog("[Paipu Compression]", { client_request_id: clientRequestId, server_request_id: serverRequestId,
-        format: "gzip+base64", compressed_bytes: compressed.byteLength, base64_bytes: event.data.length,
-        base64_decode_ms: roundMs(base64Ms), decompression_ms: roundMs(decompressMs),
-        decompressed_bytes: decoded.byteLength, json_parse_ms: roundMs(parseMs), event_json_parse_ms: roundMs(eventParseMs) });
-      return result;
-    } catch (_) {
-      throw receiveError("接收的压缩分析结果无法恢复，请稍后重试。");
     }
   }
 
@@ -639,7 +661,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     if (!failed && !packet.done) {
       chunkCount++;
       totalBytes += size;
-      const chunk = { index: chunkCount, read_index: readCount, bytes: size, received_at_ms: roundMs(readFinished) };
+      const chunk = { 分块序号: chunkCount, 读取序号: readCount, 数据大小_KB: sizeKB(size), 接收时间_ms: roundMs(readFinished) };
       if (!firstChunk) {
         firstChunk = chunk;
         firstChunkAt = readFinished;
@@ -647,9 +669,10 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       lastChunk = chunk;
       lastChunkAt = readFinished;
     }
-    if (readSamples) readSamples.push({ index: readCount, started_at_ms: roundMs(readStarted),
-      finished_at_ms: roundMs(readFinished), wait_ms: roundMs(wait), bytes: size,
-      outcome: failed ? "error" : (packet.done ? "eof" : "chunk"), visibility: currentVisibility });
+    readSamples.push({ 序号: readCount, 开始时间_ms: roundMs(readStarted),
+      结束时间_ms: roundMs(readFinished), 等待耗时_ms: roundMs(wait), 数据大小_KB: sizeKB(size),
+      状态: failed ? "读取失败" : (packet.done ? "流结束" : "数据分块"), 可见状态: displayVisibility(currentVisibility),
+      错误信息: failed ? safeReadError(failure) : null });
     if (failed) throw failure;
     return { ...packet, readFinished };
   }
@@ -728,7 +751,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     if (!completionEvent) {
       throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
     }
-    const result = await restoreComplete(completionEvent);
+    const result = completionEvent.result;
     if (!result) {
       throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
     }

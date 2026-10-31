@@ -357,12 +357,11 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
       const completePart=byteBuffer.indexOf(Buffer.from('"value":7'));
       const cuts=[0,cr+1,chinese+1,chinese+2,completePart+4,bytes.length];
       chunks=cuts.slice(1).map((end,i)=>bytes.slice(cuts[i],end));
-      // A terminated complete event must finish without waiting for stream EOF.
-      readError=newline ? Error('read after complete') : null;
+      // A terminated complete event returns before the diagnostic tail is drained.
+      readError=null;
       progress=[];
       const result=await fetchReviewStream({paipu:'demo'},(...args)=>progress.push(args));
       await new Promise(resolve=>setTimeout(resolve,0));
-      readError=null;
       assert.deepStrictEqual(result,{ok:true,nested:{value:7}});
       assert.deepStrictEqual(progress,[[37,'分析中'],[5,'queued'],[100,'分析完成，正在加载回放...']]);
       assert.deepStrictEqual(toasts,[]);
@@ -371,35 +370,27 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.strictEqual(fetchCalls.length,6);
   assert.strictEqual(fetchCalls[0].url,'/api/analyze/stream');
   assert.strictEqual(fetchCalls[0].options.method,'POST');
-  const expectedBody = {paipu:'demo'};
-  try {
-    if (typeof DecompressionStream === 'function' && typeof Blob === 'function' &&
-        typeof Blob.prototype.stream === 'function' && typeof Response === 'function' &&
-        typeof Response.prototype.arrayBuffer === 'function' && typeof atob === 'function') {
-      new DecompressionStream('gzip');
-      expectedBody.accept_compression = 'gzip+base64';
-    }
-  } catch (_) {}
-  assert.deepStrictEqual(JSON.parse(fetchCalls[0].options.body), expectedBody);
-  assert.strictEqual(releases,6); assert.strictEqual(cancels,3);
+  assert.deepStrictEqual(JSON.parse(fetchCalls[0].options.body), {paipu:'demo'});
+  assert.strictEqual(fetchCalls[0].options.headers.Accept,'text/event-stream');
+  assert.strictEqual(releases,6); assert.strictEqual(cancels,0);
 
   chunks=[encode('data: {"type":"error","detail":"bad JSON analysis"}\n\n')];
   await assert.rejects(fetchReviewStream({},()=>{}), error =>
     error.serverReported && /bad JSON analysis/.test(error.message));
-  assert.strictEqual(releases,7); assert.strictEqual(cancels,4);
+  assert.strictEqual(releases,7); assert.strictEqual(cancels,1);
 
   chunks=[encode('data: {"type":\n\n')];
   await assert.rejects(fetchReviewStream({},()=>{}), error => error.receiveError && /数据格式/.test(error.message));
-  assert.strictEqual(releases,8); assert.strictEqual(cancels,5);
+  assert.strictEqual(releases,8); assert.strictEqual(cancels,2);
 
   chunks=[encode('data: {"type":"progress","percent":42}\n\n')];
   await assert.rejects(fetchReviewStream({},()=>{}), error => error.receiveError && /未完整接收/.test(error.message));
-  assert.strictEqual(releases,9); assert.strictEqual(cancels,5); // normal EOF, no complete event
+  assert.strictEqual(releases,9); assert.strictEqual(cancels,2); // normal EOF, no complete event
 
   chunks=[]; readError=Error('connection lost');
   await assert.rejects(fetchReviewStream({},()=>{}), error => error.receiveError && /连接中断/.test(error.message));
   readError=null;
-  assert.strictEqual(releases,10); assert.strictEqual(cancels,6);
+  assert.strictEqual(releases,10); assert.strictEqual(cancels,3);
 
   fetchError=Error('offline');
   await assert.rejects(fetchReviewStream({},()=>{}), /重复推理/);
@@ -408,7 +399,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   await assert.rejects(fetchReviewStream({},()=>{}), /HTTP 503/);
   responseOverride={ok:true,body:null};
   await assert.rejects(fetchReviewStream({},()=>{}), error => error.receiveError && /无法读取/.test(error.message));
-  assert.strictEqual(releases,10); assert.strictEqual(cancels,6);
+  assert.strictEqual(releases,10); assert.strictEqual(cancels,3);
 })().then(()=>clearTimeout(watchdog)).catch(e=>{console.error(e);process.exit(1)});
 '''
     proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)

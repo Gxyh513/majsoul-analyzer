@@ -83,6 +83,20 @@ function publicStatus(payload) {
   };
 }
 
+function acceptsGzip(header) {
+  const encodings = new Map();
+  for (const entry of (header || "").split(",")) {
+    const [name, ...options] = entry.trim().toLowerCase().split(";");
+    let quality = 1;
+    for (const option of options) {
+      const match = /^\s*q\s*=\s*(.+)\s*$/.exec(option);
+      if (match) quality = Number(match[1]);
+    }
+    if (name.trim()) encodings.set(name.trim(), Number.isFinite(quality) && quality >= 0 && quality <= 1 ? quality : 0);
+  }
+  return (encodings.get("gzip") ?? encodings.get("*") ?? 0) > 0;
+}
+
 function safeResponseHeaders(upstream, isStream) {
   const headers = new Headers();
   const contentType = upstream.headers.get("content-type");
@@ -91,7 +105,8 @@ function safeResponseHeaders(upstream, isStream) {
   if (isStream && upstream.ok && /^text\/event-stream\b/i.test(contentType || "")) {
     headers.set("Content-Type", "text/event-stream; charset=utf-8");
     headers.set("Cache-Control", "no-cache, no-transform");
-    headers.set("Content-Encoding", "identity");
+    headers.set("Content-Encoding", upstream.headers.get("content-encoding") || "identity");
+    headers.set("Vary", "Accept-Encoding");
     headers.set("X-Accel-Buffering", "no");
   } else {
     headers.set("Cache-Control", "no-store");
@@ -224,6 +239,9 @@ export async function onRequest({ request, env }) {
     const supplied = request.headers.get("X-Request-ID") || "";
     requestId = /^[0-9a-f]{32}$/.test(supplied) ? supplied : crypto.randomUUID().replaceAll("-", "");
     headers.set("X-Request-ID", requestId);
+    const clientEncoding = request.cf?.clientAcceptEncoding ?? request.headers.get("Accept-Encoding");
+    const debugProxy = request.headers.get("X-Paipu-Proxy-Debug") === "1";
+    headers.set("Accept-Encoding", !debugProxy && acceptsGzip(clientEncoding) ? "gzip" : "identity");
   }
 
   // The path comes from the exact allowlist. Query strings, cookies, Origin,
@@ -284,6 +302,13 @@ export async function onRequest({ request, env }) {
     console.info(`[Paipu SSE Proxy] 客户端请求ID=${requestId} 服务端请求ID=${serverRequestId}`);
   }
   const isSse = route.stream && upstream.ok && /^text\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
+  const encoding = (upstream.headers.get("content-encoding") || "identity").trim().toLowerCase();
+  if (isSse && encoding !== "identity") {
+    // Reading a compressed Workers fetch body may transparently decode it.
+    // Keep the original stream unread so Content-Encoding remains accurate.
+    console.info(`[Paipu SSE Proxy] 请求ID=${serverRequestId || requestId} 压缩流直通，代理逐帧统计不可用`);
+    return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
+  }
   return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, serverRequestId || requestId, started, wallOrigin) : upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
