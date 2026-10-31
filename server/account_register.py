@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import sys
 import tempfile
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -77,7 +79,16 @@ def get_register_dir() -> Path:
     override = os.environ.get("MAJSOUL_REGISTER_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    # 优先检查 data/register
+    # 优先检查 ModelScope 持久化工作空间目录 /mnt/workspace/register
+    workspace = Path("/mnt/workspace")
+    if workspace.is_dir():
+        ws_reg = workspace / "register"
+        if (ws_reg / "majsoul_register.py").is_file():
+            return ws_reg
+        ws_app_reg = workspace / "majsoul-analyzer" / "data" / "register"
+        if (ws_app_reg / "majsoul_register.py").is_file():
+            return ws_app_reg
+    # 检查当前项目下 data/register
     project_root = resolve_project_root()
     default_dir = project_root / "data" / "register"
     if default_dir.is_dir() and (default_dir / "majsoul_register.py").is_file():
@@ -86,20 +97,84 @@ def get_register_dir() -> Path:
     alt_dir = project_root.parent / "temp_majsoul_register"
     if alt_dir.is_dir() and (alt_dir / "majsoul_register.py").is_file():
         return alt_dir
+    if workspace.is_dir():
+        return workspace / "register"
     return default_dir
 
 
-def ensure_private_repo() -> Path | None:
+def _download_repo_zipball(token: str, repo_identifier: str, reg_dir: Path) -> tuple[bool, str]:
     """
-    检查私有注册仓库是否存在；若不存在且配置了 GitHub Token，则通过 Git 克隆到 data/register。
-    完全在服务端运行，且 data/register 已被 .gitignore / .dockerignore 排除。
+    通过 GitHub REST API 下载仓库 zipball 并解压到目标目录。
+    纯 Python 实现，零外部 git CLI 依赖，完美适配无 git 环境的容器（如魔搭 ModelScope）。
+    """
+    clean_repo = repo_identifier
+    if "github.com/" in clean_repo:
+        clean_repo = clean_repo.split("github.com/", 1)[1]
+    clean_repo = clean_repo.removesuffix(".git").strip("/")
+    if not clean_repo or "/" not in clean_repo:
+        clean_repo = "Gxyh513/majsoul-register"
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "majsoul-analyzer",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    api_base = os.environ.get("MAJSOUL_GITHUB_API_BASE", "").strip().rstrip("/") or "https://api.github.com"
+    branches = ["main", "master"]
+    last_err = ""
+
+    for branch in branches:
+        url = f"{api_base}/repos/{clean_repo}/zipball/{branch}"
+        for attempt in range(3):
+            try:
+                with httpx.Client(headers=headers, follow_redirects=True, timeout=45) as client:
+                    resp = client.get(url)
+                    if resp.status_code == 200 and resp.content:
+                        reg_dir.mkdir(parents=True, exist_ok=True)
+                        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                            for member in z.infolist():
+                                parts = Path(member.filename).parts
+                                if len(parts) <= 1:
+                                    continue
+                                rel_path = Path(*parts[1:])
+                                target_path = reg_dir / rel_path
+                                if member.is_dir():
+                                    target_path.mkdir(parents=True, exist_ok=True)
+                                else:
+                                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                                    with z.open(member) as src, open(target_path, "wb") as dst:
+                                        shutil.copyfileobj(src, dst)
+                        if (reg_dir / "majsoul_register.py").is_file():
+                            log_info(事件="私有注册仓库API拉取", 状态="成功", 分支=branch)
+                            return True, ""
+                    elif resp.status_code == 404:
+                        last_err = f"HTTP 404（分支 {branch} 不存在或 Token 无权访问此私有仓库）"
+                        break
+                    elif resp.status_code == 401:
+                        return False, "HTTP 401 Unauthorized（MAJSOUL_REGISTER_GITHUB_TOKEN 无效或已过期）"
+                    elif resp.status_code == 403:
+                        return False, f"HTTP 403 Forbidden（Token 权限不足或被限流: {resp.text[:100]}）"
+                    else:
+                        last_err = f"HTTP {resp.status_code}: {resp.text[:100]}"
+            except Exception as exc:
+                last_err = str(exc)
+                time.sleep(1)
+
+    return False, last_err
+
+
+def ensure_private_repo() -> tuple[Path | None, str]:
+    """
+    检查私有注册仓库是否存在；若不存在且配置了 GitHub Token，优先通过 GitHub REST API 下载解压，
+    备选通过 git clone 拉取。返回 (reg_dir_or_none, failure_reason)。
     """
     reg_dir = get_register_dir()
     script_path = reg_dir / "majsoul_register.py"
     if script_path.is_file():
-        return reg_dir
+        return reg_dir, ""
 
-    # 尝试通过环境变量 Token 克隆
     token = (
         os.environ.get("MAJSOUL_REGISTER_GITHUB_TOKEN")
         or os.environ.get("GITHUB_TOKEN")
@@ -109,39 +184,43 @@ def ensure_private_repo() -> Path | None:
     repo_url = os.environ.get("MAJSOUL_REGISTER_REPO", "https://github.com/Gxyh513/majsoul-register.git").strip()
 
     if not token:
-        # 检查本地是否有 git 凭据可用
         if shutil.which("git"):
             try:
                 reg_dir.parent.mkdir(parents=True, exist_ok=True)
                 cmd = ["git", "clone", "--depth", "1", repo_url, str(reg_dir)]
                 subprocess.run(cmd, capture_output=True, timeout=30, check=True)
                 if script_path.is_file():
-                    return reg_dir
-            except Exception:
-                pass
-        return None
+                    return reg_dir, ""
+            except Exception as exc:
+                return None, f"未配置 Token 且 git clone 失败: {str(exc)[:150]}"
+        return None, "未配置 MAJSOUL_REGISTER_GITHUB_TOKEN 环境变量且未找到本地注册脚本"
 
-    # 使用 Token 安全克隆
-    if "@" not in repo_url and repo_url.startswith("https://"):
-        auth_repo_url = f"https://x-access-token:{token}@{repo_url[8:]}"
-    else:
-        auth_repo_url = repo_url
+    # 1. 优先使用纯 Python GitHub REST API 下载（免 git 命令行环境）
+    api_ok, api_err = _download_repo_zipball(token, repo_url, reg_dir)
+    if api_ok and script_path.is_file():
+        return reg_dir, ""
 
-    try:
-        reg_dir.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["git", "clone", "--depth", "1", auth_repo_url, str(reg_dir)]
-        # 绝不将包含 token 的命令或输出记入常规日志
-        res = subprocess.run(cmd, capture_output=True, timeout=60, text=True, encoding="utf-8", errors="replace")
-        if res.returncode == 0 and script_path.is_file():
-            log_info(事件="私有注册仓库拉取", 状态="成功")
-            return reg_dir
-        sanitized_err = redact_secrets(res.stderr or res.stdout, token)
-        log_warning(事件="私有注册仓库拉取失败", 错误原因=sanitized_err[:200])
-    except Exception as exc:
-        sanitized_exc = redact_secrets(str(exc), token)
-        log_warning(事件="私有注册仓库拉取异常", 错误原因=sanitized_exc[:200])
+    # 2. 备选用 git 命令行（若系统已安装 git）
+    git_err = ""
+    if shutil.which("git"):
+        if "@" not in repo_url and repo_url.startswith("https://"):
+            auth_repo_url = f"https://x-access-token:{token}@{repo_url[8:]}"
+        else:
+            auth_repo_url = repo_url
+        try:
+            reg_dir.parent.mkdir(parents=True, exist_ok=True)
+            cmd = ["git", "clone", "--depth", "1", auth_repo_url, str(reg_dir)]
+            res = subprocess.run(cmd, capture_output=True, timeout=60, text=True, encoding="utf-8", errors="replace")
+            if res.returncode == 0 and script_path.is_file():
+                log_info(事件="私有注册仓库Git拉取", 状态="成功")
+                return reg_dir, ""
+            git_err = redact_secrets(res.stderr or res.stdout, token).strip()
+        except Exception as exc:
+            git_err = redact_secrets(str(exc), token).strip()
 
-    return None
+    combined_err = f"API拉取失败 ({api_err})" + (f", Git克隆失败 ({git_err})" if git_err else ", 系统未安装 git")
+    log_warning(事件="私有注册仓库拉取失败", 错误原因=combined_err[:250])
+    return None, combined_err
 
 
 class RegisterRunner:
@@ -176,11 +255,14 @@ class RegisterRunner:
             return self._normalize_credentials(data)
 
     async def _execute_via_script(self) -> dict[str, Any]:
-        reg_dir = ensure_private_repo() or self.register_dir
+        reg_dir, pull_err = ensure_private_repo()
+        if not reg_dir:
+            reg_dir = self.register_dir
         script_path = reg_dir / "majsoul_register.py"
         if not script_path.is_file():
+            err_hint = f"（拉取详情: {pull_err}）" if pull_err else ""
             raise FileNotFoundError(
-                "未找到私有注册脚本 (majsoul_register.py)。请配置 MAJSOUL_REGISTER_DIR 或 MAJSOUL_REGISTER_GITHUB_TOKEN。"
+                f"未找到私有注册脚本 (majsoul_register.py){err_hint}。请检查 MAJSOUL_REGISTER_GITHUB_TOKEN 权限或配置 MAJSOUL_REGISTER_DIR。"
             )
 
         with tempfile.TemporaryDirectory() as temp_dir:

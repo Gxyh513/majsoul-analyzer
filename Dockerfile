@@ -31,9 +31,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies (curl for model downloading)
+# Install system dependencies (curl for model downloading, git for private modules)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
