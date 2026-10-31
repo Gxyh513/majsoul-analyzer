@@ -1,6 +1,10 @@
 "use strict";
 
 const $ = id => document.getElementById(id);
+const ADMIN_KEY_STORAGE = "majsoul_admin_key";
+function storedAdminKey() { try { return sessionStorage.getItem(ADMIN_KEY_STORAGE) || ""; } catch (_) { return ""; } }
+function saveAdminKey(key) { try { sessionStorage.setItem(ADMIN_KEY_STORAGE, key); return true; } catch (_) { return false; } }
+function clearAdminKey() { try { sessionStorage.removeItem(ADMIN_KEY_STORAGE); } catch (_) {} }
 let loggedIn = false;
 let poller = null;
 function say(message, error = false) {
@@ -10,11 +14,11 @@ function say(message, error = false) {
 function escapeHTML(s) {
   return String(s ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 }
-async function request(path, method = "GET", data) {
+async function request(path, method = "GET", data, adminKey = storedAdminKey()) {
   const response = await fetch("/api/admin" + path, {
     method,
-    credentials: "same-origin",
-    headers: {"Accept":"application/json", ...(data === undefined ? {} : {"Content-Type":"application/json"})},
+    credentials: "omit",
+    headers: {"Accept":"application/json", ...(adminKey ? {"X-Admin-Key":adminKey} : {}), ...(data === undefined ? {} : {"Content-Type":"application/json"})},
     body: data === undefined ? undefined : JSON.stringify(data),
     cache: "no-store",
     redirect: "error"
@@ -28,6 +32,7 @@ async function request(path, method = "GET", data) {
   return body;
 }
 function showLogin() {
+  clearAdminKey();
   loggedIn = false;
   $("dashboard").hidden = true;
   $("loginPanel").hidden = false;
@@ -78,13 +83,20 @@ async function refresh() {
 }
 $("loginForm").addEventListener("submit", async event => {
   event.preventDefault();
+  const key = $("adminKey").value;
+  clearAdminKey();
   try {
-    await request("/login", "POST", { key: $("adminKey").value });
+    await request("/login", "POST", {}, key);
+    if (!saveAdminKey(key)) throw new Error("浏览器无法保存当前标签页的管理员密钥");
     $("adminKey").value = "";
     showDashboard();
     await refresh();
     say("登录成功");
-  } catch (error) { say(error.message, true); }
+  } catch (error) {
+    clearAdminKey();
+    showLogin();
+    say(error.message, true);
+  }
 });
 $("logoutBtn").addEventListener("click", async () => {
   try { await request("/logout", "POST"); } catch (_) {}
