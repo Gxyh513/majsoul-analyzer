@@ -298,16 +298,19 @@ class AccountScheduler:
                     self.waiting -= 1
 
     async def release(self, account_pk: int):
-        # Keep the slot reserved until any invalidated session is closed.
-        row = self.store.get(account_pk)
-        if row is None or not row["enabled"] or account_pk in self.invalidated:
-            self.invalidated.discard(account_pk)
-            client = self.clients.pop(account_pk, None)
-            if client:
-                await client.close()
-        async with self.condition:
-            self.busy.discard(account_pk)
-            self.condition.notify_all()
+        # Keep the slot reserved until the obsolete client closes, but never
+        # strand it if close() fails or the request is cancelled.
+        try:
+            row = self.store.get(account_pk)
+            if row is None or not row["enabled"] or account_pk in self.invalidated:
+                self.invalidated.discard(account_pk)
+                client = self.clients.pop(account_pk, None)
+                if client:
+                    await client.close()
+        finally:
+            async with self.condition:
+                self.busy.discard(account_pk)
+                self.condition.notify_all()
 
     async def changed(self, account_pk: int | None = None):
         async with self.condition:
