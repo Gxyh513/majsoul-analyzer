@@ -6,3 +6,4 @@ httpx>=0.27.0
 websockets>=12.0
 protobuf>=4.25.0
 numpy>=1.26.0
+mailtd>=0.2.0

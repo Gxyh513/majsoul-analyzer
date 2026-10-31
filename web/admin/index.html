@@ -39,7 +39,56 @@
           </form>
         </section>
       </div>
-      <footer>每小时检测空闲账号 · 不抢占抓谱任务 · 540 自动冷却</footer>
+      <section class="panel" id="autoRegisterSection" style="margin-top: 24px;">
+        <div class="section-heading">
+          <div>
+            <h2>自动注册与账号池补充</h2>
+            <p>每小时自动注册最多一个新账号并补充至账号池；支持任务锁与平台防重熔断。</p>
+          </div>
+          <div class="toolbar">
+            <button id="toggleRegisterBtn" class="secondary">开启/暂停</button>
+            <button id="triggerRegisterBtn">手动触发注册</button>
+            <button id="viewHistoryBtn" class="secondary">查看注册历史与失败日志</button>
+          </div>
+        </div>
+        <div id="registerMetrics" class="metrics metrics-reg" aria-label="自动注册统计"></div>
+        <div id="registerAlert" class="register-alert" hidden></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>执行时间</th>
+                <th>状态</th>
+                <th>注册账号（脱敏）</th>
+                <th>耗时</th>
+                <th>详情 / 失败原因</th>
+              </tr>
+            </thead>
+            <tbody id="registerRecentRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <dialog id="historyModal" class="modal-dialog">
+        <div class="modal-head">
+          <h3>注册历史与失败日志</h3>
+          <div class="toolbar">
+            <button id="filterAllLogsBtn" class="mini">全部</button>
+            <button id="filterFailLogsBtn" class="mini secondary">仅看失败</button>
+            <button id="closeHistoryBtn" class="mini secondary">关闭</button>
+          </div>
+        </div>
+        <div class="table-wrap modal-body">
+          <table>
+            <thead>
+              <tr><th>时间</th><th>状态</th><th>账号</th><th>耗时</th><th>说明 / 失败日志</th></tr>
+            </thead>
+            <tbody id="historyRows"></tbody>
+          </table>
+        </div>
+      </dialog>
+
+      <footer>每小时检测空闲账号 · 每小时自动补充新账号 · 540 自动冷却</footer>
     </main>
   </div>
   <script src="/admin/admin.js" defer></script>

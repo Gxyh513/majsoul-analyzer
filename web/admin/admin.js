@@ -75,6 +75,56 @@ function render(data) {
       '<button class="mini danger" data-action="delete" data-id="' + id + '">删除</button></div></td></tr>';
   }).join("") : '<tr><td colspan="7">暂无账号。请添加账号或批量导入。</td></tr>';
   window.adminAccountItems = rows;
+  if (data.auto_register) {
+    renderAutoRegister(data.auto_register);
+  }
+}
+
+let currentAutoRegisterState = null;
+let allHistoryLogs = [];
+
+function regStatusClass(status) {
+  if (status === "成功") return "ok";
+  if (status === "运行中") return "busy";
+  return "warn";
+}
+
+function renderAutoRegister(reg) {
+  if (!reg) return;
+  currentAutoRegisterState = reg;
+  const statusLabel = !reg.enabled ? "已暂停" : reg.is_running ? "正在注册" : "自动轮询中";
+  const statusColor = !reg.enabled ? "warn" : reg.is_running ? "busy" : "ok";
+
+  const values = [
+    ["自动注册状态", '<span class="status ' + statusColor + '" style="display:inline-block;margin-top:4px">' + statusLabel + "</span>"],
+    ["下次计划执行", reg.next_run_at ? date(reg.next_run_at) : "未排期"],
+    ["上次结果 / 时间", escapeHTML(reg.last_status || "未开始") + (reg.last_run_at ? '<span class="sub">' + date(reg.last_run_at) + "</span>" : "")],
+    ["成功 / 失败", Number(reg.success_count || 0) + " / " + Number(reg.failure_count || 0) + '<span class="sub">池账号总数: ' + Number(reg.current_pool_total || 0) + "</span>"]
+  ];
+
+  $("registerMetrics").innerHTML = values.map(([label, value]) =>
+    '<div class="metric"><small>' + label + '</small><strong>' + value + '</strong></div>'
+  ).join("");
+
+  $("toggleRegisterBtn").textContent = reg.enabled ? "暂停自动注册" : "开启自动注册";
+
+  if (reg.last_error) {
+    $("registerAlert").hidden = false;
+    $("registerAlert").innerHTML = "<strong>最近一次失败原因：</strong>" + escapeHTML(reg.last_error);
+  } else {
+    $("registerAlert").hidden = true;
+  }
+
+  const logs = reg.recent_logs || [];
+  $("registerRecentRows").innerHTML = logs.length ? logs.slice(0, 5).map(log => {
+    return '<tr>' +
+      '<td>' + date(log.executed_at) + '</td>' +
+      '<td><span class="status ' + regStatusClass(log.status) + '">' + escapeHTML(log.status) + '</span></td>' +
+      '<td>' + escapeHTML(log.account_masked || "—") + '</td>' +
+      '<td>' + (log.duration_ms ? (log.duration_ms / 1000).toFixed(2) + " 秒" : "—") + '</td>' +
+      '<td>' + escapeHTML(log.error_message || log.details || "—") + '</td>' +
+      '</tr>';
+  }).join("") : '<tr><td colspan="5">暂无近期注册记录。</td></tr>';
 }
 async function refresh() {
   const data = await request("/status");
@@ -180,6 +230,84 @@ $("accountRows").addEventListener("click", async event => {
     say("操作成功");
   } catch (err) { say(err.message, true); }
 });
+$("toggleRegisterBtn").addEventListener("click", async () => {
+  if (!currentAutoRegisterState) return;
+  const target = !currentAutoRegisterState.enabled;
+  try {
+    const updated = await request("/register/toggle", "POST", { enabled: target });
+    renderAutoRegister(updated);
+    say(target ? "自动注册已开启" : "自动注册已暂停");
+  } catch (err) {
+    say(err.message, true);
+  }
+});
+
+$("triggerRegisterBtn").addEventListener("click", async () => {
+  const btn = $("triggerRegisterBtn");
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = "注册执行中...";
+  say("正在手动触发注册任务，请稍候...");
+  try {
+    const res = await request("/register/trigger", "POST", {});
+    await refresh();
+    if (res.ok) {
+      say("注册任务完成：" + (res.account ? "成功添加账号 " + res.account : "已完成"));
+    } else {
+      say("注册任务执行失败：" + (res.error || "未知原因"), true);
+    }
+  } catch (err) {
+    say(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+});
+
+function renderHistoryTable(filterFailOnly = false) {
+  let list = allHistoryLogs || [];
+  if (filterFailOnly) {
+    list = list.filter(x => x.status === "失败");
+  }
+  $("historyRows").innerHTML = list.length ? list.map(log => {
+    return '<tr>' +
+      '<td>' + date(log.executed_at) + '</td>' +
+      '<td><span class="status ' + regStatusClass(log.status) + '">' + escapeHTML(log.status) + '</span></td>' +
+      '<td>' + escapeHTML(log.account_masked || "—") + '</td>' +
+      '<td>' + (log.duration_ms ? (log.duration_ms / 1000).toFixed(2) + " 秒" : "—") + '</td>' +
+      '<td>' + escapeHTML(log.error_message || log.details || "—") + '</td>' +
+      '</tr>';
+  }).join("") : '<tr><td colspan="5">暂无符合条件的记录。</td></tr>';
+}
+
+$("viewHistoryBtn").addEventListener("click", async () => {
+  try {
+    allHistoryLogs = await request("/register/history");
+    renderHistoryTable(false);
+    $("filterAllLogsBtn").className = "mini";
+    $("filterFailLogsBtn").className = "mini secondary";
+    $("historyModal").showModal();
+  } catch (err) {
+    say(err.message, true);
+  }
+});
+
+$("filterAllLogsBtn").addEventListener("click", () => {
+  $("filterAllLogsBtn").className = "mini";
+  $("filterFailLogsBtn").className = "mini secondary";
+  renderHistoryTable(false);
+});
+
+$("filterFailLogsBtn").addEventListener("click", () => {
+  $("filterAllLogsBtn").className = "mini secondary";
+  $("filterFailLogsBtn").className = "mini";
+  renderHistoryTable(true);
+});
+
+$("closeHistoryBtn").addEventListener("click", () => {
+  $("historyModal").close();
+});
+
 if (storedAdminKey()) {
   showDashboard();
   refresh().catch(error => say(error.message, true));

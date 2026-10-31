@@ -15,6 +15,10 @@ const ROUTES = new Map([
   ["GET /api/admin/accounts", { auth: true, stream: false, admin: true }],
   ["POST /api/admin/accounts", { auth: true, stream: false, admin: true }],
   ["POST /api/admin/accounts/import", { auth: true, stream: false, admin: true }],
+  ["GET /api/admin/register/status", { auth: true, stream: false, admin: true }],
+  ["POST /api/admin/register/toggle", { auth: true, stream: false, admin: true }],
+  ["POST /api/admin/register/trigger", { auth: true, stream: false, admin: true }],
+  ["GET /api/admin/register/history", { auth: true, stream: false, admin: true }],
 ]);
 
 const ALLOWED_METHODS = new Map([
@@ -27,6 +31,10 @@ const ALLOWED_METHODS = new Map([
   ["/api/admin/status", ["GET"]],
   ["/api/admin/accounts", ["GET", "POST"]],
   ["/api/admin/accounts/import", ["POST"]],
+  ["/api/admin/register/status", ["GET"]],
+  ["/api/admin/register/toggle", ["POST"]],
+  ["/api/admin/register/trigger", ["POST"]],
+  ["/api/admin/register/history", ["GET"]],
 ]);
 
 function jsonError(status, detail) {
