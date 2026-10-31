@@ -9,7 +9,7 @@ let loggedIn = false;
 let poller = null;
 function say(message, error = false) {
   $("notice").textContent = message || "";
-  $("notice").style.color = error ? "#ff9393" : "#7bdbac";
+  $("notice").style.color = error ? "#b42318" : "#15803d";
 }
 function escapeHTML(s) {
   return String(s ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
