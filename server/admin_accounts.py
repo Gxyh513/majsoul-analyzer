@@ -6,6 +6,7 @@ the ONNX, record-storage, and SSE code paths.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import hashlib
 import hmac
 import os
@@ -14,7 +15,7 @@ import secrets
 import sqlite3
 
 import httpx
-import websockets
+from websockets.exceptions import ConnectionClosed
 import threading
 import time
 from pathlib import Path
@@ -73,11 +74,19 @@ class AccountStore:
         except OSError:
             pass
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(str(self.path), timeout=10)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=10000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=10000")
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def all(self) -> list[dict]:
         with self.lock, self._connect() as db:
@@ -249,6 +258,7 @@ class AccountScheduler:
         self.cache_dir = cache_dir
         self.clients: dict[int, MajsoulClient] = {}
         self.busy: set[int] = set()
+        self.invalidated: set[int] = set()
         self.condition = asyncio.Condition()
         self.waiting = 0
         self.periodic_task: asyncio.Task | None = None
@@ -292,13 +302,16 @@ class AccountScheduler:
             self.busy.discard(account_pk)
             self.condition.notify_all()
         row = self.store.get(account_pk)
-        if row is None or not row["enabled"]:
+        if row is None or not row["enabled"] or account_pk in self.invalidated:
+            self.invalidated.discard(account_pk)
             client = self.clients.pop(account_pk, None)
             if client:
                 await client.close()
 
     async def changed(self, account_pk: int | None = None):
         async with self.condition:
+            if account_pk is not None and account_pk in self.busy:
+                self.invalidated.add(account_pk)
             self.condition.notify_all()
         if account_pk is not None and account_pk not in self.busy:
             client = self.clients.pop(account_pk, None)
@@ -328,7 +341,7 @@ class AccountScheduler:
     @staticmethod
     def _network_failure(error: Exception) -> bool:
         return isinstance(error, (TimeoutError, ConnectionError, OSError, httpx.TimeoutException,
-                                  httpx.NetworkError, websockets.ConnectionClosed)) or any(
+                                  httpx.NetworkError, ConnectionClosed)) or any(
             word in str(error).lower() for word in ("timeout", "timed out", "连接", "网络", "超时")
         )
 
@@ -383,11 +396,14 @@ class AccountScheduler:
             raise HTTPException(status_code=429, detail="当前账号池抓谱额度已满，请稍后重试")
         if errors:
             raise HTTPException(status_code=503, detail="雀魂账号或网络暂不可用，请稍后重试")
+        enabled = [acc for acc in self.store.all() if acc["enabled"]]
+        if enabled and all(acc["cooldown_until"] > time.time() for acc in enabled):
+            raise HTTPException(status_code=429, detail="所有启用账号均处于540冷却期")
         raise HTTPException(status_code=503, detail="当前没有空闲且可用的雀魂账号")
 
     async def _check_idle_accounts(self):
         for acc in self.store.all():
-            if not acc["enabled"] or acc["cooldown_until"] > time.time() or acc["id"] in self.busy:
+            if not acc["enabled"] or acc["auth_failed"] or acc["cooldown_until"] > time.time() or acc["id"] in self.busy:
                 continue
             # Reserve the same slot used by regular download jobs; no races.
             async with self.condition:
@@ -435,7 +451,17 @@ def manager() -> AccountScheduler | None:
 
 async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> AccountScheduler:
     global _manager
-    store = AccountStore(_db_path())
+    path = _db_path()
+    try:
+        store = AccountStore(path)
+    except (sqlite3.Error, OSError):
+        if os.environ.get("MAJSOUL_ADMIN_DB_PATH"):
+            raise
+        # Some ModelScope persistent FUSE mounts lack SQLite locking semantics.
+        # Prefer a usable local database over preventing the service from starting.
+        path = Path(__file__).resolve().parents[1] / "data" / "admin_accounts.sqlite3"
+        log_warning(事件="账号数据库", 状态="已降级", 信息="持久化目录不可用，已使用本地数据库")
+        store = AccountStore(path)
     store.bootstrap(legacy_accounts)
     _manager = AccountScheduler(store, cache_dir)
     _manager.periodic_task = asyncio.create_task(_manager.periodic())
