@@ -47,11 +47,12 @@ LOCAL_PROTOCOL_SHA256 = "3d9191ef064daeed099feb482501e2d24e7c1da80a738e9b671b461
 BUNDLED_PROTOCOL_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 ROUTES_CACHE_TTL_SECONDS = 300
 # Bound individual network waits and give each download one overall retry budget.
-ROUTES_HTTP_TIMEOUT_SECONDS = 6
+ROUTES_HTTP_TIMEOUT_SECONDS = 3
 ROUTES_DISCOVERY_TIMEOUT_SECONDS = 15
-WEBSOCKET_OPEN_TIMEOUT_SECONDS = 8
-WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS = 6
-RECORD_RPC_TIMEOUT_SECONDS = 12
+WEBSOCKET_OPEN_TIMEOUT_SECONDS = 3
+WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS = 3
+RECORD_RPC_TIMEOUT_SECONDS = 3
+RECORD_HTTP_TIMEOUT_SECONDS = 3
 GATEWAY_FAILURE_COOLDOWN_SECONDS = 60
 _GATEWAY_FAILED_UNTIL: dict[str, float] = {}
 _PROTOCOL_LOCK = threading.Lock()
@@ -377,7 +378,7 @@ class MajsoulClient:
                     fut.set_exception(MajsoulError("连接已断开"))
             self._pending.clear()
 
-    async def call(self, method: str, timeout: float = 20, *, return_payload: bool = False, **fields):
+    async def call(self, method: str, timeout: float = RECORD_RPC_TIMEOUT_SECONDS, *, return_payload: bool = False, **fields):
         """Call ``.lq.Lobby.<method>`` with keyword fields."""
         full = method if method.startswith(".") else f".lq.Lobby.{method}"
         req_t, res_t = self.proto.methods[full]
@@ -513,7 +514,7 @@ class MajsoulClient:
         if not res.data and res.data_url:
             with measure("外部数据下载", failure_count="外部数据下载失败次数"):
                 async with httpx.AsyncClient(follow_redirects=True) as c:
-                    r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=60)
+                    r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=RECORD_HTTP_TIMEOUT_SECONDS)
                     r.raise_for_status()
                     detail = r.content
         if not self.protocol_version or res.head.uuid != game_uuid or not (res.data or detail):
