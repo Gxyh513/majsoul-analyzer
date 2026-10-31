@@ -211,7 +211,7 @@ test("browser metrics use read boundaries and defer 100% until complete parses",
   let receivedHeaders;
   let cancelled = false;
   const context = {
-    TextDecoder, Uint8Array, performance, crypto: globalThis.crypto,
+    TextDecoder, Uint8Array, URL, performance, crypto: globalThis.crypto,
     console: {
       groupCollapsed: (title) => logs.push({ title, entries: [] }),
       log: (label, value) => logs.at(-1).entries.push({ label, value }),
@@ -245,17 +245,7 @@ test("browser metrics use read boundaries and defer 100% until complete parses",
   assert.equal(timings.requestId, receivedHeaders["X-Request-ID"]);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(cancelled, false);
-  const summaries = logs.filter(group => group.title.startsWith("[Paipu SSE Browser] "));
-  assert.equal(summaries.length, 1);
-  const summary = summaries[0].entries.find(entry => entry.label === "汇总").value;
-  const reads = summaries[0].entries.find(entry => entry.label === "读取明细").value;
-  assert.equal(typeof summary, "object");
-  assert.ok(Array.isArray(reads));
-  assert.equal(summary.分块数, 3);
-  assert.equal(summary.总数据大小_KB, (bytes.byteLength / 1024).toFixed(2));
-  assert.equal(reads.length, summary.读取次数);
-  assert.deepEqual(Array.from(reads, read => read.序号), [1, 2, 3, 4]);
-  assert.equal(JSON.stringify(logs).includes("测试"), false);
+  assert.equal(logs.length, 0);
 });
 
 test("browser receives HTTP-decoded JSON and completes before diagnostics", async () => {
@@ -267,7 +257,7 @@ test("browser receives HTTP-decoded JSON and completes before diagnostics", asyn
   const stream = new ReadableStream({ start(c) { controller = c; c.enqueue(wire); } });
   const updates = [], groups = [];
   const context = {
-    TextDecoder, Uint8Array, performance, crypto: globalThis.crypto, setTimeout, clearTimeout,
+    TextDecoder, Uint8Array, URL, performance, crypto: globalThis.crypto, setTimeout, clearTimeout,
     console: { groupCollapsed: title => groups.push({ title, entries: [] }),
       log: (label, value) => groups.at(-1).entries.push({ label, value }), groupEnd() {} },
     document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
@@ -294,15 +284,8 @@ test("browser receives HTTP-decoded JSON and completes before diagnostics", asyn
   const diagnostic = { "请求ID": requestId, "耗时_ms": { "complete Base64编码耗时": null } };
   controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "performance", performance: diagnostic })}\n\n`));
   controller.close();
-  for (let attempt = 0; attempt < 100 && !groups.some(item => item.title.startsWith("[Paipu Performance]")); attempt++) {
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  const group = groups.find(item => item.title.startsWith("[Paipu Performance]"));
-  assert.ok(group, "the asynchronous performance event was logged");
-  const report = group.entries.find(entry => entry.label === "性能统计").value;
-  assert.equal(typeof report, "object");
-  assert.equal(report.请求ID, requestId);
-  assert.equal(report.耗时_ms["complete Base64编码耗时"], null);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(groups.length, 0);
 });
 
 test("browser accepts original JSON and rejects a missing complete result", async () => {
@@ -311,7 +294,7 @@ test("browser accepts original JSON and rejects a missing complete result", asyn
   const chunks = [encoder.encode(complete)];
   let requestBody;
   const context = {
-    TextDecoder, Uint8Array, performance, crypto: globalThis.crypto,
+    TextDecoder, Uint8Array, URL, performance, crypto: globalThis.crypto,
     console: { info() {} },
     document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
     getBackendUrl: () => "", buildApiUrl: (_backend, path) => path,

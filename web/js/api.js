@@ -220,6 +220,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
   let tailStatus = "not_started";
   let performanceLogged = false;
   let serverBusinessStatus = null;
+  let delivered = false;
 
   function isDetailedDiagnosticMode() {
     try {
@@ -290,19 +291,8 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
       return "读取失败（详细信息已脱敏）";
     }
   }
-  function safeLog(title, entries) {
-    let grouped = false;
-    try {
-      console.groupCollapsed(title);
-      grouped = true;
-      for (const [label, value] of entries) console.log(label, value);
-    } catch (_) {
-      // Diagnostics must never prevent displaying a completed review.
-    } finally {
-      if (grouped) {
-        try { console.groupEnd(); } catch (_) {}
-      }
-    }
+  function safeLog(_title, _entries) {
+    // 取消浏览器端所有自定义 SSE 和页面性能控制台日志输出
   }
   function recordLongTasks(entries) {
     for (const entry of entries) {
@@ -878,7 +868,7 @@ async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBack
     }
   }
 
-  let delivered = false;
+  delivered = false;
   try {
     while (true) {
       const { done, value, readFinished } = await measuredRead();

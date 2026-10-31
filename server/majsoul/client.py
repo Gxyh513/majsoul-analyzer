@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 import websockets
 
+from ..logger import log_debug, log_warning
 from ..paipu_performance import measure
 from .proto import LiqiProto
 
@@ -251,7 +252,7 @@ class MajsoulClient:
                         if domains:
                             break
                     except Exception as e:  # noqa: BLE001
-                        log.warning("route fetch from %s failed: %s", gw, e)
+                        log_warning(事件="雀魂线路获取", 状态="失败", 网关=gw, 错误原因=str(e))
             if not domains:
                 raise MajsoulError("获取雀魂服务器线路失败")
             cached = (time.monotonic() + ROUTES_CACHE_TTL_SECONDS, tuple(domains), tuple(route_ids.items()))
@@ -277,11 +278,11 @@ class MajsoulClient:
                         open_timeout=15,
                     )
                 connected_domain = d
-                log.info("connected to %s", url)
+                log_debug(事件="WebSocket连接", 状态="成功", 地址=url)
                 break
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                log.warning("connect %s failed: %s", url, e)
+                log_warning(事件="WebSocket连接", 状态="失败", 地址=url, 错误原因=str(e))
         else:
             raise MajsoulError(f"无法连接雀魂服务器: {last_err}")
         self._reader = asyncio.create_task(self._read_loop())
@@ -337,7 +338,7 @@ class MajsoulClient:
                     except Exception:  # noqa: BLE001
                         pass
         except Exception as e:  # noqa: BLE001
-            log.info("ws closed: %s", e)
+            log_debug(事件="WebSocket连接", 状态="已关闭", 信息=str(e))
         finally:
             self.logged_in = False
             for fut in self._pending.values():

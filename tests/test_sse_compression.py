@@ -45,7 +45,7 @@ def capture_stream(frames, accept_encoding=None, *, status=200, content_type=b"t
     return asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("text", ["小结果", "牌谱" * 40000])
+@pytest.mark.parametrize("text", ["小结果", "牌谱" * 40000], ids=["small", "large"])
 def test_complete_event_is_plain_json_and_preserves_small_and_large_results(text):
     result = {"game_id": "example", "kyokus": [{"text": text}]}
     stats = {}
@@ -72,7 +72,7 @@ def test_complete_event_is_plain_json_and_preserves_small_and_large_results(text
     ("gzip;q=invalid", False),
     ("gzip;q=1.5", False),
 ])
-@pytest.mark.parametrize("text", ["小结果", "牌谱" * 4000])
+@pytest.mark.parametrize("text", ["小结果", "牌谱" * 4000], ids=["small", "large"])
 def test_http_gzip_negotiation_keeps_complete_result(accept_encoding, compressed, text):
     result = {"text": text, "nested": {"values": [1, 2, 3]}}
     frames = [event_frame({"type": "progress", "percent": 100, "message": "完成"}),

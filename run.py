@@ -29,16 +29,11 @@ def main():
     args = parser.parse_args()
 
     url = f"http://{args.host}:{args.port}"
-    print("=" * 68)
-    print(" [Majsoul Analyzer] 雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格) 已启动")
-    print(f" [Web UI] 浏览器访问地址: {url}")
-    print(" [Engine] Mortal S42 ONNX 权重文件: data/models/model.onnx（需要通过 SHA-256 校验）")
-    print("=" * 68)
 
     if not args.no_browser:
         Timer(1.2, lambda: webbrowser.open(url)).start()
 
-    uvicorn.run("server.app:app", host=args.host, port=args.port, reload=False)
+    uvicorn.run("server.app:app", host=args.host, port=args.port, reload=False, access_log=False, log_config=None)
 
 
 if __name__ == "__main__":

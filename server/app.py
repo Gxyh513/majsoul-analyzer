@@ -36,22 +36,100 @@ from .engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHE
 from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+from .logger import (
+    format_chinese_json,
+    format_debug_performance,
+    is_debug_mode,
+    log_debug,
+    log_error,
+    log_info,
+    log_warning,
+    setup_logging,
 )
+
+setup_logging()
 log = logging.getLogger("majsoul-analyzer")
 
 
 def _log_performance(stats: dict[str, Any], started: float) -> dict[str, Any] | None:
     try:
         report = _build_performance_report(stats, started)
-        log.info("[Paipu Performance] %s", json.dumps(report, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+    except Exception:  # noqa: BLE001
+        report = None
+
+    try:
+        total_ms = (time.perf_counter() - started) * 1000
+        request_id = stats.get("request_id") or (report.get("请求ID") if report else None) or ""
+
+        acq_result = stats.get("牌谱获取结果")
+        last_failure = stats.get("最后失败阶段") or (report["状态"].get("最后失败阶段") if report and "状态" in report else None)
+        failed = bool(last_failure or (acq_result and acq_result not in ("成功", "进行中")))
+
+        if failed:
+            fail_stage = last_failure or "雀魂牌谱请求"
+            err_type = stats.get("最近雀魂失败类型") or stats.get("错误类型") or "网络失败"
+            retries = stats.get("雀魂牌谱请求失败次数") or stats.get("login_failures") or 0
+            fail_data: dict[str, Any] = {
+                "事件": "牌谱分析",
+                "请求编号": request_id,
+                "状态": "失败",
+                "失败阶段": fail_stage,
+                "错误类型": err_type,
+                "耗时毫秒": round(total_ms, 1),
+            }
+            if retries > 0:
+                fail_data["重试次数"] = retries
+            log_error(**fail_data)
+        else:
+            acq_mode = stats.get("牌谱获取方式")
+            hit_local = stats.get("是否命中本地记录")
+            is_local = hit_local or acq_mode in ("本地直接读取", "进程内锁后读取本地", "文件锁后读取本地")
+            is_download = acq_mode == "雀魂下载" or (acq_result == "成功" and not is_local)
+
+            success_data: dict[str, Any] = {
+                "事件": "牌谱分析",
+                "请求编号": request_id,
+                "状态": "成功",
+            }
+            if is_download:
+                success_data["获取方式"] = "雀魂下载"
+                fetch_ms = stats.get("雀魂抓取") or stats.get("原始牌谱获取总耗时")
+                if fetch_ms is not None:
+                    success_data["牌谱获取耗时毫秒"] = round(fetch_ms, 1)
+            elif is_local:
+                success_data["获取方式"] = "本地读取"
+                read_ms = stats.get("本地文件读取") or stats.get("原始牌谱获取总耗时")
+                if read_ms is not None:
+                    success_data["本地读取耗时毫秒"] = round(read_ms, 1)
+            elif acq_mode:
+                success_data["获取方式"] = acq_mode
+
+            if stats.get("AI检讨流程耗时") is not None:
+                success_data["AI检讨耗时毫秒"] = round(stats["AI检讨流程耗时"], 1)
+            if stats.get("ONNX实际推理耗时") is not None:
+                success_data["ONNX推理耗时毫秒"] = round(stats["ONNX实际推理耗时"], 1)
+            if stats.get("完成结果序列化耗时") is not None:
+                success_data["结果序列化耗时毫秒"] = round(stats["完成结果序列化耗时"], 1)
+
+            raw_bytes = stats.get("原始complete事件字节数") or stats.get("原始检讨JSON字节数")
+            if raw_bytes is not None:
+                success_data["原始结果字节数"] = int(raw_bytes)
+            gz_bytes = stats.get("gzip压缩后字节数")
+            if gz_bytes is not None:
+                success_data["压缩后字节数"] = int(gz_bytes)
+            if raw_bytes and gz_bytes is not None and raw_bytes > 0:
+                success_data["压缩比例"] = round(gz_bytes / raw_bytes, 3)
+
+            success_data["总耗时毫秒"] = round(total_ms, 1)
+            log_info(**success_data)
+
+        if is_debug_mode() and report:
+            log_debug(**format_debug_performance(report))
+
         return report
     except Exception:  # noqa: BLE001
-        log.warning("[Paipu Performance] 无法输出性能诊断")
-        return None
+        log_warning(事件="牌谱性能诊断", 错误原因="无法输出性能诊断")
+        return report
 
 
 async def _record_mjai_size(events: list[dict]) -> None:
@@ -206,9 +284,9 @@ def _download_model_sync(model_id: str) -> None:
                 _performance.reset(token)
         state.update(status="ready", progress_pct=100.0, downloaded_bytes=MODEL_SIZE,
                      total_bytes=MODEL_SIZE, error_msg=None)
-        log.info("[AI模型就绪] Mortal S42 ONNX 已校验并启用")
+        log_debug(事件="AI模型就绪", 模型="Mortal S42 ONNX", 状态="校验通过并启用")
     except Exception as exc:
-        log.warning("[AI模型下载失败] %s", _safe_error_context(exc))
+        log_warning(事件="AI模型下载失败", 异常信息=_safe_error_context(exc))
         state.update(status="error", error_msg="模型下载或校验失败，请查看服务端日志。")
 
 
@@ -240,12 +318,18 @@ async def lifespan(app: FastAPI):
     try:
         await asyncio.to_thread(ms_client.preload_protocol)
     except MajsoulError as exc:
-        log.error("[雀魂本地协议初始化失败] %s", exc)
-    log.info("==================================================================")
-    log.info("【雀魂 AI 牌谱检讨系统】后端服务已启动并就绪！")
+        log_error(事件="雀魂本地协议初始化失败", 错误原因=str(exc))
     st = engine_mgr.status()
-    log.info("AI 引擎设备: %s | 当前激活模型: %s", st.get("device", "CPU"), MODEL_ID)
-    log.info("原始牌谱存储目录: %s", RECORDS_DIR)
+    device = st.get("device", "CPUExecutionProvider")
+    if device in ("N/A", "CPU"):
+        device = "CPUExecutionProvider"
+    log_info(
+        事件="服务启动",
+        状态="就绪" if st.get("has_mortal_weights") else "未就绪",
+        模型="Mortal S42 ONNX",
+        推理设备=device,
+        权重校验="通过" if st.get("has_mortal_weights") else "未就绪",
+    )
     try:
         yield
     finally:
@@ -315,7 +399,7 @@ async def protect_api_and_log(request: Request, call_next):
     t0 = time.time()
     if is_biz:
         client_ip = request.client.host if request.client else "未知IP"
-        log.info("[HTTP请求进入] %s %s (来源: %s)", request.method, path, client_ip)
+        log_debug(事件="HTTP请求进入", 请求方法=request.method, 请求路径=path, 客户端地址=client_ip)
     response = await call_next(request)
     if is_api and origin and origin_allowed:
         response.headers["Access-Control-Allow-Origin"] = origin
@@ -333,7 +417,10 @@ async def protect_api_and_log(request: Request, call_next):
         response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     if is_biz:
         cost_ms = (time.time() - t0) * 1000
-        log.info("[HTTP响应完成] %s %s -> 状态码: %d (用时: %.1fms)", request.method, path, response.status_code, cost_ms)
+        if response.status_code >= 400:
+            log_warning(事件="HTTP请求异常", 请求方法=request.method, 请求路径=path, 状态码=response.status_code, 耗时毫秒=round(cost_ms, 1))
+        else:
+            log_debug(事件="HTTP响应完成", 请求方法=request.method, 请求路径=path, 状态码=response.status_code, 耗时毫秒=round(cost_ms, 1))
     return response
 
 
@@ -457,17 +544,26 @@ class _SSESendMetricsMiddleware:
                         stats["complete ASGI发送完成时间"] = finish_ms if completed else None
                         stats["complete ASGI发送等待耗时"] = send_wait_ms
                         stats["complete ASGI发送结果"] = "完成" if completed else "中断"
-                    log.info("[Paipu SSE Backend] %s", json.dumps({
-                        "请求ID": request_id, "事件": event, "传输大小_KB": round(sent_bytes / 1024, 2),
-                        "ASGI发送开始时间_ms": start_ms, "ASGI发送完成时间_ms": finish_ms if completed else None,
-                        "ASGI发送开始Unix时间_ms": started_wall,
-                        "ASGI发送完成Unix时间_ms": time.time_ns() / 1_000_000 if completed else None,
-                        "ASGI发送等待_ms": send_wait_ms,
-                        "100%至complete发送开始间隔_ms": start_gap,
-                        "100%发送完成至complete发送开始间隔_ms": gap,
-                        "状态": "完成" if completed else "中断", "时间基准": "ASGI请求到达",
-                        "口径": "ASGI服务器接收，不代表浏览器收到",
-                    }, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+                    if is_debug_mode():
+                        send_detail = {
+                            "事件": "SSE发送明细",
+                            "请求编号": request_id,
+                            "阶段": event,
+                            "传输大小KB": round(sent_bytes / 1024, 2),
+                            "ASGI发送开始毫秒": start_ms,
+                            "ASGI发送完成毫秒": finish_ms if completed else None,
+                            "ASGI发送开始Unix时间毫秒": started_wall,
+                            "ASGI发送完成Unix时间毫秒": time.time_ns() / 1_000_000 if completed else None,
+                            "ASGI发送等待毫秒": send_wait_ms,
+                            "状态": "完成" if completed else "中断",
+                            "时间基准": "ASGI请求到达",
+                            "口径": "ASGI服务器接收，不代表浏览器收到",
+                        }
+                        if gap is not None:
+                            send_detail["发送完成间隔毫秒"] = gap
+                        if start_gap is not None:
+                            send_detail["发送开始间隔毫秒"] = start_gap
+                        log_debug(**send_detail)
                     if event == "100%" and completed:
                         progress_started, progress_sent = started, finished
                 if event == "complete":
@@ -623,7 +719,12 @@ async def api_login(req: LoginReq):
             raise
         except Exception as e:  # noqa: BLE001
             normalized_token = req.access_token.strip() if req.access_token else None
-            log.warning("Login failed: %s", _redact_error(e, req.password, req.access_token, normalized_token, getattr(ms_client, "access_token", None)))
+            log_warning(
+                事件="雀魂登录",
+                状态="失败",
+                失败阶段="接口登录",
+                错误原因=_redact_error(e, req.password, req.access_token, normalized_token, getattr(ms_client, "access_token", None)),
+            )
             status_code = 400 if isinstance(e, MajsoulError) else 500
             raise HTTPException(status_code=status_code, detail="连接或登录失败，请检查账号设置后重试。") from e
 
@@ -647,7 +748,11 @@ async def api_recent_games():
             games = await ms_client.fetch_recent_records(count=15)
             return {"games": games}
         except Exception as e:  # noqa: BLE001
-            log.warning("获取最近牌谱失败: %s", _redact_error(e, getattr(ms_client, "access_token", None)))
+            log_warning(
+                事件="获取最近牌谱",
+                状态="失败",
+                错误原因=_redact_error(e, getattr(ms_client, "access_token", None)),
+            )
             raise HTTPException(status_code=400, detail="获取最近牌谱失败，请稍后重试。") from e
 
 
@@ -908,7 +1013,11 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
         if not done.cancelled():
             error = done.exception()
             if error is not None:
-                log.error("[AI检讨失败] 后台任务失败 (%s)", _safe_error_context(error))
+                log_error(
+                    事件="AI检讨失败",
+                    失败阶段="后台任务执行",
+                    异常信息=_safe_error_context(error),
+                )
 
     task.add_done_callback(job_done)
     return task
@@ -1109,13 +1218,17 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
                 return
             except Exception as e:
-                log.error("牌谱解析失败 (%s)", _safe_error_context(e))
+                log_error(
+                    事件="牌谱解析失败",
+                    失败阶段="牌谱数据准备",
+                    异常信息=_safe_error_context(e),
+                )
                 yield f"data: {json.dumps({'type': 'error', 'detail': '牌谱解析失败，请检查输入后重试。'}, ensure_ascii=False)}\n\n"
                 return
 
             stats["mode"] = "按需分析"
             if review_semaphore.locked():
-                log.info("[AI排队等待] 服务器正忙 (牌谱: %s, 视角: P%d)", game_id, seat)
+                log_debug(事件="AI推理排队", 牌谱编号=game_id, 玩家视角=seat, 提示="服务器正忙，当前正在排队中")
                 yield f"data: {json.dumps({'type': 'queued', 'message': '服务器正忙，当前正在排队中...'}, ensure_ascii=False)}\n\n"
 
             # The request is cancellable while waiting for the permit. Once a
@@ -1188,10 +1301,10 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 listening.clear()
 
         except HTTPException as e:
-            log.error("SSE analyze error (%s)", _safe_error_context(e))
+            log_error(事件="牌谱分析失败", 失败阶段="SSE流式分析", 异常信息=_safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
         except Exception as e:
-            log.error("SSE analyze error (%s)", _safe_error_context(e))
+            log_error(事件="牌谱分析失败", 失败阶段="SSE流式分析", 异常信息=_safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
     async def measured_stream():
         stats: dict[str, Any] = {"mode": "准备中", "request_id": request_id, "AI模型加载次数": 0, "AI模型复用次数": 0}
