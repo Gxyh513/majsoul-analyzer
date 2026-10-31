@@ -99,7 +99,7 @@ $("loginForm").addEventListener("submit", async event => {
   }
 });
 $("logoutBtn").addEventListener("click", async () => {
-  try { await request("/logout", "POST"); } catch (_) {}
+  try { await request("/logout", "POST", {}); } catch (_) {}
   showLogin(); say("已退出管理员后台");
 });
 $("reloadBtn").addEventListener("click", () => refresh().catch(err => say(err.message, true)));
