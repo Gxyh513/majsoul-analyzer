@@ -298,7 +298,8 @@ export async function onRequest({ request, env }) {
       try {
         const payload = await upstream.json();
         const safeDetails = new Set([
-          "管理员密钥错误",          "远程访问需要有效的 MAJSOUL_API_TOKEN",
+          "管理员密钥错误",
+          "远程访问需要有效的 MAJSOUL_API_TOKEN",
           "来源不允许访问此服务",
         ]);
         if (safeDetails.has(payload?.detail)) detail = payload.detail;
