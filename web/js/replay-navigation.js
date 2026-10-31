@@ -45,8 +45,8 @@ function jumpNextDecision() {
     }
   }
   // If there are no more decisions for Hero, advance to final round settlement step
-  const terminalIdx = kyoku.steps.findIndex((s) => s.event?.type === "hora" || s.event?.type === "ryukyoku" || s.event?.type === "ryuukyoku");
-  const targetEndStep = terminalIdx !== -1 ? terminalIdx : kyoku.steps.length - 1;
+  // Multi-ron has consecutive hora steps. Include every settlement event.
+  const targetEndStep = kyoku.steps.length - 1;
   if (state.stepIdx < targetEndStep) {
     setStep(targetEndStep);
     return;

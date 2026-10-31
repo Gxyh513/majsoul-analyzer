@@ -453,7 +453,7 @@ def review_game(
     mortal_mask_batch: list[np.ndarray] = []
     sorted_hands: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = [None] * 4
 
-    def snapshot_board(ev: dict) -> dict[str, Any]:
+    def snapshot_board(ev: dict, event_idx: int) -> dict[str, Any]:
         snapshot_hands = []
         for seat, hand in enumerate(hands):
             hand_state = tuple(hand)
@@ -464,6 +464,8 @@ def review_game(
             snapshot_hands.append(list(cached[1]))
         return {
             "event": ev,
+            # The same MJAI event keeps its identity across seat-specific snapshots.
+            "event_idx": event_idx,
             "hands": snapshot_hands,
             "drawn": list(drawn_tile),
             # Entries are replaced rather than mutated when calls or kans change them.
@@ -539,7 +541,7 @@ def review_game(
                 "steps": [],
                 "decisions": [],
             }
-            cur_kyoku["steps"].append(snapshot_board(ev))
+            cur_kyoku["steps"].append(snapshot_board(ev, i))
             continue
 
         if cur_kyoku is None:
@@ -584,7 +586,7 @@ def review_game(
                         # Separate the riichi declaration from its discard choice,
                         # so both decisions have an independently navigable step.
                         step_ref = len(cur_kyoku["steps"])
-                        cur_kyoku["steps"].append(snapshot_board(ev))
+                        cur_kyoku["steps"].append(snapshot_board(ev, i))
                         pending_decisions.append(
                             {
                                 "kyoku_idx": cur_kyoku["kyoku_idx"],
@@ -708,7 +710,7 @@ def review_game(
             cur_kyoku["end_summaries"].append(label)
 
         step_idx = len(cur_kyoku["steps"])
-        step_snap = snapshot_board(ev)
+        step_snap = snapshot_board(ev, i)
         cur_kyoku["steps"].append(step_snap)
 
         # Check if `target_actor` has a decision at this exact step

@@ -317,10 +317,14 @@ class MajsoulClient:
                 self._pending[idx] = fut
                 try:
                     with measure("雀魂线路握手", failure_count="雀魂线路握手失败次数"):
-                        await asyncio.wait_for(self._ws.send(pkt), timeout=WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS)
-                        await asyncio.wait_for(fut, timeout=WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS)
+                        # One deadline for WebSocket send + route response.
+                        async with asyncio.timeout(WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS):
+                            await self._ws.send(pkt)
+                            await fut
                 finally:
                     self._pending.pop(idx, None)
+                    if not fut.done():
+                        fut.cancel()
 
                 _GATEWAY_FAILED_UNTIL.pop(domain, None)
                 self._connected_domain = domain
@@ -404,10 +408,14 @@ class MajsoulClient:
         self._pending[idx] = fut
         try:
             with measure("fetchGameRecord请求") if full == ".lq.Lobby.fetchGameRecord" else nullcontext():
-                await self._ws.send(pkt)
-                raw = await asyncio.wait_for(fut, timeout)
+                # Count send backpressure against the same RPC deadline.
+                async with asyncio.timeout(timeout):
+                    await self._ws.send(pkt)
+                    raw = await fut
         finally:
             self._pending.pop(idx, None)
+            if not fut.done():
+                fut.cancel()
         with measure("Protobuf实际解码") if return_payload else nullcontext():
             _, data = self.proto.unwrap(raw)
             res = self.proto.decode(res_t, data)
