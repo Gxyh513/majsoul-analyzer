@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import HTTPException
 
+from server.logger import log_debug, log_info, log_warning
 from server.majsoul.client import MajsoulClient, MajsoulError
 from server.paipu_performance import get_value, measure, set_value
 
@@ -267,7 +268,7 @@ def _persist_updated_token(
         if updated:
             saver(cfg)
     except Exception as e:
-        log.warning("[配置保存异常] 自动更新 access_token 失败: %s", _redact_error(e, new_token, acc.get("access_token"), acc.get("password")))
+        log_warning(事件="配置保存异常", 错误原因="自动更新 access_token 失败: " + _redact_error(e, new_token, acc.get("access_token"), acc.get("password")))
 
 
 async def login_with_account_spec(
@@ -279,7 +280,7 @@ async def login_with_account_spec(
         import server.app as server_app
         client = server_app.ms_client
 
-    log.info("[连接重建] 建立雀魂 WebSocket 会话")
+    log_debug(事件="WebSocket连接", 状态="建立会话")
     await client.close()
     set_value("雀魂连接结果", "进行中")
     try:
@@ -301,9 +302,9 @@ async def login_with_account_spec(
                 await client.login_token(token)
             client.current_account = account
             logged_in = True
-            log.info("[雀魂登录] Token 登录成功 | 账号: %s | 昵称: %s | ID: %s", masked, client.nickname, client.account_id)
+            log_info(事件="雀魂登录", 状态="成功", 登录方式="令牌登录", 账号=masked, 昵称=client.nickname)
         except Exception as e:
-            log.warning("[雀魂登录] 账号 %s 的 access_token 登录失败 (%s)，尝试密码登录...", masked, _redact_error(e, token, password))
+            log_warning(事件="雀魂登录", 状态="失败", 登录方式="令牌登录", 失败阶段="令牌验证", 账号=masked, 错误原因=_redact_error(e, token, password))
 
     if not logged_in:
         if account and password:
@@ -312,7 +313,7 @@ async def login_with_account_spec(
                     await client.login_password(account, password)
                 client.current_account = account
                 logged_in = True
-                log.info("[雀魂登录] 密码登录成功 | 账号: %s | 昵称: %s | ID: %s", masked, client.nickname, client.account_id)
+                log_info(事件="雀魂登录", 状态="成功", 登录方式="密码登录", 账号=masked, 昵称=client.nickname)
                 if client.access_token and client.access_token != token:
                     _persist_updated_token(acc, client.access_token, client.nickname, client.account_id)
             except Exception:
@@ -348,10 +349,13 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
             await login_spec_fn(acc)
             return
         except Exception as e:
-            log.warning(
-                "[账号连接异常] 尝试登录账号 [%d/%d] (%s) 失败: %s",
-                idx + 1, len(accs), acc_label,
-                _redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)),
+            log_warning(
+                事件="雀魂登录",
+                状态="失败",
+                失败阶段="账号认证",
+                账号=acc_label,
+                昵称=acc.get("nickname"),
+                错误原因=_redact_error(e, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)),
             )
 
     raise HTTPException(status_code=401, detail="雀魂服务暂时无法认证，请检查账号设置或稍后重试。")
@@ -428,7 +432,14 @@ async def fetch_record_with_failover(
                     if not is_logged_in(account):
                         raise MajsoulError("登录后雀魂会话不可用")
                 except Exception as error:
-                    log.warning("[账号登录失败] %s", _redact_error(error, account.get("password"), account.get("access_token")))
+                    log_warning(
+                        事件="雀魂登录",
+                        状态="失败",
+                        失败阶段="会话建立",
+                        账号=_mask_account(account.get("account")),
+                        昵称=account.get("nickname"),
+                        错误原因=_redact_error(error, account.get("password"), account.get("access_token")),
+                    )
                     text = str(error).lower()
                     outcomes.append("network_error" if any(x in text for x in ("timeout", "connect", "network", "getaddrinfo")) else "login_failed")
                     if get_value("雀魂连接结果") == "失败":
@@ -460,7 +471,12 @@ async def fetch_record_with_failover(
             "rate_limited": "抓取限流", "auth_error": "登录失效",
             "majsoul_error": "雀魂接口失败", "network_error": "网络失败",
         }[outcomes[-1]])
-        log.warning("[牌谱抓取失败] %s", _redact_error(failure, account.get("password"), account.get("access_token"), getattr(client, "access_token", None)))
+        log_warning(
+            事件="牌谱抓取",
+            状态="失败",
+            失败阶段="雀魂牌谱请求",
+            错误原因=_redact_error(failure, account.get("password"), account.get("access_token"), getattr(client, "access_token", None)),
+        )
         async with client_lock:
             if client._ws is session:
                 await client.close()

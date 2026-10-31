@@ -87,31 +87,32 @@ def test_repeated_api_requests_run_inference_each_time(review_environment, tmp_p
     assert not (tmp_path / "metadata").exists()
 
 
-def test_stream_send_metrics_wrap_the_actual_app(review_environment, caplog):
+def test_stream_send_metrics_wrap_the_actual_app(review_environment, monkeypatch, caplog):
     request_id = "1234567890abcdef1234567890abcdef"
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
-    with caplog.at_level("INFO", logger="majsoul-analyzer"):
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    with caplog.at_level("DEBUG", logger="majsoul-analyzer"):
         response = client.post("/api/analyze/stream", json=analyze_payload("stream"), headers={"X-Request-ID": request_id})
     assert response.status_code == 200
     assert response.headers["X-Request-ID"] == request_id
     messages = [record.getMessage() for record in caplog.records]
-    send_logs = [json.loads(message.removeprefix("[Paipu SSE Backend] ")) for message in messages
-                 if message.startswith("[Paipu SSE Backend] ")]
-    assert [entry["事件"] for entry in send_logs] == ["100%", "complete"]
-    assert all(entry["请求ID"] == request_id and entry["状态"] == "完成" for entry in send_logs)
-    assert all(entry["ASGI发送等待_ms"] >= 0 for entry in send_logs)
-    performance_logs = [json.loads(message.removeprefix("[Paipu Performance] ")) for message in messages
-                        if message.startswith("[Paipu Performance] ")]
+    send_logs = [json.loads(message) for message in messages if '"事件":"SSE发送明细"' in message]
+    assert [entry["阶段"] for entry in send_logs] == ["100%", "complete"]
+    assert all(entry["请求编号"] == request_id and entry["状态"] == "完成" for entry in send_logs)
+    assert all(entry["ASGI发送等待毫秒"] >= 0 for entry in send_logs)
+    summary_logs = [json.loads(message) for message in messages if '"事件":"牌谱分析"' in message]
+    assert len(summary_logs) == 1
+    assert summary_logs[0]["请求编号"] == request_id
+    assert summary_logs[0]["状态"] == "成功"
     events = [json.loads(line.removeprefix("data: ")) for line in response.text.splitlines()
               if line.startswith("data: ")]
     reports = [event["performance"] for event in events if event["type"] == "performance"]
-    assert len(performance_logs) == len(reports) == 1
-    assert reports[0] == performance_logs[0]
+    assert len(reports) == 1
     report = reports[0]
     assert report["请求ID"] == request_id
-    assert report["耗时_ms"]["complete ASGI发送开始时间"] == send_logs[1]["ASGI发送开始时间_ms"]
-    assert report["耗时_ms"]["complete ASGI发送完成时间"] == send_logs[1]["ASGI发送完成时间_ms"]
-    assert report["耗时_ms"]["complete ASGI发送等待耗时"] == send_logs[1]["ASGI发送等待_ms"]
+    assert report["耗时_ms"]["complete ASGI发送开始时间"] == send_logs[1]["ASGI发送开始毫秒"]
+    assert report["耗时_ms"]["complete ASGI发送完成时间"] == send_logs[1]["ASGI发送完成毫秒"]
+    assert report["耗时_ms"]["complete ASGI发送等待耗时"] == send_logs[1]["ASGI发送等待毫秒"]
     assert 0 <= report["耗时_ms"]["complete ASGI发送开始时间"] <= report["耗时_ms"]["complete ASGI发送完成时间"]
     assert report["耗时_ms"]["complete Base64编码耗时"] is None
     assert report["数据大小_KB"]["Base64编码后大小"] is None

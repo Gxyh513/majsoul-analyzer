@@ -145,7 +145,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   pending.shift().resolve(result(1)); await urlSeat;
 })().then(()=>clearTimeout(watchdog)).catch(e=>{console.error(e);process.exit(1)});
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=30)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=30)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -277,7 +277,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.deepStrictEqual(fallbackCalls,[]);
 })().then(()=>clearTimeout(watchdog)).catch(e => { console.error(e); process.exit(1); });
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -311,7 +311,7 @@ readAndAnalyzeFile({name:'original.json',content});
 assert.deepStrictEqual(observed,{content,model:undefined});
 assert(notices.some(args=>args[0].includes('original.json')));
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -402,7 +402,7 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.strictEqual(releases,10); assert.strictEqual(cancels,3);
 })().then(()=>clearTimeout(watchdog)).catch(e=>{console.error(e);process.exit(1)});
 '''
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr
 
 
@@ -431,5 +431,5 @@ for (const key of ['has_mortal_weights','active_engine','model_revision','weight
  assert(!isTrustedReview({engine}),key); state.serverStatus.engine[key]=old;
 }
 """
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf8", timeout=10)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=10)
     assert proc.returncode == 0, proc.stderr

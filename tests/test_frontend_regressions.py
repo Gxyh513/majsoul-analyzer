@@ -10,7 +10,7 @@ from frontend_assets import javascript_source, stylesheet_source
 
 def run_js(script):
     if not shutil.which("node"): pytest.skip("Node.js not installed")
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf-8")
     assert proc.returncode == 0, proc.stderr
 
 

@@ -22,6 +22,7 @@ if str(_ENGINE_DIR) not in sys.path:
 import libriichi.state as lstate  # noqa: E402
 
 from ..paipu_performance import add_elapsed as _add_elapsed, increment as _increment, measure as _measure  # noqa: E402
+from ..logger import log_debug
 from ..paipu_performance import review_inference as _review_inference, set_value as _set_performance_value  # noqa: E402
 from .onnx_mortal import OnnxMortal  # noqa: E402
 from .model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, REVIEW_SCHEMA, normalize_model_id  # noqa: E402
@@ -135,8 +136,11 @@ class EngineManager:
                         with _measure("模型加载及初始化耗时"):
                             model = OnnxMortal(path)
                     finally:
-                        log.info("[AI模型准备耗时] 来源=模型获取 模型加载及初始化耗时=%.1fms",
-                                 (time.perf_counter() - load_started) * 1000)
+                        log_debug(
+                            事件="AI模型准备",
+                            来源="模型获取",
+                            耗时毫秒=round((time.perf_counter() - load_started) * 1000, 1),
+                        )
                     if identity != self._file_identity(path):
                         raise RuntimeError('模型权重在加载时发生变化')
                     self._model, self._identity, self._load_error = model, identity, None
@@ -159,8 +163,11 @@ class EngineManager:
             finally:
                 load_finished = time.perf_counter()
                 _set_performance_value("_model_init_finished", load_finished)
-                log.info("[AI模型准备耗时] 来源=后台下载任务 模型加载及初始化耗时=%.1fms",
-                         (load_finished - load_started) * 1000)
+                log_debug(
+                    事件="AI模型准备",
+                    来源="后台下载任务",
+                    耗时毫秒=round((load_finished - load_started) * 1000, 1),
+                )
             if identity != self._file_identity(temporary_path):
                 raise RuntimeError('模型权重在校验时发生变化')
             os.replace(temporary_path, path)

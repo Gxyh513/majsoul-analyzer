@@ -13,7 +13,7 @@ from server import app as server_app
 
 
 @pytest.mark.parametrize("accept_encoding", ["identity", "gzip"])
-def test_asgi_send_uses_one_safe_request_id_and_logs_actual_body_bytes(caplog, accept_encoding):
+def test_asgi_send_uses_one_safe_request_id_and_logs_actual_body_bytes(caplog, accept_encoding, monkeypatch):
     request_id = "1234567890abcdef1234567890abcdef"
     progress = 'data: {"type": "progress", "percent": 100, "message": "完成"}\n\n'.encode()
     complete = ("data: " + json.dumps({"type": "complete", "result": {"text": "牌谱" * 30000}},
@@ -38,7 +38,8 @@ def test_asgi_send_uses_one_safe_request_id_and_logs_actual_body_bytes(caplog, a
     scope = {"type": "http", "method": "POST", "path": "/api/analyze/stream",
              "headers": [(b"x-request-id", request_id.encode()),
                          (b"accept-encoding", accept_encoding.encode())]}
-    with caplog.at_level(logging.INFO, logger="majsoul-analyzer"):
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    with caplog.at_level(logging.DEBUG, logger="majsoul-analyzer"):
         asyncio.run(middleware(scope, None, send))
 
     assert (b"x-request-id", request_id.encode()) in sent[0]["headers"]
@@ -52,19 +53,19 @@ def test_asgi_send_uses_one_safe_request_id_and_logs_actual_body_bytes(caplog, a
         decoded = bodies
     assert decoded[0] == progress
     assert b"".join(decoded[1:]) == complete
-    lines = [record.getMessage() for record in caplog.records if record.getMessage().startswith("[Paipu SSE Backend] ")]
-    logs = [json.loads(line.removeprefix("[Paipu SSE Backend] ")) for line in lines]
+    lines = [record.getMessage() for record in caplog.records if '"事件":"SSE发送明细"' in record.getMessage()]
+    logs = [json.loads(line) for line in lines]
     assert len(logs) == 2
-    assert [entry["事件"] for entry in logs] == ["100%", "complete"]
-    assert all(entry["请求ID"] == request_id and entry["状态"] == "完成" for entry in logs)
-    assert logs[0]["传输大小_KB"] == round(len(bodies[0]) / 1024, 2)
-    assert logs[1]["传输大小_KB"] == round(sum(map(len, bodies[1:-1])) / 1024, 2)
+    assert [entry["阶段"] for entry in logs] == ["100%", "complete"]
+    assert all(entry["请求编号"] == request_id and entry["状态"] == "完成" for entry in logs)
+    assert logs[0]["传输大小KB"] == round(len(bodies[0]) / 1024, 2)
+    assert logs[1]["传输大小KB"] == round(sum(map(len, bodies[1:-1])) / 1024, 2)
     assert stats["complete传输字节数"] == sum(map(len, bodies[1:-1]))
-    assert stats["complete ASGI发送开始时间"] == logs[1]["ASGI发送开始时间_ms"]
-    assert stats["complete ASGI发送完成时间"] == logs[1]["ASGI发送完成时间_ms"]
-    assert stats["complete ASGI发送等待耗时"] == logs[1]["ASGI发送等待_ms"]
-    assert 0 <= logs[1]["ASGI发送开始时间_ms"] <= logs[1]["ASGI发送完成时间_ms"]
-    assert logs[1]["100%发送完成至complete发送开始间隔_ms"] >= 0
+    assert stats["complete ASGI发送开始时间"] == logs[1]["ASGI发送开始毫秒"]
+    assert stats["complete ASGI发送完成时间"] == logs[1]["ASGI发送完成毫秒"]
+    assert stats["complete ASGI发送等待耗时"] == logs[1]["ASGI发送等待毫秒"]
+    assert 0 <= logs[1]["ASGI发送开始毫秒"] <= logs[1]["ASGI发送完成毫秒"]
+    assert logs[1]["发送完成间隔毫秒"] >= 0
     assert "牌谱牌谱" not in " ".join(lines)
 
 
