@@ -207,15 +207,50 @@ test("proxy rejects redirects and masks upstream authentication errors", async (
   }
 });
 
+test("admin routes forward the key header and never forward or set cookies", async () => {
+  let observed;
+  globalThis.fetch = async (url, init) => {
+    observed = { url: String(url), init };
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Set-Cookie": "private=session" },
+    });
+  };
+  try {
+    const request = new Request("https://pages.example/api/admin/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Key": "admin-secret",
+        "X-Api-Token": "client-token",
+        Cookie: "old-session=must-not-forward",
+      },
+      body: "{}",
+    });
+    const response = await onRequest({
+      request,
+      env: { MAJSOUL_API_TOKEN: "server-api-secret" },
+    });
+    assert.equal(response.status, 200);
+    const headers = new Headers(observed.init.headers);
+    assert.equal(headers.get("X-Admin-Key"), "admin-secret");
+    assert.equal(headers.get("X-Api-Token"), "server-api-secret");
+    assert.equal(headers.has("Cookie"), false);
+    assert.equal(response.headers.get("set-cookie"), null);
+    assert.deepEqual(await response.json(), { ok: true });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("admin auth errors preserve safe diagnostics while analysis auth errors stay masked", async () => {
   const makeAdminRequest = (path = "/api/admin/login") => new Request(`https://pages.example${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: "wrong-key" }),
+    headers: { "Content-Type": "application/json", "X-Admin-Key": "wrong-key" },
+    body: "{}",
   });
   const cases = [
     [401, "管理员密钥错误"],
-    [401, "管理员未登录或登录已过期"],
     [401, "远程访问需要有效的 MAJSOUL_API_TOKEN"],
     [403, "来源不允许访问此服务"],
   ];
@@ -233,7 +268,7 @@ test("admin auth errors preserve safe diagnostics while analysis auth errors sta
     }
 
     globalThis.fetch = async () => new Response(JSON.stringify({
-      detail: "管理员请求未通过鉴权，请检查管理员密钥、登录状态或服务鉴权配置",
+      detail: "管理员密钥无效，请检查管理员密钥或服务鉴权配置",
     }), { status: 401, headers: { "Content-Type": "application/json" } });
     const unknown = await onRequest({
       request: makeAdminRequest(),

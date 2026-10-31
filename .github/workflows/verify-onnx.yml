@@ -24,4 +24,6 @@ jobs:
           python -m pip install -q pytest
           python -m pytest -q tests/test_replay_timeline.py tests/test_replay_controls.py tests/test_on_demand_review.py
       - name: Pages 代理与管理员鉴权回归测试
-        run: node --test tests/test_pages_proxy.mjs
+        run: |
+          docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_security_regressions.py"
+          node --test tests/test_pages_proxy.mjs
