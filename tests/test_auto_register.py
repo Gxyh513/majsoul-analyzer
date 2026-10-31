@@ -269,3 +269,26 @@ def test_admin_api_endpoints_and_auth(monkeypatch, tmp_path: Path):
 
     finally:
         asyncio.run(stop_manager())
+
+
+def test_download_repo_zipball_extracts_files(tmp_path: Path):
+    """测试通过 zipball 下载接口能正常解压出 majsoul_register.py。"""
+    import io
+    import zipfile
+    from server.account_register import _download_repo_zipball
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("Gxyh513-majsoul-register-hash/majsoul_register.py", "#!/usr/bin/env python\nprint('ok')\n")
+        z.writestr("Gxyh513-majsoul-register-hash/majsoul/__init__.py", "")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = buf.getvalue()
+
+    with patch("httpx.Client.get", return_value=mock_resp):
+        ok, err = _download_repo_zipball("test_token", "Gxyh513/majsoul-register", tmp_path)
+
+    assert ok is True
+    assert err == ""
+    assert (tmp_path / "majsoul_register.py").is_file()
