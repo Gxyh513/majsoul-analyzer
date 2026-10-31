@@ -117,3 +117,39 @@ def test_wrong_origin_rejected_even_with_valid_token(monkeypatch):
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://review.example")
     c = client(peer="203.0.113.5", host="api.example")
     assert c.get("/api/records/local", headers={"Origin": "https://evil.example", "X-Api-Token": "secret"}).status_code == 403
+
+
+def test_admin_uses_stateless_key_header_without_cookies(monkeypatch):
+    monkeypatch.setenv("MAJSOUL_API_TOKEN", "api-secret")
+    monkeypatch.setenv("MAJSOUL_ADMIN_KEY", "admin-secret")
+    c = client()
+    api_headers = {"X-Api-Token": "api-secret"}
+
+    # An old session cookie is not an administrator credential.
+    old_cookie = c.post(
+        "/api/admin/login",
+        json={},
+        headers={**api_headers, "Cookie": "majsoul_admin_session=old-session"},
+    )
+    assert old_cookie.status_code == 401
+    assert "set-cookie" not in old_cookie.headers
+
+    wrong_key = c.post(
+        "/api/admin/login",
+        json={},
+        headers={**api_headers, "X-Admin-Key": "wrong-key"},
+    )
+    assert wrong_key.status_code == 401
+    assert wrong_key.json()["detail"] == "管理员密钥错误"
+
+    headers = {**api_headers, "X-Admin-Key": "admin-secret"}
+    login = c.post("/api/admin/login", json={}, headers=headers)
+    assert login.status_code == 200
+    assert login.json() == {"ok": True}
+    assert "set-cookie" not in login.headers
+
+    # The same key is checked on every request; no login cookie is issued or needed.
+    logout = c.post("/api/admin/logout", json={}, headers=headers)
+    assert logout.status_code == 200
+    assert logout.json() == {"ok": True}
+    assert "set-cookie" not in logout.headers
