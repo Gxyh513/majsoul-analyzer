@@ -247,11 +247,10 @@ export async function onRequest({ request, env }) {
   });
   if (request.method === "POST" || request.method === "PATCH") headers.set("Content-Type", "application/json");
   if (token) headers.set("X-Api-Token", token);
-  if (route.admin) headers.set("Accept-Encoding", "identity");
   if (route.admin) {
-    const sessionCookie = (request.headers.get("cookie") || "").split(";").map(part => part.trim())
-      .find(part => /^majsoul_admin_session=[0-9]+\.[a-f0-9]{24}\.[a-f0-9]{64}$/.test(part));
-    if (sessionCookie) headers.set("Cookie", sessionCookie);
+    headers.set("Accept-Encoding", "identity");
+    const adminKey = request.headers.get("X-Admin-Key") || "";
+    if (adminKey) headers.set("X-Admin-Key", adminKey);
   }
   let requestId = "";
   if (route.stream) {
@@ -295,13 +294,11 @@ export async function onRequest({ request, env }) {
       // Admin endpoints have their own 401 responses (wrong admin key or
       // expired session). Preserve only known, non-sensitive diagnostics so
       // the Pages proxy does not mislabel them as an upstream API-token fault.
-      let detail = "管理员请求未通过鉴权，请检查管理员密钥、登录状态或服务鉴权配置";
+      let detail = "管理员密钥无效，请检查管理员密钥或服务鉴权配置";
       try {
         const payload = await upstream.json();
         const safeDetails = new Set([
-          "管理员密钥错误",
-          "管理员未登录或登录已过期",
-          "远程访问需要有效的 MAJSOUL_API_TOKEN",
+          "管理员密钥错误",          "远程访问需要有效的 MAJSOUL_API_TOKEN",
           "来源不允许访问此服务",
         ]);
         if (safeDetails.has(payload?.detail)) detail = payload.detail;
@@ -331,11 +328,7 @@ export async function onRequest({ request, env }) {
   }
 
   const responseHeaders = safeResponseHeaders(upstream, route.stream);
-  if (route.admin) {
-    const sessionCookie = upstream.headers.get("set-cookie");
-    if (sessionCookie) responseHeaders.set("Set-Cookie", sessionCookie);
-    responseHeaders.set("Cache-Control", "no-store");
-  }
+  if (route.admin) responseHeaders.set("Cache-Control", "no-store");
   const upstreamId = route.stream ? upstream.headers.get("X-Request-ID") : null;
   const serverRequestId = typeof upstreamId === "string" && /^[0-9a-f]{32}$/.test(upstreamId) ? upstreamId : null;
   if (serverRequestId) responseHeaders.set("X-Request-ID", serverRequestId);
