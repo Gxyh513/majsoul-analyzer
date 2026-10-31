@@ -21,3 +21,9 @@ vendor/
 data/cache/*.js
 data/cache/liqi-*.json
 web/demo_review*.json
+
+# 管理员账号数据库不得纳入仓库或镜像
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
