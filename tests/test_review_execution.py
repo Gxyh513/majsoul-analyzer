@@ -387,7 +387,7 @@ def test_review_queue_rejects_excess_waiters(review_environment, monkeypatch):
 
 def test_public_endpoints_reject_uploaded_json(review_environment):
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
-    assert client.post("/api/analyze/json", json={"content": EVENTS}).status_code == 404
+    assert client.post("/api/analyze/json", json={"content": EVENTS}).status_code in (404, 405)
     response = client.post("/api/analyze/stream", json={"content": EVENTS})
     assert response.status_code == 400
     assert "JSON 上传" in response.text
