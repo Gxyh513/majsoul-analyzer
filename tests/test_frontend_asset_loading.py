@@ -50,3 +50,11 @@ assert.strictEqual(typeof window.toggleCandUkeire, 'function');
 '''.replace('FILES', json.dumps(files))
     proc = subprocess.run(['node', '-e', script], capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_homepage_keeps_model_status_but_not_detail_prompt():
+    page = (WEB_DIR / "index.html").read_text(encoding="utf8")
+    assert "点击查看模型详情" not in page
+    assert 'id="landingModelCard"' in page
+    assert 'id="landingModelDevice"' in page
+    assert "Mortal S42 ONNX" in page
