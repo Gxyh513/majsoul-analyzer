@@ -20,7 +20,7 @@ jobs:
       - name: 牌谱转换与网络超时回归测试
         run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_majsoul_connection_init.py tests/test_review_regressions.py tests/test_rating_kan_fixes.py tests/test_analysis_correctness.py tests/test_auto_register.py tests/test_review_execution.py tests/test_review_cache.py tests/test_ops_metrics.py tests/test_benchmark_api.py"
       - name: 存储路径、账号池及复盘回归测试
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_storage_paths.py tests/test_account_env_pool.py tests/test_account_pool_failover.py tests/test_record_session.py tests/test_record_reanalysis.py tests/test_chinese_json_logging.py"
+        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_storage_paths.py tests/test_account_env_pool.py tests/test_account_pool_failover.py tests/test_record_session.py tests/test_record_reanalysis.py tests/test_chinese_json_logging.py tests/test_sqlite_loop.py"
       - name: 前端回放与交互回归测试
         run: |
           python -m pip install -q pytest
