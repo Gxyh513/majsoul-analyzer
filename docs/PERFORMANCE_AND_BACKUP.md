@@ -40,7 +40,17 @@ python -m scripts.benchmark_api --url http://127.0.0.1:7860 --requests 8 --concu
 python -m scripts.benchmark_onnx --model data/models/model.onnx --threads 1 2 4 --batches 16 64 128 --runs 3
 ```
 
-输出每种组合的中位推理延迟及每决策耗时；同一输入会检查各线程配置的输出数值一致。先监测真实牌谱的 P50/P95 和峰值 CPU/内存，再根据基准决定是否调整默认配置。**不要仅凭合成批量结果直接改变生产线程数**。
+也可加入 `--real-demo`，从仓库内置 MJAI 演示事件通过真实 libriichi 状态机采集观测和动作掩码，
+再比较配置（不接触用户上传私人 JSON）：
+
+```bash
+python -m scripts.benchmark_onnx --real-demo --threads 1 2 4 --batches 16 64 --runs 3
+```
+
+输出每种组合的中位推理延迟和每决策耗时；现在检查**全部 batch 输出**，而非只检查一个固定状态。
+GitHub Actions 在独立 CI 主机上记录这些数据。CI 主机的最快配置不一定适用于 ModelScope 实际 CPU，
+须结合线上 CPU/RSS/P95 负载和实际硬件决定是否修改生产默认值。
+先监测真实牌谱的 P50/P95 和峰值 CPU/内存，再根据基准决定是否调整默认配置。**不要仅凭合成批量结果直接改变生产线程数**。
 
 ## 依赖可重复性
 
