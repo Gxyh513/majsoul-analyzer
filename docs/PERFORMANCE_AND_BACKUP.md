@@ -12,7 +12,21 @@ python -m scripts.backup_records --output /安全的备份位置/records-2026110
 
 默认读取 `MAJSOUL_CACHE_ROOT` 对应的 `records/`；可用 `--records /path/to/records` 指定来源。仅包含 UUID 命名的 `.pb` 和历史 `.json` 原始牌谱，附 SHA-256 清单。不会包含账号库、账号密码、Token、文件锁或 `reviews/` 结果缓存。
 
-不会覆盖已有备份。备份文件内含牌谱及可能的玩家信息，应存放在**非公开且最好离线的安全存储**，并定期试验恢复及校验哈希；仅把备份留在同一持久卷无法防止卷损坏。恢复前应先保留原始文件并验证 `manifest.json`，不要直接覆盖生产记录。
+不会覆盖已有备份。备份文件内含牌谱及可能的玩家信息，应存放在**非公开且最好离线的安全存储**；仅把备份留在同一持久卷无法防止卷损坏。
+
+离线完整性校验（不向磁盘恢复牌谱）：
+
+```bash
+python -m scripts.verify_records_backup --archive /安全位置/records-20261101.tar.gz
+```
+
+定期在独立的**不存在的新目录**演练恢复：
+
+```bash
+python -m scripts.verify_records_backup --archive /安全位置/records-20261101.tar.gz --restore-to /tmp/paipu-restore-20261101
+```
+
+恢复工具校验 SHA-256、清单文件名与归档成员、拒绝符号链接、路径穿越和意外内容；不会覆盖原始牌谱、账号数据库或分析结果缓存，也不会自动更改生产目录。演练后妥善清理临时恢复数据；仍须由运维方把离线备份存到受保护的独立存储。
 
 ## 后端磁盘空间
 
