@@ -77,6 +77,8 @@ def main():
     result = asyncio.run(benchmark(args.url, args.requests, args.concurrency,
                                    token=os.environ.get("MAJSOUL_API_TOKEN", "")))
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result["failed"]:
+        raise SystemExit("本机演示牌谱基准存在失败请求")
 
 
 if __name__ == "__main__":
