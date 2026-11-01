@@ -785,7 +785,7 @@ async def api_records_local():
             seen.add(path.stem)
             try:
                 stored = await asyncio.to_thread(read_record, directory, path.stem)
-                record = await asyncio.to_thread(ms_client.decode_record, stored, path.stem) if isinstance(stored, RawRecord) else stored
+                record = await asyncio.to_thread(ms_client.decode_record_head, stored, path.stem) if isinstance(stored, RawRecord) else stored
                 meta = game_meta(record)
                 meta.update({"uuid": path.stem, "file_name": path.name, "file_size": path.stat().st_size})
             except Exception:
@@ -968,7 +968,7 @@ def _public_review_pipeline_identity() -> str:
     digest = hashlib.sha256()
     for name in (
         "majsoul/client.py", "majsoul/proto.py", "majsoul/convert.py",
-        "engine/reviewer.py", "engine/tiles.py", "engine/shanten.py",
+        "engine/reviewer.py", "engine/tiles.py",
         "engine/onnx_mortal.py", "engine/model_policy.py",
     ):
         digest.update(name.encode("ascii"))
@@ -1012,7 +1012,12 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
             return None  # Legacy JSON needs the existing conversion path.
         url_seat = parse_paipu_seat(paipu)
         requested_seat = target_actor if target_actor is not None else url_seat
-        candidates = (requested_seat,) if requested_seat in range(4) else range(4)
+        if requested_seat in range(4):
+            candidates = (requested_seat,)
+        elif url_account_id is None and admin_manager() is not None:
+            candidates = (0,)
+        else:
+            candidates = range(4)
         source_digest = _public_raw_source_digest(stored)
         for seat in candidates:
             key = _public_raw_review_key(game_id, source_digest, seat, engine, temperature)

@@ -8,15 +8,6 @@ function renderSummaryDashboard() {
 
   renderSeatTabs();
 
-  // Populate Kyoku Select Dropdown (东场/南场局数直接选择)
-  const kyokuSelect = $("kyokuSelect");
-  if (kyokuSelect && res.kyokus) {
-    kyokuSelect.innerHTML = res.kyokus
-      .map((k, i) => `<option value="${i}">${escapeHtml(k.label || `第 ${i + 1} 局`)}</option>`)
-      .join("");
-    kyokuSelect.value = state.kyokuIdx;
-  }
-
   const sum = res.summary || {};
   const hasMatchCounts = Number.isSafeInteger(sum.total_matches) && sum.total_matches >= 0 &&
     Number.isSafeInteger(sum.total_reviewed) && sum.total_reviewed >= sum.total_matches;
@@ -60,8 +51,6 @@ function selectKyoku(kIdx, jumpToFirstDecision = false) {
   if (!res || !res.kyokus[kIdx]) return;
   state.kyokuIdx = kIdx;
   renderSeatTabs();
-
-  if ($("kyokuSelect")) $("kyokuSelect").value = kIdx;
 
   const kyoku = res.kyokus[kIdx];
   const slider = $("stepSlider");

@@ -34,16 +34,6 @@ function bindEvents() {
     }
   });
 
-  // Kyoku Select Dropdown (东场/南场局数直接选择)
-  $("kyokuSelect")?.addEventListener("change", (e) => {
-    if (state.isPlaying) togglePlay(false);
-    const kidx = parseInt(e.target.value, 10);
-    if (!isNaN(kidx)) {
-      selectKyoku(kidx, true);
-    }
-    e.target.blur();
-  });
-
   // Play/Pause Auto Step
   $("btnPlayPause")?.addEventListener("click", () => togglePlay());
 
@@ -55,12 +45,6 @@ function bindEvents() {
       setPlaySpeed(e.target.value);
     });
   }
-
-  // Toggle Hands Visibility
-  $("btnToggleHands")?.addEventListener("click", toggleHandsVisibility);
-
-  // Toggle Audio Sound
-  $("btnToggleAudio")?.addEventListener("click", toggleSound);
 
   // Global robust delegation for clicking anywhere on opponent hands / tiles / back tiles:
   document.addEventListener("click", (e) => {
@@ -140,12 +124,12 @@ function bindEvents() {
   };
   bindNavClick(["btnPrevKyoku"], jumpPrevKyoku);
   bindNavClick(["btnNextKyoku"], jumpNextKyoku);
-  bindNavClick(["btnPrevBlunder", "btnPrevBlunderTop"], jumpPrevBlunder);
-  bindNavClick(["btnNextBlunder", "btnNextBlunderTop"], jumpNextBlunder);
-  bindNavClick(["btnPrevDec", "btnPrevDecTop"], jumpPrevDecision);
-  bindNavClick(["btnNextDec", "btnNextDecTop"], jumpNextDecision);
-  bindNavClick(["btnPrevStep", "btnPrevStepTop"], () => stepDelta(-1));
-  bindNavClick(["btnNextStep", "btnNextStepTop"], () => stepDelta(1));
+  bindNavClick(["btnPrevBlunder"], jumpPrevBlunder);
+  bindNavClick(["btnNextBlunder"], jumpNextBlunder);
+  bindNavClick(["btnPrevDec"], jumpPrevDecision);
+  bindNavClick(["btnNextDec"], jumpNextDecision);
+  bindNavClick(["btnPrevStep"], () => stepDelta(-1));
+  bindNavClick(["btnNextStep"], () => stepDelta(1));
 
   // Round score history modal (Dedicated button, strictly independent from rating badge)
     $("btnOpenScoreModal")?.addEventListener("click", openRoundScoresModal);

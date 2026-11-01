@@ -84,7 +84,7 @@ def backup_records(records_dir: Path, output_file: Path) -> dict:
         from .verify_records_backup import verify_backup
 
         verify_backup(temporary)
-        with temporary.open("rb") as ready:
+        with temporary.open("r+b") as ready:
             os.fsync(ready.fileno())
         os.link(temporary, output_file)
         temporary.unlink()

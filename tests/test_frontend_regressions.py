@@ -235,7 +235,7 @@ assert.strictEqual(correctedRoundSummaries(kyoku)[0],kyoku.end_summaries[0]);
 
 
 def test_round_summary_anonymization_does_not_replace_yaku_names_or_html():
-    sanitizer = source_between('function sanitizeSummaryText(', 'function toggleHidePlayerId(')
+    sanitizer = source_between('function sanitizeSummaryText(', 'function applyHidePlayerId(')
     escaping = source_between('function escapeHtml(', 'function tileCn(')
     names = source_between('const MAJSOUL_YAKU_NAMES', 'function getKillerActionSpan(')
     script = '''const assert=require('assert');

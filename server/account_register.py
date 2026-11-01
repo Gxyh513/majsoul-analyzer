@@ -637,7 +637,7 @@ class AutoRegisterScheduler:
             except asyncio.CancelledError:
                 pass
             self.task = None
-        self.store.release_auto_register_lock(self.instance_id)
+        await asyncio.to_thread(self.store.release_auto_register_lock, self.instance_id)
 
     async def _wait_for_wake(self, seconds: float):
         if seconds <= 0:
@@ -697,7 +697,9 @@ class AutoRegisterScheduler:
                     await self._wait_for_wake(min(due - now, SCHEDULER_POLL_SECONDS))
                     continue
 
-                if not self.store.acquire_auto_register_lock(self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS):
+                if not await asyncio.to_thread(
+                    self.store.acquire_auto_register_lock, self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS
+                ):
                     # Another process may be registering. Re-read its new due date.
                     await self._wait_for_wake(min(SCHEDULER_POLL_SECONDS, 30))
                     continue
@@ -723,7 +725,7 @@ class AutoRegisterScheduler:
                     )
                     await self._register_with_lease(manual=False)
                 finally:
-                    self.store.release_auto_register_lock(self.instance_id)
+                    await asyncio.to_thread(self.store.release_auto_register_lock, self.instance_id)
 
             except asyncio.CancelledError:
                 raise
@@ -750,7 +752,9 @@ class AutoRegisterScheduler:
         last_run = state.get("last_run_at") or 0
         if last_run > 0 and now - last_run < 30:
             raise HTTPException(status_code=429, detail="请勿过于频繁手动触发，距离上次执行不足30秒")
-        if not self.store.acquire_auto_register_lock(self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS):
+        if not await asyncio.to_thread(
+            self.store.acquire_auto_register_lock, self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS
+        ):
             raise HTTPException(status_code=409, detail="无法获取注册任务锁")
         try:
             started = time.time()
@@ -761,7 +765,7 @@ class AutoRegisterScheduler:
             )
             return await self._register_with_lease(manual=True)
         finally:
-            self.store.release_auto_register_lock(self.instance_id)
+            await asyncio.to_thread(self.store.release_auto_register_lock, self.instance_id)
             self._wake.set()
 
     def _toggle_persisted(self, enabled: bool) -> None:
@@ -793,7 +797,7 @@ class AutoRegisterScheduler:
         self._wake.set()
         return await asyncio.to_thread(self.overview)
 
-    def overview(self) -> dict[str, Any]:
+    def overview(self, *, total_accounts: int | None = None) -> dict[str, Any]:
         """Expose both persisted status and whether the in-process timer is alive."""
         state = self.store.get_auto_register_state()
         now = time.time()
@@ -801,7 +805,9 @@ class AutoRegisterScheduler:
         scheduler_alive = self.task is not None and not self.task.done()
         recent_logs = self.store.get_auto_register_logs(limit=10)
 
-        all_accounts = self.store.all()
+        if total_accounts is None:
+            count_fn = getattr(self.store, "count", None)
+            total_accounts = count_fn() if callable(count_fn) else len(self.store.all())
 
         return {
             "scheduler_alive": scheduler_alive,
@@ -814,6 +820,6 @@ class AutoRegisterScheduler:
             "last_account": state.get("last_account_masked"),
             "success_count": state.get("success_count", 0),
             "failure_count": state.get("failure_count", 0),
-            "current_pool_total": len(all_accounts),
+            "current_pool_total": total_accounts,
             "recent_logs": recent_logs,
         }

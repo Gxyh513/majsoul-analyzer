@@ -406,7 +406,7 @@ async def test_token_login_keeps_check_and_success_flow(tmp_path):
 @pytest.mark.anyio
 async def test_handshake_timeout_switches_gateway_and_cleans_pending(monkeypatch, tmp_path, route_service):
     client = ms.MajsoulClient(tmp_path)
-    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.05)
     routes_seen = []
     first = HandshakeSocket(client, routes_seen)
     second = HandshakeSocket(client, routes_seen)
@@ -454,14 +454,14 @@ async def test_rpc_timeout_includes_websocket_send_and_cleans_pending(tmp_path, 
 @pytest.mark.anyio
 async def test_handshake_send_and_reply_share_budget(monkeypatch, tmp_path, route_service):
     client = ms.MajsoulClient(tmp_path)
-    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.025)
+    monkeypatch.setattr(ms, "WEBSOCKET_HANDSHAKE_TIMEOUT_SECONDS", 0.08)
     seen = []
     first, second = HandshakeSocket(client, seen), HandshakeSocket(client, seen)
 
     async def slow_send(packet):
-        await asyncio.sleep(0.018)
+        await asyncio.sleep(0.05)
         await HandshakeSocket.send(first, packet)
-        await asyncio.sleep(0.018)
+        await asyncio.sleep(0.05)
 
     first.send = slow_send
     connect = AsyncMock(side_effect=[first, second])

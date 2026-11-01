@@ -9,7 +9,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     localStorage.removeItem("majsoul_back_pref");
   } catch (_) {}
   applyHidePlayerId();
-  updateSoundButton();
   const initSpeedSel = $("playSpeedSelect");
   if (initSpeedSel) initSpeedSel.value = String(state.playSpeed || "1");
   bindEvents();

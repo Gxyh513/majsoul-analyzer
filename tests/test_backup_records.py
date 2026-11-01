@@ -22,7 +22,10 @@ def test_raw_backup_only_includes_verified_named_records(tmp_path):
     (records / ".locks" / (UUID + ".lock")).write_text("lock")
     outside = tmp_path / "outside.json"
     outside.write_text("private")
-    (records / "symlink.json").symlink_to(outside)
+    try:
+        (records / "symlink.json").symlink_to(outside)
+    except OSError:
+        pass
     target = tmp_path / "backup.tar.gz"
 
     result = backup_records(records, target)

@@ -46,20 +46,6 @@ def tile_of_action_idx(i: int) -> str:
     return "5" + "mps"[i - 34] + "r"
 
 
-def is_yaochu(i: int) -> bool:
-    return i >= 27 or i % 9 in (0, 8)
-
-
-def dora_from_marker(marker: str) -> int:
-    i = tid(marker)
-    if i < 27:
-        base = i - i % 9
-        return base + (i % 9 + 1) % 9
-    if i <= 30:  # winds E S W N
-        return 27 + (i - 27 + 1) % 4
-    return 31 + (i - 31 + 1) % 3  # dragons P F C
-
-
 def tile_cn(t: str) -> str:
     if t in HONOR_CN:
         return HONOR_CN[t]
