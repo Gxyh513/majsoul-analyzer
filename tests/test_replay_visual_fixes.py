@@ -329,3 +329,34 @@ assert.equal(writes,1);
 renderBoard(kyoku,{...snap,dora_markers:['1m','2p']},null);
 assert.equal(writes,2);
 """)
+
+
+def test_unchanged_hand_markup_reuses_dom_nodes():
+    code = section("function renderHeroHand(", "function renderCallsHtml(")
+    run_js(r"""const assert=require('assert');
+const counts={};
+function node(id) {
+  const obj={_html:'',get innerHTML(){return this._html;},
+    set innerHTML(s){counts[id]=(counts[id]||0)+1;this._html=s;}};
+  return obj;
+}
+const nodes={handBottomClosed:node('hero'),handRightClosed:node('other')};
+const $=id=>nodes[id]||null;
+const state={openHands:false};
+const escapeHtml=x=>x,tileCn=x=>x,getTileBackSrc=()=>'/back.svg';
+const renderCallsHtml=()=>'', renderDecisionTileOrBadge=()=>{};
+""" + code + r"""
+const snap={hands:[['1m','2m'],['3s'],[],[]],drawn:[null,null,null,null],
+            melds:[[],[],[],[]]};
+renderHeroHand(0,snap,null);
+renderHeroHand(0,snap,null);
+assert.equal(counts.hero,1);
+renderHeroHand(0,{...snap,drawn:['4m',null,null,null]},null);
+assert.equal(counts.hero,2);
+renderOpponentHand('Right',1,snap,null,null,false,null);
+renderOpponentHand('Right',1,snap,null,null,false,null);
+assert.equal(counts.other,1);
+state.openHands=true;
+renderOpponentHand('Right',1,snap,null,null,false,null);
+assert.equal(counts.other,2);
+""")
