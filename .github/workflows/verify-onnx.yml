@@ -15,6 +15,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: 构建并验证固定模型
         run: docker build -t majsoul-analyzer-onnx .
+      - name: 记录生产镜像 Python 精确依赖（用于生成 lock 文件）
+        run: docker run --rm majsoul-analyzer-onnx python -m pip freeze
       - name: 验证真实模型分析
         run: docker run --rm majsoul-analyzer-onnx python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; m = EngineManager(Path('data/models')); events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf-8')); result = review_game(events, 0, m); assert any(k['decisions'] for k in result['kyokus']) and m.status()['model_ready']"
       - name: 牌谱转换与网络超时回归测试
