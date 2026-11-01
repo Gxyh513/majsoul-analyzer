@@ -44,7 +44,11 @@ function renderBoard(kyoku, snap, activeDecision) {
       const img = m ? `/tiles/${encodeURIComponent(m)}.svg` : getTileBackSrc();
       doraHtml += `<div class="tileDiv"><img src="${img}" class="tileImg"></div>`;
     }
-    dorasEl.innerHTML = doraHtml;
+    // Keep identical dora indicator DOM nodes alive between replay steps.
+    if (dorasEl.__doraHtml !== doraHtml) {
+      dorasEl.innerHTML = doraHtml;
+      dorasEl.__doraHtml = doraHtml;
+    }
   }
 
   // Check Hora agari tile & actors
@@ -186,21 +190,28 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
       if (r.called) {
         let callerName = "";
         let callType = "鸣";
-        const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
-        if (currentKyoku && currentKyoku.steps) {
-          // Look for who called this tile in the round's events
-          for (let si = 0; si < currentKyoku.steps.length; si++) {
-            const ev = currentKyoku.steps[si]?.event;
-            if (ev && (ev.type === "chi" || ev.type === "pon" || ev.type === "daiminkan")) {
-              if (ev.target === seat && (ev.pai === r.pai || (ev.consumed && ev.consumed.includes(r.pai)))) {
-                const heroSeat = state.targetActor ?? 0;
-                const diff = (ev.actor - heroSeat + 4) % 4;
-                callerName = ["自家", "下家", "对家", "上家"][diff];
-                callType = ev.type === "chi" ? "吃" : (ev.type === "pon" ? "碰" : "大明杠");
+        let callActor = Number.isInteger(r.call_actor) ? r.call_actor : null;
+        let type = r.call_type;
+        if (callActor === null) {
+          // Legacy results only: infer from the event list. New results carry
+          // the specific call actor and type on the discarded tile itself.
+          const currentKyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
+          if (currentKyoku?.steps) {
+            for (const step of currentKyoku.steps) {
+              const ev = step?.event;
+              if (ev && (ev.type === "chi" || ev.type === "pon" || ev.type === "daiminkan")
+                  && ev.target === seat && (ev.pai === r.pai || ev.consumed?.includes(r.pai))) {
+                callActor = ev.actor;
+                type = ev.type;
                 break;
               }
             }
           }
+        }
+        if (Number.isInteger(callActor)) {
+          const heroSeat = state.targetActor ?? 0;
+          callerName = ["自家", "下家", "对家", "上家"][(callActor - heroSeat + 4) % 4];
+          callType = type === "chi" ? "吃" : type === "pon" ? "碰" : type === "daiminkan" ? "大明杠" : "鸣";
         }
         calledDesc = callerName ? ` · 被${callerName}${callType}` : " · 被鸣";
       }

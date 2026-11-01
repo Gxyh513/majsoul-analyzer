@@ -294,3 +294,38 @@ assert(!content.innerHTML.includes('<svg'));
 assert(content.innerHTML.includes('&lt;img'));
 assert(content.innerHTML.includes('—'));
 ''')
+
+
+def test_called_discard_renders_direct_metadata_without_scanning_older_calls():
+    code = section("function renderPlayerRiver(", "function renderHeroHand(")
+    run_js(r"""const assert=require('assert');
+const container={dataset:{},innerHTML:''};
+const $=()=>container, tileCn=x=>x, escapeHtml=x=>x;
+const state={gameId:'g',kyokuIdx:0,targetActor:0,reviewData:{kyokus:[
+  {steps:[{event:{type:'pon',actor:1,target:0,pai:'5m'}}]}
+]}};
+""" + code + r"""
+const snap={rivers:[[{pai:'5m',called:true,call_actor:2,call_type:'pon'}]],event:{type:'tsumo'}};
+renderPlayerRiver('Top',0,snap);
+assert(container.innerHTML.includes('被对家碰'),container.innerHTML);
+assert(!container.innerHTML.includes('被下家碰'),container.innerHTML);
+""")
+
+
+def test_unchanged_dora_does_not_recreate_tile_nodes():
+    code = section("function renderBoard(", "function renderPlayerRiver(")
+    run_js(r"""const assert=require('assert');
+let writes=0;
+const dora={get innerHTML(){return this._html||'';},set innerHTML(v){writes++;this._html=v}};
+const $=id=>id==='centerDoras'?dora:null;
+const state={targetActor:0,stepIdx:0};
+const getTileBackSrc=()=>'/tiles/back.svg',escapeHtml=x=>x,handWind=()=>'',renderPlayerRiver=()=>{};
+const renderHeroHand=()=>{},renderOpponentHand=()=>{};
+""" + code + r"""
+const kyoku={steps:[]}, snap={dora_markers:['1m'],rivers:[[],[],[],[]],drawn:[],event:{type:'tsumo',actor:0}};
+renderBoard(kyoku,snap,null);
+renderBoard(kyoku,snap,null);
+assert.equal(writes,1);
+renderBoard(kyoku,{...snap,dora_markers:['1m','2p']},null);
+assert.equal(writes,2);
+""")

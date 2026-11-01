@@ -647,7 +647,12 @@ def review_game(
             for c in consumed:
                 remove_from_hand(seat, c)
             if rivers[target]:
-                rivers[target][-1] = {**rivers[target][-1], "called": True}
+                # Bind the actual call to this discard at conversion time.
+                # Identical tiles can be called repeatedly later in one round.
+                rivers[target][-1] = {
+                    **rivers[target][-1], "called": True,
+                    "call_actor": seat, "call_type": etype,
+                }
             melds[seat].append({"type": etype, "pai": pai, "consumed": consumed, "from": target, "tiles": [pai] + consumed})
             if seat == target_actor and etype in ("chi", "pon"):
                 junme += 1
