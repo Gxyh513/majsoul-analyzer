@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tarfile
 import tempfile
 from datetime import datetime, timezone
@@ -21,12 +22,17 @@ from server.storage_paths import storage_paths
 _FILENAME = re.compile(r"\d{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:pb|json)")
 
 
-def _digest(path: Path) -> str:
-    checksum = hashlib.sha256()
-    with path.open("rb") as stream:
-        for part in iter(lambda: stream.read(1024 * 1024), b""):
-            checksum.update(part)
-    return checksum.hexdigest()
+class _HashingReader:
+    """Hash exactly the bytes tarfile reads; never hash a different source pass."""
+
+    def __init__(self, source):
+        self.source = source
+        self.checksum = hashlib.sha256()
+
+    def read(self, size=-1):
+        payload = self.source.read(size)
+        self.checksum.update(payload)
+        return payload
 
 
 def backup_records(records_dir: Path, output_file: Path) -> dict:
@@ -36,11 +42,10 @@ def backup_records(records_dir: Path, output_file: Path) -> dict:
     if output_file.exists() or output_file.is_symlink():
         raise FileExistsError("备份文件已存在，不覆盖已有备份")
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    entries = []
-    for path in sorted(records_dir.iterdir()):
-        if (not path.is_file() or path.is_symlink() or not _FILENAME.fullmatch(path.name)):
-            continue
-        entries.append((path, _digest(path)))
+    entries = [
+        path for path in sorted(records_dir.iterdir())
+        if path.is_file() and not path.is_symlink() and _FILENAME.fullmatch(path.name)
+    ]
     if not entries:
         raise ValueError("没有可备份的原始牌谱文件")
     temporary = None
@@ -51,22 +56,38 @@ def backup_records(records_dir: Path, output_file: Path) -> dict:
         manifest = {
             "version": 1,
             "created_utc": datetime.now(timezone.utc).isoformat(),
-            "records": [{"name": path.name, "sha256": sha} for path, sha in entries],
+            "records": [],
         }
         with tarfile.open(temporary, "w:gz") as archive:
-            for path, _digest_value in entries:
-                with path.open("rb") as source:
-                    stat = path.stat()
+            for path in entries:
+                # A path can change after directory enumeration. Refuse symlink
+                # substitution and obtain the length from the actual open file.
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+                with os.fdopen(os.open(path, flags), "rb") as source:
+                    info = os.fstat(source.fileno())
+                    if not stat.S_ISREG(info.st_mode):
+                        raise ValueError("备份源文件必须为普通文件")
+                    reader = _HashingReader(source)
                     entry = tarfile.TarInfo("records/" + path.name)
-                    entry.size = stat.st_size
+                    entry.size = info.st_size
                     entry.mode = 0o600
-                    archive.addfile(entry, source)
+                    archive.addfile(entry, reader)
+                    manifest["records"].append({"name": path.name, "sha256": reader.checksum.hexdigest()})
             payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf8")
             info = tarfile.TarInfo("manifest.json")
             info.size = len(payload)
             info.mode = 0o600
             archive.addfile(info, io.BytesIO(payload))
-        os.replace(temporary, output_file)
+
+        # Publish only a verified archive. A hard link is atomic and fails if
+        # a competing backup appeared, unlike os.replace which overwrites it.
+        from .verify_records_backup import verify_backup
+
+        verify_backup(temporary)
+        with temporary.open("rb") as ready:
+            os.fsync(ready.fileno())
+        os.link(temporary, output_file)
+        temporary.unlink()
         temporary = None
         return {"records": len(entries), "bytes": output_file.stat().st_size}
     finally:
