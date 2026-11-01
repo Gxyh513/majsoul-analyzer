@@ -18,6 +18,20 @@ python -m scripts.backup_records --output /安全的备份位置/records-2026110
 
 可信身份调用 `GET /api/status` 的 `storage` 字段包含缓存占用、剩余磁盘空间以及 `low_disk_space`。低于 512 MiB 时标为 `true`。该字段仅是提醒，不会自动删掉永久原始牌谱，也不会自动清理备份。
 
+## 分析 API 性能基线（仅本机）
+
+在运行了固定 Mortal 模型的**本机测试环境**执行，不允许把生产域名传给压测工具：
+
+```bash
+python -m scripts.benchmark_api --url http://127.0.0.1:7860 --requests 8 --concurrency 2
+```
+
+工具限制为最多 32 次请求、4 个并发，使用内置演示输入（不包含私人 JSON 或真实抓谱）。
+报告成功数、失败数、耗时 P50/P95、整轮吞吐量；不输出令牌、UUID、昵称、IP。
+内置演示的吞吐量不代表线上公开牌谱抓取/转换的端到端性能。
+可信 `/api/status` 同时提供最近请求阶段分位数、成功/失败数量、当前排队及 Linux RSS（进程内，重启清空）。
+不经实际运行不可虚报 ModelScope 生产 P95 或内存改善。
+
 ## ONNX CPU 性能基准
 
 在安装原生 `libriichi` 并拥有已校验的固定 `model.onnx` 的机器上，在仓库根目录运行：
