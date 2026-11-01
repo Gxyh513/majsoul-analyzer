@@ -128,3 +128,65 @@ def test_low_disk_skips_disposable_cache_without_writing(tmp_path, monkeypatch):
     )
     assert review_cache.save(tmp_path, key, result())
     assert review_cache.load(tmp_path, key, result()["game_id"], 0) == result()
+
+
+def test_read_housekeeping_prunes_only_expired_public_reviews(tmp_path):
+    """Read-only traffic also reclaims stale public reviews, never raw records."""
+    cache_dir = tmp_path / "reviews"
+    records_dir = tmp_path / "records"
+    records_dir.mkdir()
+    permanent = records_dir / "source.pb"
+    permanent.write_bytes(b"permanent raw record")
+    private = tmp_path / "private.json"
+    private.write_text('{"secret":"not-a-review"}', encoding="utf8")
+
+    expired = "4" * 64
+    fresh = "5" * 64
+    assert review_cache.save(cache_dir, expired, result())
+    assert review_cache.save(cache_dir, fresh, result())
+    stale_path = cache_dir / f"{expired}.json"
+    old = time.time() - review_cache.CACHE_TTL_SECONDS - 20
+    os.utime(stale_path, (old, old))
+    symlink = cache_dir / ("6" * 64 + ".json")
+    symlink.symlink_to(private)
+    unrelated = cache_dir / "private.json"
+    unrelated.write_text("leave alone", encoding="utf8")
+
+    review_cache._last_cleanup[cache_dir] = time.monotonic() - review_cache.CACHE_HOUSEKEEPING_SECONDS - 1
+    assert review_cache.load(cache_dir, fresh, result()["game_id"], 0) == result()
+    assert not stale_path.exists()
+    assert symlink.is_symlink()
+    assert unrelated.read_text() == "leave alone"
+    assert private.read_text() == '{"secret":"not-a-review"}'
+    assert permanent.read_bytes() == b"permanent raw record"
+
+
+def test_status_housekeeping_is_hourly_and_reclaims_stale_files(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "reviews"
+    cache_dir.mkdir()
+    calls = []
+    real_evict = review_cache._evict
+
+    def spy(directory):
+        calls.append(directory)
+        return real_evict(directory)
+
+    monkeypatch.setattr(review_cache, "_evict", spy)
+    monkeypatch.setattr(review_cache, "_last_cleanup", {})
+    for _ in range(3):
+        assert review_cache.storage_metrics(cache_dir)["entries"] == 0
+    assert calls == [cache_dir]
+
+    key = "7" * 64
+    entry = cache_dir / f"{key}.json"
+    entry.write_text("expired-but-disposable", encoding="utf8")
+    old = time.time() - review_cache.CACHE_TTL_SECONDS - 20
+    os.utime(entry, (old, old))
+    # Do not scan the whole directory for every health request.
+    assert review_cache.storage_metrics(cache_dir)["entries"] == 1
+    assert len(calls) == 1
+
+    review_cache._last_cleanup[cache_dir] -= review_cache.CACHE_HOUSEKEEPING_SECONDS + 1
+    assert review_cache.storage_metrics(cache_dir)["entries"] == 0
+    assert not entry.exists()
+    assert len(calls) == 2
