@@ -171,3 +171,7 @@ for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
 - [riichi-mahjong-tiles](https://github.com/FluffyStuff/riichi-mahjong-tiles)
 
 第三方组件各自遵循其原有许可证；本仓库当前未提供项目级 LICENSE 文件，请在确定授权条款前不要假定本项目采用某种许可证。
+
+## 运行期间性能汇总
+
+通过带有效 API 令牌的 `GET /api/status` 可读取 `performance_recent`，包含最近最多 256 次分析请求的总耗时、排队、ONNX 推理和结果大小的 P50/P95。仅保存在当前服务进程的有界内存中，重启清空；不存储用户昵称、牌谱编号或 IP。匿名状态接口不包含这些统计。不同实例分别统计，不应将单进程分位数直接视为全站压测结果。
