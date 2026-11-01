@@ -484,14 +484,14 @@ async def register_and_ingest(
             raise ValueError("返回的账号密码过短")
 
         # 3. 检查账号池是否已存在该账号
-        if store.has_account(account_name, token):
-            store.add_auto_register_log(
+        if await asyncio.to_thread(store.has_account, account_name, token):
+            await asyncio.to_thread(store.add_auto_register_log,
                 status="跳过",
                 account_masked=mask_account(account_name),
                 duration_ms=(time.monotonic() - start_time) * 1000,
                 error_message="账号或Token已存在于现有账号池，自动忽略",
             )
-            store.update_auto_register_state(
+            await asyncio.to_thread(store.update_auto_register_state,
                 last_run_at=time.time(),
                 next_run_at=time.time() + DEFAULT_REGISTER_INTERVAL_SECONDS,
                 last_status="成功",
@@ -509,7 +509,7 @@ async def register_and_ingest(
         verified_data = await verify_majsoul_credentials(raw_credentials, cache_dir)
 
         # 5. 写入现有账号数据库
-        account_pk = store.add(verified_data)
+        account_pk = await asyncio.to_thread(store.add, verified_data)
 
         # 6. 通知调度器有新账号就绪
         if scheduler:
@@ -519,9 +519,9 @@ async def register_and_ingest(
         masked = mask_account(verified_data["account"])
 
         # 7. 更新状态和持久化日志
-        current_state = store.get_auto_register_state()
+        current_state = await asyncio.to_thread(store.get_auto_register_state)
         new_success_count = current_state.get("success_count", 0) + 1
-        store.update_auto_register_state(
+        await asyncio.to_thread(store.update_auto_register_state,
             last_run_at=time.time(),
             next_run_at=time.time() + DEFAULT_REGISTER_INTERVAL_SECONDS,
             last_status="成功",
@@ -529,7 +529,7 @@ async def register_and_ingest(
             last_account_masked=masked,
             success_count=new_success_count,
         )
-        store.add_auto_register_log(
+        await asyncio.to_thread(store.add_auto_register_log,
             status="成功",
             account_masked=masked,
             duration_ms=duration_ms,
@@ -542,7 +542,7 @@ async def register_and_ingest(
             状态="成功",
             账号=masked,
             耗时毫秒=round(duration_ms, 1),
-            当前账号池数=len(store.all()),
+            当前账号池数=len(await asyncio.to_thread(store.all)),
         )
 
         return {
@@ -561,7 +561,7 @@ async def register_and_ingest(
             secret_items.extend([raw_credentials.get("password"), raw_credentials.get("access_token")])
         sanitized_error = redact_secrets(str(exc), *secret_items)
 
-        current_state = store.get_auto_register_state()
+        current_state = await asyncio.to_thread(store.get_auto_register_state)
         new_failure_count = current_state.get("failure_count", 0) + 1
 
         # 检查是否需要触发平台熔断保护
@@ -577,8 +577,8 @@ async def register_and_ingest(
             state_updates["enabled"] = 0
             state_updates["last_error"] = f"[触发平台限制，已自动暂停] {sanitized_error[:150]}"
 
-        store.update_auto_register_state(**state_updates)
-        store.add_auto_register_log(
+        await asyncio.to_thread(store.update_auto_register_state,**state_updates)
+        await asyncio.to_thread(store.add_auto_register_log,
             status="失败",
             account_masked=masked,
             duration_ms=duration_ms,
@@ -679,7 +679,7 @@ class AutoRegisterScheduler:
         """Use the DB schedule as truth, wake on toggle, and survive recoverable errors."""
         while not self._stopped:
             try:
-                state = self.store.get_auto_register_state()
+                state = await asyncio.to_thread(self.store.get_auto_register_state)
                 if not state.get("enabled"):
                     await self._wait_for_wake(SCHEDULER_POLL_SECONDS)
                     continue
@@ -690,7 +690,7 @@ class AutoRegisterScheduler:
                 if due is None:
                     # Fresh databases already schedule the first run one hour later.
                     due = max(now, last_run + DEFAULT_REGISTER_INTERVAL_SECONDS) if last_run else now + DEFAULT_REGISTER_INTERVAL_SECONDS
-                    self.store.update_auto_register_state(next_run_at=due)
+                    await asyncio.to_thread(self.store.update_auto_register_state, next_run_at=due)
                 due = max(float(due), last_run + DEFAULT_REGISTER_INTERVAL_SECONDS if last_run else 0)
 
                 if due > now:
@@ -705,7 +705,7 @@ class AutoRegisterScheduler:
                 try:
                     # Recheck under the shared DB lock; another worker or a manual
                     # trigger might have completed after our initial read.
-                    locked_state = self.store.get_auto_register_state()
+                    locked_state = await asyncio.to_thread(self.store.get_auto_register_state)
                     now = time.time()
                     last_run = float(locked_state.get("last_run_at") or 0)
                     next_run = locked_state.get("next_run_at")
@@ -716,7 +716,7 @@ class AutoRegisterScheduler:
 
                     # Persist the attempt before starting external I/O, preventing
                     # a restart from immediately repeating an interrupted attempt.
-                    self.store.update_auto_register_state(
+                    await asyncio.to_thread(self.store.update_auto_register_state,
                         last_run_at=now,
                         next_run_at=now + DEFAULT_REGISTER_INTERVAL_SECONDS,
                         last_status="运行中",
@@ -731,7 +731,7 @@ class AutoRegisterScheduler:
                 # A single DB/network failure must not permanently kill the loop.
                 log_error(事件="自动注册调度器异常", 错误原因=type(exc).__name__)
                 try:
-                    self.store.update_auto_register_state(
+                    await asyncio.to_thread(self.store.update_auto_register_state,
                         last_status="调度异常",
                         last_error=f"调度器异常: {type(exc).__name__}",
                         next_run_at=time.time() + SCHEDULER_ERROR_RETRY_SECONDS,
@@ -744,7 +744,7 @@ class AutoRegisterScheduler:
         """Manually trigger one attempt, preserving the shared rate/instance lock."""
         from fastapi import HTTPException
         now = time.time()
-        state = self.store.get_auto_register_state()
+        state = await asyncio.to_thread(self.store.get_auto_register_state)
         if (state.get("locked_until") or 0) > now:
             raise HTTPException(status_code=409, detail="当前已有注册任务在执行中，请稍候")
         last_run = state.get("last_run_at") or 0
@@ -754,7 +754,7 @@ class AutoRegisterScheduler:
             raise HTTPException(status_code=409, detail="无法获取注册任务锁")
         try:
             started = time.time()
-            self.store.update_auto_register_state(
+            await asyncio.to_thread(self.store.update_auto_register_state,
                 last_run_at=started,
                 next_run_at=started + DEFAULT_REGISTER_INTERVAL_SECONDS,
                 last_status="运行中",
@@ -764,8 +764,8 @@ class AutoRegisterScheduler:
             self.store.release_auto_register_lock(self.instance_id)
             self._wake.set()
 
-    def toggle(self, enabled: bool) -> dict[str, Any]:
-        """Apply changes immediately; an expired schedule runs on resume."""
+    def _toggle_persisted(self, enabled: bool) -> None:
+        """Synchronous state mutation; async routes run it outside the event loop."""
         state = self.store.get_auto_register_state()
         updates = {
             "enabled": int(bool(enabled)),
@@ -778,9 +778,20 @@ class AutoRegisterScheduler:
         else:
             updates["next_run_at"] = None
         self.store.update_auto_register_state(**updates)
+
+    def toggle(self, enabled: bool) -> dict[str, Any]:
+        """Backwards-compatible synchronous interface for internal callers."""
+        self._toggle_persisted(enabled)
         self.start()
         self._wake.set()
         return self.overview()
+
+    async def toggle_async(self, enabled: bool) -> dict[str, Any]:
+        """Keep database reads/writes off the ASGI loop, start tasks on that loop."""
+        await asyncio.to_thread(self._toggle_persisted, enabled)
+        self.start()
+        self._wake.set()
+        return await asyncio.to_thread(self.overview)
 
     def overview(self) -> dict[str, Any]:
         """Expose both persisted status and whether the in-process timer is alive."""
