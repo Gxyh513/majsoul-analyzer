@@ -27,3 +27,5 @@ jobs:
         run: |
           docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_security_regressions.py"
           node --test tests/test_pages_proxy.mjs
+      - name: 原始牌谱备份工具回归测试
+        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_backup_records.py"
