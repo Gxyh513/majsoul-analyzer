@@ -38,6 +38,8 @@ def review_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(app, "_review_tasks", set())
+    monkeypatch.setattr(app, "_review_inflight", {})
+    monkeypatch.setattr(app, "_review_waiters", 0)
     monkeypatch.setattr(app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(app, "DATA_DIR", tmp_path)
     monkeypatch.setattr(app, "engine_mgr", SimpleNamespace(
@@ -211,7 +213,7 @@ def test_same_review_requests_run_separately_and_serially(review_environment, mo
         try:
             first = asyncio.create_task(app._run_review(UUID, EVENTS, META, SEAT, MODEL_ID, 0.0))
             await asyncio.wait_for(started[0].wait(), 2)
-            second = asyncio.create_task(app._run_review(UUID, EVENTS, META, SEAT, MODEL_ID, 0.0))
+            second = asyncio.create_task(app._run_review(UUID, EVENTS, {**META, "second_request": True}, SEAT, MODEL_ID, 0.0))
             await asyncio.sleep(0.03)
             assert not second.done() and calls == [True]
             release[0].set()
@@ -260,6 +262,14 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
             return messages
 
         monkeypatch.setattr(app, "review_game", progress_review)
+        # This test covers independent reviews; identical requests are now
+        # deliberately coalesced, so supply distinct source metadata here.
+        resolved = 0
+        async def resolve_distinct(**kwargs):
+            nonlocal resolved
+            resolved += 1
+            return UUID, copy.deepcopy(EVENTS), {**META, "request_number": resolved}, SEAT
+        monkeypatch.setattr(app, "resolve_game_data", resolve_distinct)
         request = app.AnalyzeStreamReq(**analyze_payload("stream"))
         leader = follower = None
         try:
@@ -297,4 +307,78 @@ def test_queued_stream_gets_its_own_progress_after_disconnect(review_environment
                     task.cancel()
             await asyncio.gather(*(task for task in (leader, follower) if task is not None), return_exceptions=True)
 
+    asyncio.run(scenario())
+
+
+
+def test_identical_concurrent_reviews_share_one_worker(review_environment, monkeypatch):
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+        release = threading.Event()
+        def blocked(*args, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+            return review()
+        monkeypatch.setattr(app, "review_game", blocked)
+        first = second = None
+        try:
+            first = asyncio.create_task(app._run_review(UUID, EVENTS, META, SEAT, MODEL_ID, 0.0))
+            await asyncio.wait_for(entered.wait(), 2)
+            second = asyncio.create_task(app._run_review(UUID, EVENTS, copy.deepcopy(META), SEAT, MODEL_ID, 0.0))
+            await asyncio.sleep(0.03)
+            assert len(app._review_tasks) == 1
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            release.set()
+            assert await asyncio.wait_for(second, 2) == {**review(), "game_id": UUID}
+            assert review_environment.call_count == 1
+            await asyncio.sleep(0)
+            assert not app._review_inflight
+        finally:
+            release.set()
+            await asyncio.gather(*(x for x in (first, second) if x is not None), return_exceptions=True)
+    asyncio.run(scenario())
+
+
+def test_review_queue_rejects_excess_waiters(review_environment, monkeypatch):
+    monkeypatch.setattr(app, "REVIEW_MAX_WAITERS", 1)
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        entered = [asyncio.Event(), asyncio.Event()]
+        release = [threading.Event(), threading.Event()]
+        count = 0
+        def blocked(*args, **kwargs):
+            nonlocal count
+            n = count
+            count += 1
+            loop.call_soon_threadsafe(entered[n].set)
+            assert release[n].wait(5)
+            return review()
+        monkeypatch.setattr(app, "review_game", blocked)
+        first = second = None
+        try:
+            first = asyncio.create_task(app._run_review(UUID, EVENTS, META, SEAT, MODEL_ID, 0.0))
+            await asyncio.wait_for(entered[0].wait(), 2)
+            second = asyncio.create_task(app._run_review(UUID, EVENTS, {**META, "seq": 2}, SEAT, MODEL_ID, 0.0))
+            for _ in range(100):
+                if app._review_waiters == 1:
+                    break
+                await asyncio.sleep(0.005)
+            assert app._review_waiters == 1
+            with pytest.raises(app.HTTPException) as error:
+                await app._run_review(UUID, EVENTS, {**META, "seq": 3}, SEAT, MODEL_ID, 0.0)
+            assert error.value.status_code == 429
+            release[0].set()
+            await asyncio.wait_for(entered[1].wait(), 2)
+            release[1].set()
+            assert await asyncio.wait_for(first, 2)
+            assert await asyncio.wait_for(second, 2)
+            assert count == 2
+            assert app._review_waiters == 0
+        finally:
+            for e in release:
+                e.set()
+            await asyncio.gather(*(x for x in (first, second) if x is not None), return_exceptions=True)
     asyncio.run(scenario())

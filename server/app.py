@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import aclosing, asynccontextmanager
 import hmac
+import hashlib
 import ipaddress
 import re
 import json
@@ -161,6 +162,12 @@ for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR):
 # Inference threads retain their permit until they actually finish.
 review_semaphore = asyncio.Semaphore(1)
 _review_tasks: set[asyncio.Task] = set()
+# Protect memory and open SSE connections while retaining one CPU inference job.
+REVIEW_MAX_WAITERS = 4
+REVIEW_QUEUE_TIMEOUT_SECONDS = 90
+_review_waiters = 0
+# Share only simultaneous jobs, never persist private JSON or completed reviews.
+_review_inflight: dict[str, dict[str, Any]] = {}
 
 
 def load_config() -> dict[str, Any]:
@@ -941,12 +948,89 @@ def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
     return {**result, "engine": public_engine}
 
 
+def _review_fingerprint(game_id: str, events: list[dict], meta: dict,
+                        seat: int, engine: str, temperature: float) -> str:
+    # Include source events and metadata, not just the public game UUID; uploaded
+    # JSON with the same UUID must never reuse a different player's result.
+    packed = json.dumps([game_id, events, meta, seat, engine, temperature],
+                        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(packed.encode("utf8")).hexdigest()
+
+
 async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
                             engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
+    # Coalesce both pending and running identical reviews without changing the
+    # single-inference guarantee. The existing worker remains owned until done.
+    key = _review_fingerprint(game_id, mjai_events, meta, seat, engine, temperature)
+    entry = _review_inflight.get(key)
+    if entry is None:
+        callbacks = []
+        entry = {"callbacks": callbacks, "starters": 0}
+        _review_inflight[key] = entry
+
+        def emit_progress(percent, message):
+            for callback in tuple(callbacks):
+                try:
+                    callback(percent, message)
+                except Exception:
+                    # One disconnected SSE listener cannot fail the shared review.
+                    pass
+
+        async def launch():
+            return await _start_review_job_owned(
+                game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
+                engine=engine, temperature=temperature, progress_callback=emit_progress,
+            )
+
+        started = asyncio.create_task(launch())
+        entry["start"] = started
+
+        def start_finished(done):
+            if done.cancelled() or done.exception() is not None:
+                if _review_inflight.get(key) is entry:
+                    _review_inflight.pop(key, None)
+                return
+            owned = done.result()
+            def review_finished(_):
+                if _review_inflight.get(key) is entry:
+                    _review_inflight.pop(key, None)
+                callbacks.clear()
+            owned.add_done_callback(review_finished)
+
+        started.add_done_callback(start_finished)
+
+    if progress_callback is not None:
+        entry["callbacks"].append(progress_callback)
+    entry["starters"] += 1
+    try:
+        return await asyncio.shield(entry["start"])
+    finally:
+        entry["starters"] -= 1
+        # A queued launch must not survive if every request disconnected.
+        if entry["starters"] == 0 and not entry["start"].done():
+            entry["start"].cancel()
+
+
+async def _start_review_job_owned(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
+                                  engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
+    global _review_waiters
     semaphore = review_semaphore
-    with _measure("AI推理排队等待"):
-        await semaphore.acquire()
-        permit_acquired = time.perf_counter()
+    if semaphore.locked():
+        if _review_waiters >= REVIEW_MAX_WAITERS:
+            raise HTTPException(status_code=429, detail="AI分析排队已满，请稍后重试。")
+        _review_waiters += 1
+        try:
+            with _measure("AI推理排队等待"):
+                try:
+                    await asyncio.wait_for(semaphore.acquire(), timeout=REVIEW_QUEUE_TIMEOUT_SECONDS)
+                except TimeoutError as exc:
+                    raise HTTPException(status_code=503, detail="AI分析等待超时，请稍后重试。") from exc
+        finally:
+            _review_waiters -= 1
+    else:
+        with _measure("AI推理排队等待"):
+            await semaphore.acquire()
+    permit_acquired = time.perf_counter()
     stats = _performance.get()
     if stats is not None and "_started" in stats:
         stats["AI推理许可获得时间"] = (permit_acquired - stats["_started"]) * 1000
