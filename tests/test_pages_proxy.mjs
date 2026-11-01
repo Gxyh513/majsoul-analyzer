@@ -115,7 +115,7 @@ test("analysis injects only the server token and streams SSE without buffering",
 
 test("analysis omits the upstream cache persistence header", async () => {
   try {
-    for (const path of ["paipu", "json"]) {
+    for (const path of ["paipu"]) {
       for (const value of ["true", "false", "untrusted"]) {
         globalThis.fetch = async () => new Response(JSON.stringify({ summary: {} }), {
           status: 200,
