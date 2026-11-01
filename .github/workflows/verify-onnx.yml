@@ -19,6 +19,8 @@ jobs:
         run: docker run --rm majsoul-analyzer-onnx python -c "import subprocess; from pathlib import Path; actual=subprocess.check_output(['python', '-m', 'pip', 'freeze'], text=True).splitlines(); expected=[line for line in Path('requirements.lock.txt').read_text().splitlines() if line and not line.startswith('#')]; assert sorted(actual)==sorted(expected), '锁定依赖与生产镜像不匹配'"
       - name: 验证真实模型分析
         run: docker run --rm majsoul-analyzer-onnx python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; m = EngineManager(Path('data/models')); events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf-8')); result = review_game(events, 0, m); assert any(k['decisions'] for k in result['kyokus']) and m.status()['model_ready']"
+      - name: 实际 MJAI 决策 ONNX CPU 配置基准
+        run: docker run --rm majsoul-analyzer-onnx python -m scripts.benchmark_onnx --real-demo --threads 1 2 4 --batches 16 64 --runs 3
       - name: 本机真实模型 API 基线（4 请求、并发 2）
         timeout-minutes: 5
         run: |
