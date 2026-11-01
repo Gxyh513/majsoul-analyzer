@@ -61,13 +61,13 @@ def _log_performance(stats: dict[str, Any], started: float) -> dict[str, Any] | 
         report = None
 
     try:
-        ops_metrics.record(report)
         total_ms = (time.perf_counter() - started) * 1000
         request_id = stats.get("request_id") or (report.get("请求ID") if report else None) or ""
 
         acq_result = stats.get("牌谱获取结果")
         last_failure = stats.get("最后失败阶段") or (report["状态"].get("最后失败阶段") if report and "状态" in report else None)
         failed = bool(last_failure or (acq_result and acq_result not in ("成功", "进行中")))
+        ops_metrics.record(report, succeeded=not failed)
 
         if failed:
             fail_stage = last_failure or "雀魂牌谱请求"
@@ -679,7 +679,10 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
-        "performance_recent": ops_metrics.summary(),
+        "performance_recent": {**ops_metrics.summary(),
+                               "queue": {"waiting": _review_waiters,
+                                         "inference_busy": review_semaphore.locked(),
+                                         "max_waiters": REVIEW_MAX_WAITERS}},
     }
 
 
