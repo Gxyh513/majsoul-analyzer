@@ -60,8 +60,6 @@ def review_environment(monkeypatch, tmp_path):
 def analyze_payload(route):
     if route in ("paipu", "stream"):
         return {"paipu": UUID, "target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
-    if route == "json":
-        return {"content": EVENTS, "target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
     return {"target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
 
 
@@ -79,7 +77,7 @@ def request_result(client, route):
     return response.json()
 
 
-@pytest.mark.parametrize("route", ["paipu", "json", "demo", "stream"])
+@pytest.mark.parametrize("route", ["paipu", "demo", "stream"])
 def test_repeated_api_requests_run_inference_each_time(review_environment, tmp_path, route):
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     assert request_result(client, route) == {**review(), "game_id": UUID}
@@ -384,3 +382,13 @@ def test_review_queue_rejects_excess_waiters(review_environment, monkeypatch):
                 e.set()
             await asyncio.gather(*(x for x in (first, second) if x is not None), return_exceptions=True)
     asyncio.run(scenario())
+
+
+
+def test_public_endpoints_reject_uploaded_json(review_environment):
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    assert client.post("/api/analyze/json", json={"content": EVENTS}).status_code == 404
+    response = client.post("/api/analyze/stream", json={"content": EVENTS})
+    assert response.status_code == 400
+    assert "JSON 上传" in response.text
+    assert review_environment.call_count == 0

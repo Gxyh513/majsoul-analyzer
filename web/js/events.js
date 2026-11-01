@@ -2,9 +2,6 @@
 // Event Bindings
 // ============================================================================
 function bindEvents() {
-  // Local File Dropzone & File Input
-  initLocalFileDropzone();
-
   $("landingModelCard")?.addEventListener("click", async () => {
     openModal("engineModal");
     await refreshServerStatus();
