@@ -1,4 +1,4 @@
-"""Persist raw records, but re-run reviews across interpreter restarts."""
+"""Persist raw records and completed public reviews across interpreter restarts."""
 import asyncio
 import json
 import os
@@ -129,16 +129,18 @@ async def run_stage(stage):
     for number in (1, 2):
         result = await analyze(app)
         assert result["game_id"] == UUID and result["target_actor"] == SEAT
-        assert result["analysis_marker"] == f"{stage}-{number}"
+        assert result["analysis_marker"] == "write-1"
         assert result["fixture_input"]["events"] == app.to_mjai(record)
         assert result["fixture_input"]["meta"] == app.game_meta(record)
         assert result["fixture_input"]["meta"]["names"] == ["东家", "南家", "西家", "北家"]
         assert result["fixture_input"]["meta"]["account_ids"] == [11, 22, 33, 44]
-    assert len(calls) == decoder.call_count == 2
+    assert len(calls) == (1 if stage == "write" else 0)
+    assert decoder.call_count == 2
     assert store.read_record(app.RECORDS_DIR, UUID) == source
     assert (app.RECORDS_DIR / f"{UUID}.pb").is_file()
     assert not list(app.RECORDS_DIR.glob("*.tmp"))
-    assert not (root / "reviews").exists() and not (root / "metadata").exists()
+    assert len(list((root / "reviews").glob("*.json"))) == 1
+    assert not (root / "metadata").exists()
     app.login_with_account_spec.assert_not_awaited()
     if stage == "write":
         client.fetch_record.assert_awaited_once_with(UUID)
@@ -158,7 +160,7 @@ def run_child(stage, cache_root):
     return json.loads(result.stdout.splitlines()[-1])
 
 
-def test_record_persists_but_reviews_rerun_across_processes(tmp_path):
+def test_records_and_public_reviews_survive_process_restart_without_reinference(tmp_path):
     root = tmp_path / "持久 cache"
     writer = run_child("write", root)
     reader = run_child("read", root)
