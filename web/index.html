@@ -26,22 +26,6 @@
           placeholder="粘贴雀魂牌谱链接或牌谱号，回车即可开始..."
           autocomplete="off" spellcheck="false" aria-label="牌谱链接" />
 
-        <!-- 本地文件拖拽与点击导入入口 -->
-        <div class="kd-dropzone" id="fileDropzone" title="点击选择或拖拽本地牌谱文件">
-          <input type="file" id="localFileInput" accept=".json,.jsonl" style="display:none;" />
-          <div class="kd-dropzone-icon">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="17 8 12 3 7 8"/>
-              <line x1="12" y1="3" x2="12" y2="15"/>
-            </svg>
-          </div>
-          <div class="kd-dropzone-text">
-            <span class="kd-dropzone-primary">本地文件导入 (点击选择 / 拖拽文件到此处)</span>
-            <span class="kd-dropzone-sub">支持雀魂原始 JSON / mjai 格式 (.json / .jsonl)</span>
-          </div>
-        </div>
-
         <button type="button" class="kd-single-model-card" id="landingModelCard" title="查看模型状态">
           <div class="kd-single-model-left">
             <div class="kd-single-model-icon">
@@ -62,7 +46,7 @@
           </div>
         </button>
 
-        <p id="homeInputError" class="kd-input-error hidden" role="alert">请输入雀魂牌谱链接或牌谱号，或导入本地牌谱文件。</p>
+        <p id="homeInputError" class="kd-input-error hidden" role="alert">请输入雀魂牌谱链接或牌谱号。</p>
         <button id="btnHomeAnalyze" class="kd-landing-submit">开始分析</button>
         <button id="btnDemoAnalyze" class="kd-demo-submit" type="button">查看演示牌谱</button>
 

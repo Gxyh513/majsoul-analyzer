@@ -616,14 +616,6 @@ class AnalyzeStreamReq(BaseModel):
     accept_compression: str | None = None
 
 
-class AnalyzeJsonReq(BaseModel):
-    content: Any
-    target_actor: int = 0
-    engine: str = "auto"
-    temperature: float = 0.1
-    title: str | None = None
-
-
 class AnalyzeDemoReq(BaseModel):
     target_actor: int = 0
     engine: str = "auto"
@@ -831,8 +823,6 @@ async def resolve_game_data(
         await _record_mjai_size(events)
         return "demo", events, meta, select_game_seat(meta, target_actor)
 
-    if content is None and raw_input.startswith(("{", "[")):
-        content = raw_input
     if content is not None:
         if isinstance(content, str):
             text = content.strip()
@@ -1202,15 +1192,6 @@ async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Re
     return await _run_nonstream_until_disconnect(request, response, work())
 
 
-@app.post("/api/analyze/json")
-async def api_analyze_json(req: AnalyzeJsonReq, request: Request, response: Response):
-    async def work():
-        await _wait_for_model_download(req.engine)
-        game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
-        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
-    return await _run_nonstream_until_disconnect(request, response, work())
-
-
 @app.post("/api/analyze/demo")
 async def api_analyze_demo(req: AnalyzeDemoReq, request: Request, response: Response):
     async def work():
@@ -1261,6 +1242,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
     request_id = getattr(request.state, "sse_request_id", None) if request is not None else None
     request_started = getattr(request.state, "sse_request_started", None) if request is not None else None
     request_id = request_id or uuid.uuid4().hex
+    if req.content is not None:
+        raise HTTPException(status_code=400, detail="已停止支持 JSON 上传，请使用雀魂牌谱链接。")
     try:
         normalize_model_id(req.engine)
     except ValueError as exc:
@@ -1301,7 +1284,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
             try:
                 resolve_task = asyncio.create_task(resolve_game_data(
-                    paipu=req.paipu, content=req.content, target_actor=req.target_actor
+                    paipu=req.paipu, target_actor=req.target_actor
                 ))
                 async with aclosing(wait_for_phase(resolve_task, "progress", 5, "正在准备牌谱数据")) as updates:
                     async for update in updates:

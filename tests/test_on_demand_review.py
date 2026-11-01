@@ -104,30 +104,11 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   pending.shift().resolve(result(1)); await retry;
   assert.strictEqual(state.targetActor,1);
 
-  const json='  \r\n{"type":"start_game"}\n{"type":"end_game"}\n  ';
-  const upload=startAnalysisFromInput(json,0); await wait();
-  assert.strictEqual(pending[0].body.content,json);
-  const uploadResult=result(0); pending.shift().resolve(uploadResult); await upload;
-  const uploadB=switchSeatPerspective(1); await wait();
-  assert.strictEqual(pending[0].body.content,json); assert.strictEqual(pending[0].body.target_actor,1);
-  pending.shift().resolve(result(1)); await uploadB;
-  const beforeUploadBack=calls.length;
-  await switchSeatPerspective(0);
-  assert.strictEqual(calls.length,beforeUploadBack); assert.strictEqual(state.reviewData,uploadResult);
-  const uploadFailed=switchSeatPerspective(2); await wait();
-  assert.strictEqual(pending[0].body.content,json);
-  pending.shift().reject(Error('offline')); await uploadFailed;
-  const uploadRetry=errors.at(-1).retry(); await wait();
-  assert.strictEqual(pending[0].body.content,json);
-  assert.strictEqual(pending[0].body.target_actor,2);
-  pending.shift().resolve(result(2)); await uploadRetry;
-  assert.strictEqual(fallbackCalls,0);
-
   const stale=switchSeatPerspective(3); await wait();
   const next=startAnalysisFromInput('game-two',0); await wait();
   const staleWork=pending.splice(0), nextResult=result(0);
   staleWork.find(x=>x.body.paipu==='game-two').resolve(nextResult); await next;
-  staleWork.find(x=>x.body.content===json).resolve(result(3)); await stale;
+  staleWork.find(x=>x.body.paipu==='cancel-game' && x.body.target_actor===3).resolve(result(3)); await stale;
   assert.strictEqual(state.reviewData,nextResult); assert.strictEqual(state.targetActor,0);
   const bad=switchSeatPerspective(1); await wait(); pending.shift().resolve(result(2)); await bad;
   assert(errors.at(-1).message.includes('座位不匹配')); assert.strictEqual(state.targetActor,0);
@@ -244,19 +225,6 @@ const watchdog = setTimeout(()=>{console.error('async test timed out'); process.
   assert.notStrictEqual(backendResult,firstResult);
   backend='https://backend.example';
 
-  const json='{"type":"start_game"}\n{"type":"end_game"}';
-  const jsonSource={kind:'json',identity:json,input:json};
-  const reported=Object.assign(new Error('保存失败'),{serverReported:true});
-  const jsonFailure=getReview(jsonSource,0,()=>{}); await wait();
-  assert.strictEqual(requests.at(-1).body.content,json);
-  requests.at(-1).reject(reported);
-  await assert.rejects(jsonFailure,error=>error===reported);
-  assert.deepStrictEqual(fallbackCalls,[]);
-  const jsonRetry=getReview(jsonSource,0,()=>{}); await wait();
-  assert.strictEqual(requests.at(-1).body.content,json);
-  const jsonResult=response(0); requests.at(-1).resolve(jsonResult);
-  assert.strictEqual(await jsonRetry,jsonResult);
-
   // Failed model validation must not send an analysis request.
   const beforeInvalidModel=requests.length;
   validationError=Error('invalid model status');
@@ -288,31 +256,15 @@ def test_no_automatic_review_preloading():
     assert "idbReviewCache" not in source
 
 
-def test_uploaded_file_is_passed_without_trimming():
-    if not shutil.which("node"):
-        pytest.skip("Node.js not installed")
+def test_removed_json_upload_ui_and_request_branch():
+    from pathlib import Path
     source = javascript_source()
-    start = source.index("function readAndAnalyzeFile(")
-    code = source[start:source.index("\n// ===", start)]
-    script = r'''const assert = require('assert');
-const state={selectedModel:'mortal-s42-onnx'}, notices=[];
-let observed;
-const showToast=(...args)=>notices.push(args);
-const startAnalysisFromInput=(content,model)=>{observed={content,model};};
-class FileReader {
-  readAsText(file,encoding) {
-    assert.strictEqual(encoding,'utf-8');
-    this.onload({target:{result:file.content}});
-  }
-}
-''' + code + r'''
-const content=' \r\n{"type":"start_game"}\n{"type":"end_game"}\n  ';
-readAndAnalyzeFile({name:'original.json',content});
-assert.deepStrictEqual(observed,{content,model:undefined});
-assert(notices.some(args=>args[0].includes('original.json')));
-'''
-    proc = subprocess.run(["node", "-"], input=script, capture_output=True, text=True, encoding="utf8", timeout=10)
-    assert proc.returncode == 0, proc.stderr
+    html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf8")
+    assert "localFileInput" not in html
+    assert "fileDropzone" not in html
+    assert "initLocalFileDropzone" not in source
+    assert "readAndAnalyzeFile" not in source
+    assert "content: source.input" not in source
 
 
 def test_stream_parses_chunks_reports_completion_and_releases_reader():

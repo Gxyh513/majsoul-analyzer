@@ -66,9 +66,7 @@ function matchesReview(result, seat) {
 
 async function getReview(source, seat, onProgress = () => {}, timings = null) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
-  const body = source.kind === "json"
-    ? { content: source.input, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE }
-    : { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE };
+  const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE };
   const sourceKey = JSON.stringify([url, source.kind, body, "mortal-s42-onnx", MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA]);
   const cached = reviewCache.get(sourceKey);
   const cachedSeat = seat == null ? cached?.defaultSeat : seat;
@@ -215,9 +213,11 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     return;
   }
   $("homeInputError")?.classList.add("hidden");
-  const isJson = input.startsWith("{") || input.startsWith("[");
-  const source = { kind: isJson ? "json" : "paipu", input: isJson ? originalInput : input,
-    identity: isJson ? input : parsePaipuUuid(input) };
+  if (input.startsWith("{") || input.startsWith("[")) {
+    showToast("已停止支持 JSON 上传，请粘贴雀魂牌谱链接或牌谱号。", "error");
+    return;
+  }
+  const source = { kind: "paipu", input, identity: parsePaipuUuid(input) };
   const version = ++analysisViewVersion;
   updateEngineStatusDisplay();
   setLoading(true, "正在分析牌谱...", "正在使用 Mortal S42 ONNX 神经网络检讨每一手决策");
@@ -231,8 +231,7 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     applyPerspective(result, false);
     showTier(2);
     const newUrl = new URL(window.location.href);
-    if (isJson) newUrl.searchParams.delete("paipu");
-    else newUrl.searchParams.set("paipu", source.identity);
+    newUrl.searchParams.set("paipu", source.identity);
     window.history.pushState(null, "", newUrl.toString());
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);

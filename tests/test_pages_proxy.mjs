@@ -115,7 +115,7 @@ test("analysis injects only the server token and streams SSE without buffering",
 
 test("analysis omits the upstream cache persistence header", async () => {
   try {
-    for (const path of ["paipu", "json"]) {
+    for (const path of ["paipu"]) {
       for (const value of ["true", "false", "untrusted"]) {
         globalThis.fetch = async () => new Response(JSON.stringify({ summary: {} }), {
           status: 200,
@@ -166,11 +166,9 @@ test("proxy rejects private routes, methods, missing secrets, and oversized bodi
       const res = await onRequest({ request: makeRequest(path, method, body), env: { MAJSOUL_API_TOKEN: "server-token" } });
       assert.equal(res.status, 404);
     }
-    assert.equal((await onRequest({ request: makeRequest("/api/analyze/json"), env: { MAJSOUL_API_TOKEN: "server-token" } })).status, 405);
-    assert.equal((await onRequest({ request: makeRequest("/api/analyze/json", "POST", "{}"), env: {} })).status, 503);
-    assert.equal((await onRequest({ request: makeRequest("/api/analyze/json", "POST", "{}", "text/plain"), env: { MAJSOUL_API_TOKEN: "server-token" } })).status, 415);
+    assert.equal((await onRequest({ request: makeRequest("/api/analyze/json", "POST", "{}"), env: { MAJSOUL_API_TOKEN: "server-token" } })).status, 404);
     const tooLarge = new Uint8Array(4 * 1024 * 1024 + 1);
-    const largeReq = makeRequest("/api/analyze/json", "POST", tooLarge);
+    const largeReq = makeRequest("/api/analyze/stream", "POST", tooLarge);
     assert.equal((await onRequest({ request: largeReq, env: { MAJSOUL_API_TOKEN: "server-token" } })).status, 413);
     assert.equal(fetchCalls, 0);
   } finally {
