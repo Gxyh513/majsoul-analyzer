@@ -92,8 +92,9 @@ function regStatusClass(status) {
 function renderAutoRegister(reg) {
   if (!reg) return;
   currentAutoRegisterState = reg;
-  const statusLabel = !reg.enabled ? "已暂停" : reg.is_running ? "正在注册" : "自动轮询中";
-  const statusColor = !reg.enabled ? "warn" : reg.is_running ? "busy" : "ok";
+  const timerAlive = reg.scheduler_alive !== false;
+  const statusLabel = !reg.enabled ? "已暂停" : !timerAlive ? "定时器已停止" : reg.is_running ? "正在注册" : "自动轮询中";
+  const statusColor = !reg.enabled || !timerAlive ? "warn" : reg.is_running ? "busy" : "ok";
 
   const values = [
     ["自动注册状态", '<span class="status ' + statusColor + '" style="display:inline-block;margin-top:4px">' + statusLabel + "</span>"],

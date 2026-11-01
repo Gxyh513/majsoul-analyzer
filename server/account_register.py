@@ -42,6 +42,9 @@ DEFAULT_REGISTER_INTERVAL_SECONDS = 3600
 REGISTER_TASK_TIMEOUT_SECONDS = 150
 # 锁超时时间（秒），防止单实例异常崩溃后死锁
 LOCK_EXPIRY_SECONDS = 300
+# Detect externally changed schedules and retry unexpected scheduler failures.
+SCHEDULER_POLL_SECONDS = 60
+SCHEDULER_ERROR_RETRY_SECONDS = 60
 
 
 def mask_account(name_or_acc: str | None) -> str:
@@ -260,7 +263,9 @@ class RegisterRunner:
             return self._normalize_credentials(data)
 
     async def _execute_via_script(self) -> dict[str, Any]:
-        reg_dir, pull_err = ensure_private_repo()
+        # Private-repository retrieval performs blocking HTTP and git operations.
+        # Never block the FastAPI event loop while the scheduled job starts.
+        reg_dir, pull_err = await asyncio.to_thread(ensure_private_repo)
         if not reg_dir:
             reg_dir = self.register_dir
         script_path = reg_dir / "majsoul_register.py"
@@ -329,7 +334,7 @@ class RegisterRunner:
             # 若首次执行失败（如本地持久化目录残留旧版本脚本），且配置了 Token，尝试强制拉取最新仓库代码并重试一次
             if proc.returncode != 0 and token:
                 log_warning(事件="注册脚本首次执行失败，尝试强制拉取最新仓库代码", 退出码=proc.returncode)
-                updated_dir, update_err = ensure_private_repo(force_update=True)
+                updated_dir, update_err = await asyncio.to_thread(ensure_private_repo, force_update=True)
                 if updated_dir and (updated_dir / "majsoul_register.py").is_file():
                     try:
                         proc = await asyncio.to_thread(_run)
@@ -596,7 +601,7 @@ async def register_and_ingest(
 
 
 class AutoRegisterScheduler:
-    """自动注册调度器，独立调度每小时自动注册任务。"""
+    """Persistent, wakeable registration scheduler; one attempt per due interval."""
 
     def __init__(
         self,
@@ -612,16 +617,18 @@ class AutoRegisterScheduler:
         self.instance_id = f"inst-{uuid.uuid4().hex[:8]}"
         self.task: asyncio.Task | None = None
         self._stopped = False
+        self._wake = asyncio.Event()
 
     def start(self):
-        """启动后台定时注册任务。"""
+        """Start or recover the scheduled task without changing its persisted due date."""
         if self.task is None or self.task.done():
             self._stopped = False
+            self._wake.clear()
             self.task = asyncio.create_task(self._periodic_loop())
 
     async def stop(self):
-        """停止调度任务并释放可能占用的任务锁。"""
         self._stopped = True
+        self._wake.set()
         if self.task:
             self.task.cancel()
             try:
@@ -631,104 +638,147 @@ class AutoRegisterScheduler:
             self.task = None
         self.store.release_auto_register_lock(self.instance_id)
 
-    async def _periodic_loop(self):
-        """定时主循环：保证每小时最多注册一次，服务重启后按计划恢复。"""
-        # 1. 服务启动初始化与恢复检查
+    async def _wait_for_wake(self, seconds: float):
+        if seconds <= 0:
+            return
         try:
-            state = self.store.get_auto_register_state()
-            now = time.time()
-            last_run = state.get("last_run_at") or 0
-            elapsed = now - last_run
+            await asyncio.wait_for(self._wake.wait(), timeout=seconds)
+        except TimeoutError:
+            pass
+        finally:
+            self._wake.clear()
 
-            # 若上次执行距今不足 1 小时，则先等待剩余时间，绝不因为重启而提前/重复执行
-            if last_run > 0 and elapsed < DEFAULT_REGISTER_INTERVAL_SECONDS:
-                initial_sleep = DEFAULT_REGISTER_INTERVAL_SECONDS - elapsed
-                self.store.update_auto_register_state(next_run_at=now + initial_sleep)
-                await asyncio.sleep(initial_sleep)
-            else:
-                self.store.update_auto_register_state(next_run_at=now)
-
-            while not self._stopped:
+    async def _periodic_loop(self):
+        """Use the DB schedule as truth, wake on toggle, and survive recoverable errors."""
+        while not self._stopped:
+            try:
                 state = self.store.get_auto_register_state()
+                if not state.get("enabled"):
+                    await self._wait_for_wake(SCHEDULER_POLL_SECONDS)
+                    continue
+
                 now = time.time()
+                last_run = float(state.get("last_run_at") or 0)
+                due = state.get("next_run_at")
+                if due is None:
+                    # Fresh databases already schedule the first run one hour later.
+                    due = max(now, last_run + DEFAULT_REGISTER_INTERVAL_SECONDS) if last_run else now + DEFAULT_REGISTER_INTERVAL_SECONDS
+                    self.store.update_auto_register_state(next_run_at=due)
+                due = max(float(due), last_run + DEFAULT_REGISTER_INTERVAL_SECONDS if last_run else 0)
 
-                if state.get("enabled"):
-                    # 尝试获取任务锁（排他执行，防止多个副本重复注册）
-                    if self.store.acquire_auto_register_lock(self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS):
-                        try:
-                            self.store.update_auto_register_state(last_status="运行中")
-                            await register_and_ingest(
-                                store=self.store,
-                                cache_dir=self.cache_dir,
-                                scheduler=self.scheduler,
-                                manual=False,
-                                runner=self.runner,
-                            )
-                        finally:
-                            self.store.release_auto_register_lock(self.instance_id)
+                if due > now:
+                    await self._wait_for_wake(min(due - now, SCHEDULER_POLL_SECONDS))
+                    continue
 
-                # 设置下次计划时间并休眠 1 小时
-                next_time = time.time() + DEFAULT_REGISTER_INTERVAL_SECONDS
-                self.store.update_auto_register_state(next_run_at=next_time)
-                await asyncio.sleep(DEFAULT_REGISTER_INTERVAL_SECONDS)
+                if not self.store.acquire_auto_register_lock(self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS):
+                    # Another process may be registering. Re-read its new due date.
+                    await self._wait_for_wake(min(SCHEDULER_POLL_SECONDS, 30))
+                    continue
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log_error(事件="自动注册调度器异常", 错误原因=type(exc).__name__)
+                try:
+                    # Recheck under the shared DB lock; another worker or a manual
+                    # trigger might have completed after our initial read.
+                    locked_state = self.store.get_auto_register_state()
+                    now = time.time()
+                    last_run = float(locked_state.get("last_run_at") or 0)
+                    next_run = locked_state.get("next_run_at")
+                    if (not locked_state.get("enabled")
+                            or (next_run is not None and float(next_run) > now)
+                            or (last_run and now < last_run + DEFAULT_REGISTER_INTERVAL_SECONDS)):
+                        continue
+
+                    # Persist the attempt before starting external I/O, preventing
+                    # a restart from immediately repeating an interrupted attempt.
+                    self.store.update_auto_register_state(
+                        last_run_at=now,
+                        next_run_at=now + DEFAULT_REGISTER_INTERVAL_SECONDS,
+                        last_status="运行中",
+                    )
+                    await register_and_ingest(
+                        store=self.store,
+                        cache_dir=self.cache_dir,
+                        scheduler=self.scheduler,
+                        manual=False,
+                        runner=self.runner,
+                    )
+                finally:
+                    self.store.release_auto_register_lock(self.instance_id)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A single DB/network failure must not permanently kill the loop.
+                log_error(事件="自动注册调度器异常", 错误原因=type(exc).__name__)
+                try:
+                    self.store.update_auto_register_state(
+                        last_status="调度异常",
+                        last_error=f"调度器异常: {type(exc).__name__}",
+                        next_run_at=time.time() + SCHEDULER_ERROR_RETRY_SECONDS,
+                    )
+                except Exception:
+                    pass
+                await self._wait_for_wake(SCHEDULER_ERROR_RETRY_SECONDS)
 
     async def trigger_manual(self) -> dict[str, Any]:
-        """手动触发一次注册任务（带频控与排他锁）。"""
+        """Manually trigger one attempt, preserving the shared rate/instance lock."""
+        from fastapi import HTTPException
         now = time.time()
         state = self.store.get_auto_register_state()
-
-        # 检查是否正在运行
         if (state.get("locked_until") or 0) > now:
-            from fastapi import HTTPException
             raise HTTPException(status_code=409, detail="当前已有注册任务在执行中，请稍候")
-
-        # 避免过于频繁的手动触发（限制至少间隔 30 秒）
         last_run = state.get("last_run_at") or 0
-        if last_run > 0 and (now - last_run) < 30:
-            from fastapi import HTTPException
+        if last_run > 0 and now - last_run < 30:
             raise HTTPException(status_code=429, detail="请勿过于频繁手动触发，距离上次执行不足30秒")
-
         if not self.store.acquire_auto_register_lock(self.instance_id, timeout_sec=LOCK_EXPIRY_SECONDS):
-            from fastapi import HTTPException
             raise HTTPException(status_code=409, detail="无法获取注册任务锁")
-
         try:
-            self.store.update_auto_register_state(last_status="运行中")
-            result = await register_and_ingest(
+            started = time.time()
+            self.store.update_auto_register_state(
+                last_run_at=started,
+                next_run_at=started + DEFAULT_REGISTER_INTERVAL_SECONDS,
+                last_status="运行中",
+            )
+            return await register_and_ingest(
                 store=self.store,
                 cache_dir=self.cache_dir,
                 scheduler=self.scheduler,
                 manual=True,
                 runner=self.runner,
             )
-            return result
         finally:
             self.store.release_auto_register_lock(self.instance_id)
+            self._wake.set()
 
     def toggle(self, enabled: bool) -> dict[str, Any]:
-        """开启或暂停自动注册。"""
-        new_val = 1 if enabled else 0
-        self.store.update_auto_register_state(
-            enabled=new_val,
-            last_status="空闲" if enabled else "已暂停",
-        )
+        """Apply changes immediately; an expired schedule runs on resume."""
+        state = self.store.get_auto_register_state()
+        updates = {
+            "enabled": int(bool(enabled)),
+            "last_status": "空闲" if enabled else "已暂停",
+        }
+        if enabled:
+            now = time.time()
+            last_run = float(state.get("last_run_at") or 0)
+            updates["next_run_at"] = max(now, last_run + DEFAULT_REGISTER_INTERVAL_SECONDS) if last_run else now
+        else:
+            updates["next_run_at"] = None
+        self.store.update_auto_register_state(**updates)
+        self.start()
+        self._wake.set()
         return self.overview()
 
     def overview(self) -> dict[str, Any]:
-        """为管理后台提供自动注册状态、计划与汇总统计。"""
+        """Expose both persisted status and whether the in-process timer is alive."""
         state = self.store.get_auto_register_state()
         now = time.time()
         is_running = (state.get("locked_until") or 0) > now
+        scheduler_alive = self.task is not None and not self.task.done()
         recent_logs = self.store.get_auto_register_logs(limit=10)
 
         all_accounts = self.store.all()
 
         return {
+            "scheduler_alive": scheduler_alive,
             "enabled": bool(state.get("enabled", 1)),
             "is_running": is_running,
             "next_run_at": state.get("next_run_at"),
