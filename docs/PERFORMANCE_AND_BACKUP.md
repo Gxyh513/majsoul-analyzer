@@ -32,6 +32,17 @@ python -m scripts.verify_records_backup --archive /安全位置/records-20261101
 
 可信身份调用 `GET /api/status` 的 `storage` 字段包含缓存占用、剩余磁盘空间以及 `low_disk_space`。低于 512 MiB 时标为 `true`。该字段仅是提醒，不会自动删掉永久原始牌谱，也不会自动清理备份。
 
+外部调度器可按需定时调用**只读健康检查**（令牌只从环境变量读取，不在命令行传输）：
+
+```bash
+MAJSOUL_API_TOKEN=你的服务访问令牌 python -m scripts.check_service_health --url https://你的后端域名
+```
+
+退出码 0 表示健康、1 表示不可用/鉴权失败、2 表示低磁盘空间或模型不可用；结果只输出匿名布尔状态。
+远程必须 HTTPS；不会上传或保存私人 JSON，也不包含 IP 限流。
+此命令仅供你配置在独立的外部调度器中，**ModelScope 休眠时自身定时任务无法保证执行**；
+目前没有替用户创建外部调度器、自动唤醒、告警收件人或凭据配置。
+
 ## 分析 API 性能基线（仅本机）
 
 在运行了固定 Mortal 模型的**本机测试环境**执行，不允许把生产域名传给压测工具：
