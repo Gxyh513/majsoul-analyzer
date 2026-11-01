@@ -88,3 +88,43 @@ def test_storage_space_warning_is_numeric_only(tmp_path, monkeypatch):
     monkeypatch.setattr(review_cache.shutil, "disk_usage",
                         lambda _: SimpleNamespace(free=2 * 1024**3, total=4 * 1024**3))
     assert review_cache.storage_metrics(tmp_path)["low_disk_space"] is False
+
+
+def test_misplaced_key_and_previous_format_fail_closed(tmp_path):
+    """A different parameter's cache entry must never be reused by renaming it."""
+    original = "1" * 64
+    different_parameters = "2" * 64
+    expected = result()
+    assert review_cache.save(tmp_path, original, expected)
+    source = tmp_path / f"{original}.json"
+    moved = tmp_path / f"{different_parameters}.json"
+    moved.write_bytes(source.read_bytes())
+
+    assert review_cache.load(tmp_path, original, expected["game_id"], 0) == expected
+    assert review_cache.load(tmp_path, different_parameters, expected["game_id"], 0) is None
+
+    legacy = json.loads(source.read_text(encoding="utf8"))
+    legacy["version"] = 1
+    legacy.pop("key")
+    source.write_text(json.dumps(legacy), encoding="utf8")
+    assert review_cache.load(tmp_path, original, expected["game_id"], 0) is None
+
+
+def test_low_disk_skips_disposable_cache_without_writing(tmp_path, monkeypatch):
+    """Protect disk space reserved for permanent paipu records and the account DB."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        review_cache.shutil, "disk_usage",
+        lambda _: SimpleNamespace(free=review_cache.LOW_DISK_WARNING_BYTES),
+    )
+    key = "3" * 64
+    assert review_cache.save(tmp_path, key, result()) is False
+    assert not list(tmp_path.glob("*.json"))
+
+    monkeypatch.setattr(
+        review_cache.shutil, "disk_usage",
+        lambda _: SimpleNamespace(free=review_cache.LOW_DISK_WARNING_BYTES + 100_000),
+    )
+    assert review_cache.save(tmp_path, key, result())
+    assert review_cache.load(tmp_path, key, result()["game_id"], 0) == result()
