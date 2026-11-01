@@ -305,7 +305,10 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   if (isRon && seat === winActor && agariTile) {
     handHtml += `<div class="tileDiv is-drawn agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${escapeHtml(tileCn(agariTile))}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
   }
-  closedWrap.innerHTML = handHtml;
+  if (closedWrap.__lastHandMarkup !== handHtml) {
+    closedWrap.innerHTML = handHtml;
+    closedWrap.__lastHandMarkup = handHtml;
+  }
 
   // 2. Render Green Discard Recommendation Bars (SVG) — Absolutely Centered on Actual DOM Tiles
   if (svgEl) {
@@ -352,7 +355,11 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   // 3. Render Calls: Direct tiles, newest on left towards closed hand, earliest on far right
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
-    callsWrap.innerHTML = renderCallsHtml(melds, seat, 0);
+    const markup = renderCallsHtml(melds, seat, 0);
+    if (callsWrap.__lastCallsMarkup !== markup) {
+      callsWrap.innerHTML = markup;
+      callsWrap.__lastCallsMarkup = markup;
+    }
   }
 }
 
@@ -404,12 +411,19 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
     html += `<div class="tileDiv is-drawn agari-tile"><img src="${src}" class="tileImg agari-tile" title="荣和: ${escapeHtml(tileCn(agariTile))}"></div>`;
   }
 
-  closedWrap.innerHTML = html;
+  if (closedWrap.__lastHandMarkup !== html) {
+    closedWrap.innerHTML = html;
+    closedWrap.__lastHandMarkup = html;
+  }
 
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
     const povSeat = pos === "Right" ? 1 : (pos === "Top" ? 2 : 3);
-    callsWrap.innerHTML = renderCallsHtml(melds, seat, povSeat);
+    const markup = renderCallsHtml(melds, seat, povSeat);
+    if (callsWrap.__lastCallsMarkup !== markup) {
+      callsWrap.innerHTML = markup;
+      callsWrap.__lastCallsMarkup = markup;
+    }
   }
 }
 
