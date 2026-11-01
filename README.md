@@ -125,7 +125,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 | GET | `/api/records/local` | 列出后端本地牌谱 |
 | POST | `/api/login` | 配置雀魂账号登录 |
 
-每次分析均从原始牌谱解码、转换；同一牌谱来源、座位、模型与分析参数命中公开牌谱缓存时，不会重新运行 Mortal。检讨缓存独立保留 24 小时，最多占用 256 MiB；磁盘剩余空间不足时跳过写入，不影响完成本次 AI 检讨。内置演示和内部私人 JSON 不持久化检讨结果。雀魂原始牌谱下载后会先持久化，保存失败时接口返回错误。
+每次分析均从原始牌谱解码、转换；同一牌谱来源、座位、模型与分析参数命中公开牌谱缓存时，不会重新运行 Mortal。检讨缓存独立保留 24 小时，最多占用 256 MiB；磁盘剩余空间不足时跳过写入，不影响完成本次 AI 检讨。缓存读取或可信状态检查至多每小时惰性清理过期文件，闲置时没有额外的后台清理任务。内置演示和内部私人 JSON 不持久化检讨结果。雀魂原始牌谱下载后会先持久化，保存失败时接口返回错误。
 
 ## 管理员账号池
 
@@ -145,7 +145,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 数据与安全
 
-原始牌谱备份、磁盘空间告警以及可选 ONNX CPU 性能基准参见 [备份与基准说明](docs/PERFORMANCE_AND_BACKUP.md)。备份工具不会自动导出账号库、凭据或缓存的 AI 检讨结果。
+原始牌谱备份、磁盘空间告警、线上只读 P50/P95 性能采样以及可选 ONNX CPU 基准参见 [备份与基准说明](docs/PERFORMANCE_AND_BACKUP.md)。备份工具不会自动导出账号库、凭据或缓存的 AI 检讨结果。
 
 本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。完整的公开牌谱检讨结果缓存于持久化目录 `reviews/`（默认 `/mnt/workspace/majsoul-analyzer/reviews/`），保存 24 小时、总容量上限 256 MiB；内置演示及内部 JSON 输入不会写入。原始牌谱仍永久保存在 `records/`，不可与检讨缓存混淆。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
 
