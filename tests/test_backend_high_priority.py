@@ -117,8 +117,8 @@ async def wait_started(control, name):
     await asyncio.wait_for(control.started[name].wait(), timeout=2)
 
 
-async def assert_queued_and_finish(control, owner):
-    """Identical requests share the in-flight worker; other games queue behind it."""
+async def assert_queued_and_finish(control, owner, *, expected_first_calls=2):
+    """Disconnected streams may detach; nonstream cancellation can reuse the worker."""
     same = asyncio.create_task(nonstream("first"))
     other = asyncio.create_task(nonstream("other"))
     await asyncio.sleep(0.03)
@@ -130,7 +130,7 @@ async def assert_queued_and_finish(control, owner):
     same_result = await asyncio.wait_for(same, timeout=2)
     assert same_result["game_id"] == "first"
     await wait_started(control, "other")
-    assert control.calls.count("first") == 1
+    assert control.calls.count("first") == expected_first_calls
     assert control.max_active == 1
     control.release["other"].set()
     assert (await asyncio.wait_for(other, timeout=2))["game_id"] == "other"
@@ -217,7 +217,7 @@ def test_nonstream_cancellation_and_event_loop_responsiveness(review_environment
             owner.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await owner
-            await assert_queued_and_finish(control, owner)
+            await assert_queued_and_finish(control, owner, expected_first_calls=1)
         finally:
             control.release_all()
 
