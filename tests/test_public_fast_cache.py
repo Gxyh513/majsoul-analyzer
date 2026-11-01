@@ -167,3 +167,31 @@ def test_no_fast_path_for_private_or_demo(public_record):
     store_review(reviews)
     assert server_app._load_fast_public_review(None, 2, "auto", 0.1) is None
     assert server_app._load_fast_public_review("demo-123", 2, "auto", 0.1) is None
+
+
+def test_existing_event_key_cache_is_reused_and_promoted(public_record, monkeypatch):
+    """Deploying the raw-key optimization must not waste a valid older review."""
+    _records, reviews = public_record
+    events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}]
+    old_key = server_app._review_fingerprint(UUID, events, META, 2, "auto", 0.1)
+    assert review_cache.save(reviews, old_key, review())
+    raw_digest = server_app._public_raw_source_digest(RECORD)
+    raw_key = server_app._public_raw_review_key(UUID, raw_digest, 2, "auto", 0.1)
+
+    async def scenario():
+        from server.paipu_performance import performance
+        stats = {"_public_raw_source": (UUID, raw_digest)}
+        token = performance.set(stats)
+        try:
+            task = await server_app._start_review_job(
+                game_id=UUID, mjai_events=events, meta=META, seat=2,
+                engine="auto", temperature=0.1, cache_public=True
+            )
+            assert await task == review()
+        finally:
+            performance.reset(token)
+
+    monkeypatch.setattr(server_app, "review_game", lambda *_a, **_kw: pytest.fail("should not infer"))
+    asyncio.run(scenario())
+    assert review_cache.load(reviews, raw_key, UUID, 2) == review()
+    assert server_app._load_fast_public_review(UUID, 2, "auto", 0.1) == review()
