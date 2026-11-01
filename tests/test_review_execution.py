@@ -316,7 +316,9 @@ def test_identical_concurrent_reviews_share_one_worker(review_environment, monke
         loop = asyncio.get_running_loop()
         entered = asyncio.Event()
         release = threading.Event()
+        calls = []
         def blocked(*args, **kwargs):
+            calls.append(True)
             loop.call_soon_threadsafe(entered.set)
             assert release.wait(5)
             return review()
@@ -333,7 +335,7 @@ def test_identical_concurrent_reviews_share_one_worker(review_environment, monke
                 await first
             release.set()
             assert await asyncio.wait_for(second, 2) == {**review(), "game_id": UUID}
-            assert review_environment.call_count == 1
+            assert len(calls) == 1
             await asyncio.sleep(0)
             assert not app._review_inflight
         finally:
