@@ -22,7 +22,7 @@ def run_js(script):
 
 
 def test_round_table_keeps_fixed_identities_and_current_hand_winds():
-    sanitizer = section("function sanitizeSummaryText(", "function toggleHidePlayerId(")
+    sanitizer = section("function sanitizeSummaryText(", "function applyHidePlayerId(")
     escaping = section("function escapeHtml(", "function tileCn(")
     hand_wind = section("function handWind(", "function renderSummaryDashboard(")
     yaku = section("const MAJSOUL_YAKU_NAMES", "function getKillerActionSpan(")
@@ -82,7 +82,7 @@ const scores=html=>[...html.matchAll(/<span class="score-num">([^<]+)<\/span>/g)
 
 
 def test_round_table_infers_starting_seats_and_handles_missing_metadata():
-    sanitizer = section("function sanitizeSummaryText(", "function toggleHidePlayerId(")
+    sanitizer = section("function sanitizeSummaryText(", "function applyHidePlayerId(")
     escaping = section("function escapeHtml(", "function tileCn(")
     hand_wind = section("function handWind(", "function renderSummaryDashboard(")
     yaku = section("const MAJSOUL_YAKU_NAMES", "function getKillerActionSpan(")

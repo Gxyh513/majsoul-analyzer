@@ -31,7 +31,8 @@ EXPECTED_COUNTS = {
     "雀魂线路握手失败次数", "雀魂登录失败次数", "雀魂牌谱请求失败次数", "外部数据下载失败次数",
 }
 EXPECTED_STATUS_OPTIONS = {
-    "模式": ("mode", {"准备中", "按需分析"}),
+    "模式": ("mode", {"准备中", "按需分析", "公开牌谱缓存快速命中"}),
+    "分析结果缓存": ("分析结果缓存", {"原始牌谱快速命中", "命中", "未命中"}),
     "牌谱获取方式": ("牌谱获取方式", {
         "本地直接读取", "下载任务", "进程内锁后读取本地", "文件锁后读取本地", "雀魂下载", "等待并发任务",
     }),
@@ -82,7 +83,7 @@ def test_report_preserves_all_metrics_and_scopes_without_summing_stages():
     })
     stats.update({stage: index for index, stage in enumerate(sorted(EXPECTED_COUNTS))})
     stats.update({
-        "request_id": "a" * 32, "mode": "按需分析", "牌谱获取方式": "雀魂下载", "牌谱获取结果": "成功",
+        "request_id": "a" * 32, "mode": "按需分析", "分析结果缓存": "命中", "牌谱获取方式": "雀魂下载", "牌谱获取结果": "成功",
         "雀魂连接结果": "成功", "complete压缩状态": "成功", "complete ASGI发送结果": "完成",
         "是否命中本地记录": False, "是否等待文件锁": True, "最近雀魂失败类型": "网络失败",
         "最后失败阶段": "雀魂登录", "是否使用Base64": True,
@@ -111,7 +112,7 @@ def test_report_preserves_all_metrics_and_scopes_without_summing_stages():
     assert report["计数"] == {stage: stats[stage] for stage in EXPECTED_COUNTS}
     assert all(type(value) is int for value in report["计数"].values())
     assert report["状态"] == {
-        "模式": "按需分析", "牌谱获取方式": "雀魂下载", "牌谱获取结果": "成功", "雀魂连接结果": "成功",
+        "模式": "按需分析", "分析结果缓存": "命中", "牌谱获取方式": "雀魂下载", "牌谱获取结果": "成功", "雀魂连接结果": "成功",
         "complete压缩状态": "成功", "最近雀魂失败类型": "网络失败", "complete ASGI发送结果": "完成",
         "牌谱获取HTTP状态码": None, "是否命中本地记录": False, "是否等待文件锁": True,
         "最后失败阶段": "雀魂登录", "是否使用Base64": False,
@@ -239,7 +240,7 @@ def test_running_stages_preserve_accumulated_call_timing():
 def test_untrusted_text_and_invalid_numbers_never_leak_or_break_json():
     secret = 'user@example.com "秘密"\\token\n'
     stats = {
-        "request_id": secret, "mode": secret, "牌谱获取方式": secret, "牌谱获取结果": secret,
+        "request_id": secret, "mode": secret, "分析结果缓存": secret, "牌谱获取方式": secret, "牌谱获取结果": secret,
         "最近雀魂失败类型": secret, "最后失败阶段": secret, "complete ASGI发送结果": secret,
         "complete压缩比例": secret, "extra": {"credential": secret},
         "原始数据大小": 2**53 - 1, "ONNX推理调用次数": 2**53 - 1,
@@ -259,6 +260,7 @@ def test_untrusted_text_and_invalid_numbers_never_leak_or_break_json():
     assert parsed["请求ID"] is None
     assert parsed["总耗时_ms"] is None
     assert parsed["状态"]["模式"] is None
+    assert parsed["状态"]["分析结果缓存"] is None
     assert parsed["状态"]["牌谱获取方式"] is None
     assert parsed["状态"]["牌谱获取结果"] is None
     assert parsed["状态"]["最近雀魂失败类型"] is None

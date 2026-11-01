@@ -12,7 +12,7 @@ def test_replay_keyboard_and_wheel_preserve_native_controls():
         pytest.skip("Node.js not installed")
     source = javascript_source()
     modal_helpers = source[source.index("function openModal("):source.index("function getRoundDeltas(")]
-    score_opener = source[source.index("function openRoundScoresModal("):source.index("// ============================================================================\n// Local Paipu Records")]
+    score_opener = source[source.index("function openRoundScoresModal("):source.index("// ============================================================================\n// Event Bindings")]
     bindings = source[source.index("function bindEvents()"):source.index("function updateResponsiveZoom()")]
     harness = r'''
 const assert = require('assert');

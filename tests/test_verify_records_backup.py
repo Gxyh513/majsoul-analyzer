@@ -71,7 +71,10 @@ def test_reject_symlink_restore_destination(tmp_path):
     parent = tmp_path / "somewhere"
     parent.mkdir()
     target = tmp_path / "link"
-    target.symlink_to(parent, target_is_directory=True)
+    try:
+        target.symlink_to(parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
     with pytest.raises(FileExistsError):
         verify_backup(archive, target)
     assert not list(parent.iterdir())

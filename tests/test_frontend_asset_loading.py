@@ -13,7 +13,7 @@ SCRIPT_PATHS = [
     '/js/replay-state.js', '/js/api.js', '/js/review.js',
     '/js/summary-renderer.js', '/js/replay-controls.js', '/js/board-renderer.js',
     '/js/decision-renderer.js', '/js/replay-navigation.js', '/js/modal-manager.js',
-    '/js/import.js', '/js/events.js', '/app.js',
+    '/js/events.js', '/app.js',
 ]
 
 
@@ -46,7 +46,6 @@ for (const file of FILES) new vm.Script(fs.readFileSync(file,'utf8'),{filename:f
 assert(window.state);
 assert.strictEqual(typeof handlers.resize, 'function');
 assert.strictEqual(typeof handlers.DOMContentLoaded, 'function');
-assert.strictEqual(typeof window.toggleCandUkeire, 'function');
 '''.replace('FILES', json.dumps(files))
     proc = subprocess.run(['node', '-e', script], capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert proc.returncode == 0, proc.stderr

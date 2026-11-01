@@ -118,6 +118,11 @@ class AccountStore:
         with self.lock, self._connect() as db:
             return [dict(row) for row in db.execute("SELECT * FROM accounts ORDER BY id")]
 
+    def count(self) -> int:
+        with self.lock, self._connect() as db:
+            row = db.execute("SELECT COUNT(*) FROM accounts").fetchone()
+            return int(row[0]) if row else 0
+
     def get(self, account_pk: int) -> dict | None:
         with self.lock, self._connect() as db:
             row = db.execute("SELECT * FROM accounts WHERE id=?", (account_pk,)).fetchone()
@@ -386,17 +391,18 @@ class AccountScheduler:
 
     def overview(self) -> dict:
         accounts = self.store.all()
-        public = [_public_account(acc, acc["id"] in self.busy) for acc in accounts]
+        busy_snapshot = set(self.busy)
+        public = [_public_account(acc, acc["id"] in busy_snapshot) for acc in accounts]
         res = {
             "accounts": public,
             "total": len(public),
             "idle": sum(a["status"] == "空闲" for a in public),
-            "busy": len(self.busy),
+            "busy": len(busy_snapshot),
             "cooldown": sum(a["status"] == "540冷却" for a in public),
             "waiting": self.waiting,
         }
         if _auto_register_scheduler:
-            res["auto_register"] = _auto_register_scheduler.overview()
+            res["auto_register"] = _auto_register_scheduler.overview(total_accounts=len(public))
         return res
 
     async def reserve(self, attempted: set[int]):
@@ -464,7 +470,7 @@ class AccountScheduler:
             await client.close()
             raise MajsoulError("Token 与账号身份不一致")
         client.current_account = acc["account"]
-        self.store.record_login(acc["id"], client, refreshed=refreshed)
+        await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:

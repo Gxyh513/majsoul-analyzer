@@ -10,11 +10,9 @@ const state = window.state = {
   kyokuIdx: 0,
   stepIdx: 0,
   openHands: true,
-  soundEnabled: localStorage.getItem("majsoul_sound") !== "0",
   serverStatus: null,
   isPlaying: false,
   playTimer: null,
-  hidePlayerId: localStorage.getItem("majsoul_hide_id") === "true",
   playSpeed: parseFloat(localStorage.getItem("majsoul_play_speed")) || 1.0,
 };
 
@@ -23,11 +21,6 @@ const TILE_CN_MAP = {
   E: "东", S: "南", W: "西", N: "北", P: "白", F: "发", C: "中",
   "5mr": "赤五万", "5pr": "赤五筒", "5sr": "赤五索",
 };
-
-// Audio effects removed per UI simplification
-function playTileDiscardSound() {}
-function toggleSound() {}
-function updateSoundButton() {}
 
 const $ = (id) => document.getElementById(id);
 
@@ -59,10 +52,6 @@ function sanitizeSummaryText(text, event = null, kyoku = null) {
   return safePrefix + value.slice(originalPrefix.length);
 }
 
-function toggleHidePlayerId() {
-  // Permanent neutral seat identity mode
-}
-
 function applyHidePlayerId() {
   document.body.classList.add("hide-player-ids");
 }
@@ -84,13 +73,6 @@ function tileCn(pai) {
     return `${numMap[parseInt(pai[0], 10)] || pai[0]}${suitMap[pai[1]]}`;
   }
   return pai;
-}
-
-function shantenText(s, agariLabel = "自摸") {
-  if (s === undefined || s === null) return "-";
-  if (s < 0) return agariLabel || "自摸";
-  if (s === 0) return "听牌";
-  return `${s} 向听`;
 }
 
 function tileSortOrder(pai) {

@@ -357,16 +357,3 @@ function renderDecisionCard(dec, isExactStep, snap) {
     tableBody.innerHTML = rowsHtml;
   }
 }
-
-
-window.toggleCandUkeire = function(e, idx) {
-  if (e) e.stopPropagation();
-  const detail = document.getElementById(`candDetail_${idx}`);
-  if (!detail) return;
-  const isHidden = detail.classList.toggle("hidden");
-  const row = detail.previousElementSibling;
-  if (row) {
-    if (isHidden) row.classList.remove("is-expanded");
-    else row.classList.add("is-expanded");
-  }
-};

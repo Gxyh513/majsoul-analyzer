@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+import pytest
+
 from server import review_cache
 from server.engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA
 
@@ -73,7 +75,10 @@ def test_symlink_does_not_leak_external_cache_data(tmp_path):
     external.write_text(json.dumps({"version": 1, "result": result()}), encoding="utf8")
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    (cache_dir / ("f" * 64 + ".json")).symlink_to(external)
+    try:
+        (cache_dir / ("f" * 64 + ".json")).symlink_to(external)
+    except OSError:
+        pytest.skip("symlinks unavailable")
     assert review_cache.load(cache_dir, "f" * 64, result()["game_id"], 0) is None
     assert review_cache.storage_metrics(cache_dir)["entries"] == 0
 
@@ -148,14 +153,19 @@ def test_read_housekeeping_prunes_only_expired_public_reviews(tmp_path):
     old = time.time() - review_cache.CACHE_TTL_SECONDS - 20
     os.utime(stale_path, (old, old))
     symlink = cache_dir / ("6" * 64 + ".json")
-    symlink.symlink_to(private)
+    has_symlink = True
+    try:
+        symlink.symlink_to(private)
+    except OSError:
+        has_symlink = False
     unrelated = cache_dir / "private.json"
     unrelated.write_text("leave alone", encoding="utf8")
 
     review_cache._last_cleanup[cache_dir] = time.monotonic() - review_cache.CACHE_HOUSEKEEPING_SECONDS - 1
     assert review_cache.load(cache_dir, fresh, result()["game_id"], 0) == result()
     assert not stale_path.exists()
-    assert symlink.is_symlink()
+    if has_symlink:
+        assert symlink.is_symlink()
     assert unrelated.read_text() == "leave alone"
     assert private.read_text() == '{"secret":"not-a-review"}'
     assert permanent.read_bytes() == b"permanent raw record"

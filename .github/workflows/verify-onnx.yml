@@ -48,6 +48,6 @@ jobs:
       - name: Pages 代理与管理员鉴权回归测试
         run: |
           docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_security_regressions.py"
-          node --test tests/test_pages_proxy.mjs
+          node --test tests/test_pages_proxy.mjs tests/test_sse_browser_performance.mjs tests/test_sse_telemetry.mjs
       - name: 原始牌谱备份工具回归测试
         run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_backup_records.py tests/test_verify_records_backup.py tests/test_check_service_health.py tests/test_sample_service_performance.py"
