@@ -897,6 +897,11 @@ async def resolve_game_data(
             stats = _performance.get()
             if stats is not None:
                 stats["原始数据大小"] = len(stored.response) + len(stored.detail)
+                # Keep the exact reviewed source identity in request-local memory.
+                # Do not re-read the record after conversion (it could change).
+                stats["_public_raw_source"] = (
+                    game_uuid, await asyncio.to_thread(_public_raw_source_digest, stored)
+                )
             with _measure("Protobuf解码"):
                 record = await asyncio.to_thread(ms_client.decode_record, stored, game_uuid)
         else:
@@ -971,16 +976,21 @@ def _public_review_pipeline_identity() -> str:
     return digest.hexdigest()
 
 
-def _public_raw_review_key(game_id: str, source: RawRecord, seat: int,
-                           engine: str, temperature: float) -> str:
-    """Bind the result to persisted public protobuf bytes, seat and exact pipeline."""
+def _public_raw_source_digest(source: RawRecord) -> str:
+    """Hash the actual immutable raw bytes used for decoding, not a filename."""
     raw = hashlib.sha256()
     for part in (source.protocol_version.encode("ascii"), source.response, source.detail):
         raw.update(len(part).to_bytes(8, "big"))
         raw.update(part)
+    return raw.hexdigest()
+
+
+def _public_raw_review_key(game_id: str, source_digest: str, seat: int,
+                           engine: str, temperature: float) -> str:
+    """Bind the result to the exact public source, seat and review pipeline."""
     packed = json.dumps(
         ["public-raw-v1", _public_review_pipeline_identity(), LOCAL_PROTOCOL_SHA256,
-         MODEL_SHA256, REVIEW_SCHEMA, game_id, raw.hexdigest(), seat, engine, temperature],
+         MODEL_SHA256, REVIEW_SCHEMA, game_id, source_digest, seat, engine, temperature],
         ensure_ascii=False, separators=(",", ":"),
     )
     return hashlib.sha256(packed.encode("utf8")).hexdigest()
@@ -1003,8 +1013,9 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
         url_seat = parse_paipu_seat(paipu)
         requested_seat = target_actor if target_actor is not None else url_seat
         candidates = (requested_seat,) if requested_seat in range(4) else range(4)
+        source_digest = _public_raw_source_digest(stored)
         for seat in candidates:
-            key = _public_raw_review_key(game_id, stored, seat, engine, temperature)
+            key = _public_raw_review_key(game_id, source_digest, seat, engine, temperature)
             cached = review_cache.load(REVIEWS_DIR, key, game_id, seat)
             if not isinstance(cached, dict) or not isinstance(cached.get("meta"), dict):
                 continue
@@ -1034,17 +1045,13 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
     key = _review_fingerprint(game_id, mjai_events, meta, seat, engine, temperature)
     disk_key = key
     if cache_public:
-        # Normal misses still use the full event fingerprint to coalesce
-        # in-flight work. Store completed public protobuf reviews under a raw
-        # fingerprint so later requests can hit before decoding/conversion.
-        try:
-            source = await asyncio.to_thread(read_record, RECORDS_DIR, game_id, LEGACY_RECORDS_DIRS)
-            if isinstance(source, RawRecord):
-                disk_key = await asyncio.to_thread(
-                    _public_raw_review_key, game_id, source, seat, engine, temperature
-                )
-        except (RecordStorageError, OSError, ValueError, TypeError):
-            pass
+        # An actual API request captures this fingerprint from the same raw
+        # bytes it decoded. Other internal/test callers retain the original
+        # events-based cache key; no second raw file read or TOCTOU gap.
+        stats = _performance.get()
+        source_info = stats.get("_public_raw_source") if isinstance(stats, dict) else None
+        if isinstance(source_info, tuple) and len(source_info) == 2 and source_info[0] == game_id:
+            disk_key = _public_raw_review_key(game_id, source_info[1], seat, engine, temperature)
         cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, disk_key, game_id, seat)
         if cached is not None:
             _set_performance_value("分析结果缓存", "命中")
