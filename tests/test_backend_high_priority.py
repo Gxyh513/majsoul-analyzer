@@ -118,7 +118,7 @@ async def wait_started(control, name):
 
 
 async def assert_queued_and_finish(control, owner):
-    """Both follow-up requests run afresh after the detached worker finishes."""
+    """Identical requests share the in-flight worker; other games queue behind it."""
     same = asyncio.create_task(nonstream("first"))
     other = asyncio.create_task(nonstream("other"))
     await asyncio.sleep(0.03)
@@ -130,7 +130,7 @@ async def assert_queued_and_finish(control, owner):
     same_result = await asyncio.wait_for(same, timeout=2)
     assert same_result["game_id"] == "first"
     await wait_started(control, "other")
-    assert control.calls.count("first") == 2
+    assert control.calls.count("first") == 1
     assert control.max_active == 1
     control.release["other"].set()
     assert (await asyncio.wait_for(other, timeout=2))["game_id"] == "other"
