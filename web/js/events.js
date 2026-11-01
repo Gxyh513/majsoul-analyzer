@@ -32,9 +32,6 @@ function bindEvents() {
       input.value = "";
       input.focus();
     }
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.delete("paipu");
-    window.history.pushState(null, "", newUrl.toString());
   });
 
   // Kyoku Select Dropdown (东场/南场局数直接选择)
