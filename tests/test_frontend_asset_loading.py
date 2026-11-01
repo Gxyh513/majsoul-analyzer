@@ -103,7 +103,7 @@ async function check(inputUrl, shouldReplace) {
     startAnalysisFromInput(){analysisCount++;throw Error('automatic analysis prohibited')},
     togglePlay(){throw Error('unexpected playback')},
   };
-  vm.runInNewContext(showTierCode + '\\n' + appCode, vm.createContext(context));
+  vm.runInNewContext(showTierCode + '\n' + appCode, vm.createContext(context));
   const pending = callbacks.DOMContentLoaded();
   assert(!nodes.tier1Screen.classList.contains('hidden'), 'show home immediately');
   assert(nodes.tier2Screen.classList.contains('hidden'), 'hide old review');
