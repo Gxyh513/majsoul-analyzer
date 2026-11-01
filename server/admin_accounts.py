@@ -195,6 +195,17 @@ class AccountStore:
             db.commit()
             return cur.rowcount > 0
 
+    def renew_auto_register_lock(self, instance_id: str, timeout_sec: float = 300) -> bool:
+        """Extend an unexpired lease only if this instance still owns it."""
+        now = time.time()
+        with self.lock, self._connect() as db:
+            cur = db.execute(
+                """UPDATE auto_register_state SET locked_until=?
+                   WHERE id=1 AND locked_by=? AND locked_until>=?""",
+                (now + timeout_sec, instance_id, now),
+            )
+            return cur.rowcount == 1
+
     def release_auto_register_lock(self, instance_id: str):
         with self.lock, self._connect() as db:
             db.execute(

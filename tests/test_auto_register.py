@@ -454,3 +454,44 @@ async def test_scheduler_survives_one_unhandled_attempt_error(monkeypatch, store
         assert store.get_auto_register_state()["last_status"] in ("调度异常", "运行中")
     finally:
         await scheduler.stop()
+
+
+@pytest.mark.anyio
+async def test_long_running_registration_renews_exclusive_lock(monkeypatch, store, tmp_path):
+    """A slow registration must not expose the slot for a second instance."""
+    from server import account_register as reg
+    monkeypatch.setattr(reg, "LOCK_EXPIRY_SECONDS", 0.10)
+    monkeypatch.setattr(reg, "LOCK_RENEW_SECONDS", 0.02)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_registration(**kwargs):
+        entered.set()
+        await release.wait()
+        return {"ok": True, "status": "success"}
+
+    monkeypatch.setattr(reg, "register_and_ingest", delayed_registration)
+    scheduler = AutoRegisterScheduler(store, tmp_path)
+    assert store.acquire_auto_register_lock(scheduler.instance_id, timeout_sec=0.10)
+    task = asyncio.create_task(scheduler._register_with_lease(manual=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        # Past the original lease expiry, the task must still own the lease.
+        await asyncio.sleep(0.17)
+        assert store.acquire_auto_register_lock("another-instance", timeout_sec=0.1) is False
+        release.set()
+        assert (await asyncio.wait_for(task, 1))["ok"] is True
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        store.release_auto_register_lock(scheduler.instance_id)
+
+
+def test_register_lease_cannot_be_renewed_after_other_owner_takes_over(store):
+    """Never resurrect a stale lease and overwrite an active owner's lock."""
+    assert store.acquire_auto_register_lock("first", timeout_sec=0.02)
+    time.sleep(0.04)
+    assert store.acquire_auto_register_lock("second", timeout_sec=2)
+    assert store.renew_auto_register_lock("first", timeout_sec=20) is False
+    assert store.renew_auto_register_lock("second", timeout_sec=2) is True
+    store.release_auto_register_lock("second")

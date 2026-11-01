@@ -42,6 +42,7 @@ DEFAULT_REGISTER_INTERVAL_SECONDS = 3600
 REGISTER_TASK_TIMEOUT_SECONDS = 150
 # 锁超时时间（秒），防止单实例异常崩溃后死锁
 LOCK_EXPIRY_SECONDS = 300
+LOCK_RENEW_SECONDS = 60
 # Detect externally changed schedules and retry unexpected scheduler failures.
 SCHEDULER_POLL_SECONDS = 60
 SCHEDULER_ERROR_RETRY_SECONDS = 60
@@ -648,6 +649,32 @@ class AutoRegisterScheduler:
         finally:
             self._wake.clear()
 
+    async def _register_with_lease(self, *, manual: bool) -> dict[str, Any]:
+        """Renew an owned lock while a long-running registration is in progress."""
+        async def keep_alive():
+            while True:
+                await asyncio.sleep(LOCK_RENEW_SECONDS)
+                try:
+                    renewed = await asyncio.to_thread(
+                        self.store.renew_auto_register_lock, self.instance_id, LOCK_EXPIRY_SECONDS
+                    )
+                except Exception as exc:
+                    log_warning(事件="注册锁续租异常", 错误原因=type(exc).__name__)
+                    continue
+                if not renewed:
+                    log_error(事件="注册锁续租失败", 状态="锁已不属于当前任务")
+                    return
+
+        heartbeat = asyncio.create_task(keep_alive())
+        try:
+            return await register_and_ingest(
+                store=self.store, cache_dir=self.cache_dir,
+                scheduler=self.scheduler, manual=manual, runner=self.runner,
+            )
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
     async def _periodic_loop(self):
         """Use the DB schedule as truth, wake on toggle, and survive recoverable errors."""
         while not self._stopped:
@@ -694,13 +721,7 @@ class AutoRegisterScheduler:
                         next_run_at=now + DEFAULT_REGISTER_INTERVAL_SECONDS,
                         last_status="运行中",
                     )
-                    await register_and_ingest(
-                        store=self.store,
-                        cache_dir=self.cache_dir,
-                        scheduler=self.scheduler,
-                        manual=False,
-                        runner=self.runner,
-                    )
+                    await self._register_with_lease(manual=False)
                 finally:
                     self.store.release_auto_register_lock(self.instance_id)
 
@@ -738,13 +759,7 @@ class AutoRegisterScheduler:
                 next_run_at=started + DEFAULT_REGISTER_INTERVAL_SECONDS,
                 last_status="运行中",
             )
-            return await register_and_ingest(
-                store=self.store,
-                cache_dir=self.cache_dir,
-                scheduler=self.scheduler,
-                manual=True,
-                runner=self.runner,
-            )
+            return await self._register_with_lease(manual=True)
         finally:
             self.store.release_auto_register_lock(self.instance_id)
             self._wake.set()
