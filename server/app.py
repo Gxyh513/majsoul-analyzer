@@ -971,6 +971,18 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             return asyncio.create_task(asyncio.sleep(0, result=cached))
         _set_performance_value("分析结果缓存", "未命中")
     entry = _review_inflight.get(key)
+    if entry is not None:
+        # A directly cancelled shared job remains alive until its inference
+        # thread exits and releases the CPU permit. Do not attach a new caller
+        # to that doomed task: it would inherit CancelledError. Launch a fresh
+        # request instead, which safely queues behind the original permit.
+        start = entry["start"]
+        if start.done() and not start.cancelled() and start.exception() is None:
+            owned = start.result()
+            if owned.cancelled() or owned.cancelling():
+                if _review_inflight.get(key) is entry:
+                    _review_inflight.pop(key, None)
+                entry = None
     if entry is None:
         callbacks = []
         entry = {"callbacks": callbacks, "starters": 0}
