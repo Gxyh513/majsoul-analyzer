@@ -29,3 +29,32 @@ def test_invalid_and_missing_values_do_not_poison_metrics(monkeypatch):
     snap = ops_metrics.summary()
     assert snap["sample_count"] == 1
     assert snap["queue_ms"]["p95"] is None
+
+
+def test_success_counts_and_stage_metrics_are_bounded(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(ops_metrics, "_samples", deque(maxlen=2))
+    monkeypatch.setattr(ops_metrics, "memory_usage", lambda: {"rss_bytes": 4096})
+    for ok, n in ((True, 10), (False, 20), (True, 30)):
+        ops_metrics.record({
+            "总耗时_ms": n,
+            "请求ID": "secret-user-id",
+            "耗时_ms": {"原始牌谱获取总耗时": n / 2,
+                        "MJAI转换": n / 4,
+                        "完成结果序列化耗时": n / 5},
+        }, succeeded=ok)
+    snap = ops_metrics.summary()
+    assert snap["sample_count"] == 2
+    assert (snap["successful"], snap["failed"]) == (1, 1)
+    assert snap["fetch_ms"] == {"p50": 12.5, "p95": 14.75}
+    assert snap["convert_ms"]["p50"] == 6.25
+    assert snap["memory"] == {"rss_bytes": 4096}
+    assert "secret-user-id" not in str(snap)
+
+
+def test_rss_failure_is_nullable_without_sensitive_details(monkeypatch):
+    from pathlib import Path
+    def unavailable(self, *args, **kwargs):
+        raise OSError("secret path")
+    monkeypatch.setattr(Path, "read_text", unavailable)
+    assert ops_metrics.memory_usage() == {"rss_bytes": None}
