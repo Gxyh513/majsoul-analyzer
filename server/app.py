@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
-from . import review_cache
+from . import review_cache, ops_metrics
 from .admin_accounts import admin_router, start_manager, stop_manager, manager as admin_manager
 from .paipu_performance import (
     build_report as _build_performance_report, measure as _measure, performance as _performance,
@@ -61,6 +61,7 @@ def _log_performance(stats: dict[str, Any], started: float) -> dict[str, Any] | 
         report = None
 
     try:
+        ops_metrics.record(report)
         total_ms = (time.perf_counter() - started) * 1000
         request_id = stats.get("request_id") or (report.get("请求ID") if report else None) or ""
 
@@ -677,6 +678,7 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
+        "performance_recent": ops_metrics.summary(),
     }
 
 
