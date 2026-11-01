@@ -79,9 +79,17 @@ class ControlledReviews:
 
 
 @pytest.fixture
-def review_environment(monkeypatch):
+def review_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
+    monkeypatch.setattr(server_app, "_review_inflight", {})
+    monkeypatch.setattr(server_app, "_review_waiters", 0)
+    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path / "reviews")
+    # These tests exercise cancellation and semaphore ownership rather than
+    # completed-result caching. Keep requests fresh so an earlier successful
+    # public review cannot bypass the inference worker under test.
+    monkeypatch.setattr(server_app.review_cache, "load", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server_app.review_cache, "save", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
@@ -126,7 +134,12 @@ async def assert_queued_and_finish(control, owner):
     assert control.max_active == 1
     control.release["other"].set()
     assert (await asyncio.wait_for(other, timeout=2))["game_id"] == "other"
-    await asyncio.sleep(0)
+    # Disk-cache dispatch and done callbacks can take another event-loop tick.
+    # Verify bounded eventual cleanup rather than depending on one tick.
+    for _ in range(100):
+        if not server_app._review_tasks:
+            break
+        await asyncio.sleep(0.01)
     assert not server_app._review_tasks
     assert not server_app.review_semaphore.locked()
     if owner is not None:
