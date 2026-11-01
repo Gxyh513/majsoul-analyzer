@@ -54,7 +54,7 @@ async def benchmark(base_url: str, total: int, concurrency: int, *, token: str =
     if client is not None:
         await asyncio.gather(*(run_one(client) for _ in range(total)))
     else:
-        async with httpx.AsyncClient(base_url=base_url, timeout=180.0,
+        async with httpx.AsyncClient(base_url=base_url, timeout=180.0, trust_env=False,
                                      limits=httpx.Limits(max_connections=concurrency)) as http:
             await asyncio.gather(*(run_one(http) for _ in range(total)))
     elapsed = time.perf_counter() - started
