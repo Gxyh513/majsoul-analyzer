@@ -169,7 +169,8 @@ _review_tasks: set[asyncio.Task] = set()
 REVIEW_MAX_WAITERS = 4
 REVIEW_QUEUE_TIMEOUT_SECONDS = 90
 _review_waiters = 0
-# Share only simultaneous jobs, never persist private JSON or completed reviews.
+# Coalesce simultaneous jobs; completed results persist only for public paipu links.
+# Internal JSON and demonstration inputs must never enter the disk review cache.
 _review_inflight: dict[str, dict[str, Any]] = {}
 
 
