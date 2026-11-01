@@ -229,3 +229,24 @@ def test_perspective_snapshots_reference_stable_mjai_event_indices(monkeypatch):
     second = reviewer.review_game(events, 1, FakeManager())["kyokus"][0]["steps"]
     assert [s["event_idx"] for s in first] == [1, 2, 3, 4]
     assert [s["event_idx"] for s in second] == [1, 2, 4]
+
+
+def test_snapshot_lists_reuse_unchanged_state_without_changing_replay_json(monkeypatch):
+    """Share only unchanged arrays, while preserving event-by-event board correctness."""
+    monkeypatch.setattr(reviewer.lstate, "PlayerState", FakePlayerState)
+    events = [start_round(),
+              {"type": "dahai", "actor": 0, "pai": "1m"},
+              {"type": "pon", "actor": 1, "target": 0, "pai": "1m",
+               "consumed": ["1m", "1m"]},
+              {"type": "kakan", "actor": 1, "pai": "1m"},
+              {"type": "end_kyoku"}]
+    steps = reviewer.review_game(events, 0, FakeManager())["kyokus"][0]["steps"]
+    assert steps[0]["hands"][3] is steps[1]["hands"][3]
+    assert steps[0]["rivers"][3] is steps[1]["rivers"][3]
+    assert steps[0]["melds"][3] is steps[1]["melds"][3]
+    assert steps[1]["rivers"][0] is not steps[2]["rivers"][0]
+    assert steps[2]["melds"][1] is not steps[3]["melds"][1]
+    assert steps[1]["rivers"][0][0]["called"] is False
+    assert steps[2]["rivers"][0][0]["called"] is True
+    # JSON has no object identity; frontend sees exactly the established shape.
+    assert json.loads(json.dumps(steps, ensure_ascii=False)) == steps

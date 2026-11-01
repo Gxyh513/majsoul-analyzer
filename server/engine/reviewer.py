@@ -451,7 +451,25 @@ def review_game(
     pending_decisions: list[dict[str, Any]] = []
     mortal_obs_batch: list[np.ndarray] = []
     mortal_mask_batch: list[np.ndarray] = []
-    sorted_hands: list[tuple[tuple[str, ...], tuple[str, ...]] | None] = [None] * 4
+    # Reuse immutable-by-convention snapshot lists within one review. The
+    # serialized replay JSON stays identical: no wire/schema change.
+    sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
+    cached_melds: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
+    cached_rivers: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
+
+    def frozen_snapshot_lists(source: list[list[dict]], cache: list) -> list[list[dict]]:
+        snapshots = []
+        for seat, items in enumerate(source):
+            # Meld/river entries are replaced on change, not modified in place.
+            # Existing snapshots already share their dicts; only the outer lists
+            # are now shared when their entries have not changed.
+            identity = tuple(id(item) for item in items)
+            saved = cache[seat]
+            if saved is None or saved[0] != identity:
+                saved = (identity, list(items))
+                cache[seat] = saved
+            snapshots.append(saved[1])
+        return snapshots
 
     def snapshot_board(ev: dict, event_idx: int) -> dict[str, Any]:
         snapshot_hands = []
@@ -459,9 +477,9 @@ def review_game(
             hand_state = tuple(hand)
             cached = sorted_hands[seat]
             if cached is None or cached[0] != hand_state:
-                cached = (hand_state, tuple(sorted(hand, key=sort_key)))
+                cached = (hand_state, sorted(hand, key=sort_key))
                 sorted_hands[seat] = cached
-            snapshot_hands.append(list(cached[1]))
+            snapshot_hands.append(cached[1])
         return {
             "event": ev,
             # The same MJAI event keeps its identity across seat-specific snapshots.
@@ -469,8 +487,8 @@ def review_game(
             "hands": snapshot_hands,
             "drawn": list(drawn_tile),
             # Entries are replaced rather than mutated when calls or kans change them.
-            "melds": [list(ms) for ms in melds],
-            "rivers": [list(rs) for rs in rivers],
+            "melds": frozen_snapshot_lists(melds, cached_melds),
+            "rivers": frozen_snapshot_lists(rivers, cached_rivers),
             "riichi": list(riichi_declared),
             "scores": list(scores),
             "dora_markers": list(dora_markers),
