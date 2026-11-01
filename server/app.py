@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import lru_cache
 from contextlib import aclosing, asynccontextmanager
 import hmac
 import hashlib
@@ -36,7 +37,7 @@ from .majsoul.session import SessionLock
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError, drain_record_downloads, get_or_download_record as _get_or_download_record, read_record
 from .engine.reviewer import EngineManager, ModelInferenceError, review_game
 from .engine.model_policy import MODEL_FILE, MODEL_ID, MODEL_SHA256, REVIEW_SCHEMA, normalize_model_id, sha256_file, valid_review_source
-from .majsoul.client import MajsoulClient, MajsoulError, parse_paipu, parse_paipu_seat
+from .majsoul.client import LOCAL_PROTOCOL_SHA256, MajsoulClient, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 
 from .logger import (
@@ -956,14 +957,95 @@ def _review_fingerprint(game_id: str, events: list[dict], meta: dict,
     return hashlib.sha256(packed.encode("utf8")).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _public_review_pipeline_identity() -> str:
+    """Invalidate raw-input keys when decoding, conversion or review rules change."""
+    digest = hashlib.sha256()
+    for name in (
+        "majsoul/client.py", "majsoul/proto.py", "majsoul/convert.py",
+        "engine/reviewer.py", "engine/tiles.py", "engine/shanten.py",
+        "engine/onnx_mortal.py", "engine/model_policy.py",
+    ):
+        digest.update(name.encode("ascii"))
+        digest.update((ROOT_DIR / "server" / name).read_bytes())
+    return digest.hexdigest()
+
+
+def _public_raw_review_key(game_id: str, source: RawRecord, seat: int,
+                           engine: str, temperature: float) -> str:
+    """Bind the result to persisted public protobuf bytes, seat and exact pipeline."""
+    raw = hashlib.sha256()
+    for part in (source.protocol_version.encode("ascii"), source.response, source.detail):
+        raw.update(len(part).to_bytes(8, "big"))
+        raw.update(part)
+    packed = json.dumps(
+        ["public-raw-v1", _public_review_pipeline_identity(), LOCAL_PROTOCOL_SHA256,
+         MODEL_SHA256, REVIEW_SCHEMA, game_id, raw.hexdigest(), seat, engine, temperature],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    return hashlib.sha256(packed.encode("utf8")).hexdigest()
+
+
+def _load_fast_public_review(paipu: str | None, target_actor: int | None,
+                             engine: str, temperature: float) -> dict | None:
+    """Try an existing public record without decoding protobuf or converting MJAI.
+
+    All data comes from the permanent raw-record store, never private JSON. A
+    missing/corrupt cache is a normal miss and takes the existing analysis path.
+    """
+    if not paipu or paipu == "demo" or paipu.startswith("demo-"):
+        return None
+    try:
+        game_id, url_account_id = parse_paipu(paipu)
+        stored = read_record(RECORDS_DIR, game_id, LEGACY_RECORDS_DIRS)
+        if not isinstance(stored, RawRecord):
+            return None  # Legacy JSON needs the existing conversion path.
+        url_seat = parse_paipu_seat(paipu)
+        requested_seat = target_actor if target_actor is not None else url_seat
+        candidates = (requested_seat,) if requested_seat in range(4) else range(4)
+        for seat in candidates:
+            key = _public_raw_review_key(game_id, stored, seat, engine, temperature)
+            cached = review_cache.load(REVIEWS_DIR, key, game_id, seat)
+            if not isinstance(cached, dict) or not isinstance(cached.get("meta"), dict):
+                continue
+            selected = select_game_seat(
+                cached["meta"], requested_seat, url_account_id if url_seat is None else None
+            )
+            if selected == seat:
+                return cached
+    except (MajsoulError, RecordStorageError, OSError, ValueError, TypeError):
+        return None
+    return None
+
+
+async def _try_fast_public_review(paipu: str | None, target_actor: int | None,
+                                  engine: str, temperature: float) -> dict | None:
+    cached = await asyncio.to_thread(_load_fast_public_review, paipu, target_actor, engine, temperature)
+    if cached is not None:
+        _set_performance_value("分析结果缓存", "原始牌谱快速命中")
+    return cached
+
+
 async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
                             engine: str, temperature: float, progress_callback=None,
                             cache_public: bool = False) -> asyncio.Task:
     # A persistent cache is allowed only for URL-based paipu analysis, never
     # for demo or internal JSON conversion.
     key = _review_fingerprint(game_id, mjai_events, meta, seat, engine, temperature)
+    disk_key = key
     if cache_public:
-        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
+        # Normal misses still use the full event fingerprint to coalesce
+        # in-flight work. Store completed public protobuf reviews under a raw
+        # fingerprint so later requests can hit before decoding/conversion.
+        try:
+            source = await asyncio.to_thread(read_record, RECORDS_DIR, game_id, LEGACY_RECORDS_DIRS)
+            if isinstance(source, RawRecord):
+                disk_key = await asyncio.to_thread(
+                    _public_raw_review_key, game_id, source, seat, engine, temperature
+                )
+        except (RecordStorageError, OSError, ValueError, TypeError):
+            pass
+        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, disk_key, game_id, seat)
         if cached is not None:
             _set_performance_value("分析结果缓存", "命中")
             if progress_callback is not None:
@@ -1000,7 +1082,7 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             return await _start_review_job_owned(
                 game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                 engine=engine, temperature=temperature, progress_callback=emit_progress,
-                cache_key=key if cache_public else None,
+                cache_key=disk_key if cache_public else None,
             )
 
         started = asyncio.create_task(launch())
@@ -1227,6 +1309,9 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
 async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Response):
     async def work():
         await _wait_for_model_download(req.engine)
+        cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature)
+        if cached is not None:
+            return cached
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
         return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature,
                                  cache_public=(game_id != "demo"))
@@ -1321,6 +1406,14 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 async for update in updates:
                     yield update
             model_task.result()
+
+            # Reuse a verified raw-source cache entry without repeating protobuf
+            # decode or MJAI conversion; the stream framing remains unchanged.
+            cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature)
+            if cached is not None:
+                yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '已复用公开牌谱缓存'}, ensure_ascii=False)}\n\n"
+                yield _complete_review_event(cached)
+                return
 
             yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
             try:
