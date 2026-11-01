@@ -18,6 +18,7 @@ import time
 from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA, valid_review_source
 
 
+CACHE_FORMAT_VERSION = 2
 CACHE_TTL_SECONDS = 24 * 3600
 CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 CACHE_ENTRY_LIMIT_BYTES = 20 * 1024 * 1024
@@ -48,7 +49,12 @@ def load(directory: Path, key: str, game_id: str, seat: int):
         if len(data) > CACHE_ENTRY_LIMIT_BYTES:
             return None
         envelope = json.loads(data)
-        result = envelope.get("result") if isinstance(envelope, dict) and envelope.get("version") == 1 else None
+        # The stored fingerprint must match the requested key. Otherwise a
+        # misplaced cache file for a different temperature or source could be
+        # accepted just because its game UUID and seat happen to match.
+        result = (envelope.get("result") if isinstance(envelope, dict)
+                  and envelope.get("version") == CACHE_FORMAT_VERSION
+                  and envelope.get("key") == key else None)
         if (not valid_review_source(result, MODEL_SHA256)
                 or result.get("game_id") != game_id
                 or type(result.get("target_actor")) is not int
@@ -64,7 +70,8 @@ def save(directory: Path, key: str, result: dict) -> bool:
     path = _cache_path(directory, key)
     if not valid_review_source(result, MODEL_SHA256):
         return False
-    payload = json.dumps({"version": 1, "result": result}, ensure_ascii=False, separators=(",", ":")).encode("utf8")
+    payload = json.dumps({"version": CACHE_FORMAT_VERSION, "key": key, "result": result},
+                         ensure_ascii=False, separators=(",", ":")).encode("utf8")
     if len(payload) > CACHE_ENTRY_LIMIT_BYTES:
         return False
     with _cache_lock:
@@ -72,6 +79,10 @@ def save(directory: Path, key: str, result: dict) -> bool:
         try:
             directory = Path(directory)
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Results are disposable; preserve free disk for permanent raw
+            # records and SQLite rather than filling the volume with reviews.
+            if shutil.disk_usage(directory).free - len(payload) < LOW_DISK_WARNING_BYTES:
+                return False
             if path.is_symlink():
                 return False
             with tempfile.NamedTemporaryFile(dir=directory, prefix=".review-", suffix=".tmp", delete=False) as writer:
