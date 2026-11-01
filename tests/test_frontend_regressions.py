@@ -605,3 +605,17 @@ background.deltaY=-20; prevented=false; listeners.wheel(background);
 assert(prevented); assert.deepStrictEqual(steps,[1,-1]);
 '''
     run_js(script)
+
+
+def test_landing_model_status_is_read_only_without_detail_link():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "web/index.html").read_text(encoding="utf8")
+    js = (root / "web/js/events.js").read_text(encoding="utf8")
+    css = (root / "web/css/landing.css").read_text(encoding="utf8")
+    assert "点击查看模型详情" not in html
+    assert '<div class="kd-single-model-card" id="landingModelCard"' in html
+    assert "landingModelDevice" in html  # Keep visible model readiness.
+    assert '$("landingModelCard")?.addEventListener("click"' not in js
+    assert "cursor: default;" in css
