@@ -97,6 +97,7 @@ class AccountStore:
 
     @contextmanager
     def _connect(self):
+        started = time.perf_counter()
         db = sqlite3.connect(str(self.path), timeout=10)
         try:
             db.row_factory = sqlite3.Row
@@ -108,6 +109,10 @@ class AccountStore:
             raise
         finally:
             db.close()
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if elapsed_ms >= 150:
+                # Do not log database path, SQL statements or account data.
+                log_warning(事件="账号数据库慢操作", 耗时毫秒=round(elapsed_ms, 1))
 
     def all(self) -> list[dict]:
         with self.lock, self._connect() as db:
@@ -397,7 +402,7 @@ class AccountScheduler:
     async def reserve(self, attempted: set[int]):
         async with self.condition:
             while True:
-                accounts = self.store.all()
+                accounts = await asyncio.to_thread(self.store.all)
                 now = time.time()
                 possible = [
                     acc for acc in accounts if acc["id"] not in attempted and acc["enabled"]
@@ -420,7 +425,7 @@ class AccountScheduler:
         # Keep the slot reserved until the obsolete client closes, but never
         # strand it if close() fails or the request is cancelled.
         try:
-            row = self.store.get(account_pk)
+            row = await asyncio.to_thread(self.store.get, account_pk)
             if row is None or not row["enabled"] or account_pk in self.invalidated:
                 self.invalidated.discard(account_pk)
                 client = self.clients.pop(account_pk, None)
@@ -481,15 +486,16 @@ class AccountScheduler:
                 await client.close()
                 await self._authenticate(acc, client)
                 record = await client.fetch_record(game_uuid)
-            self.store.record_result(acc["id"], success=True, elapsed_ms=(time.monotonic() - start) * 1000)
+            await asyncio.to_thread(self.store.record_result, acc["id"], success=True,
+                                    elapsed_ms=(time.monotonic() - start) * 1000)
             return record
         except Exception as exc:
             code = getattr(exc, "code", None)
             is_auth = isinstance(exc, MajsoulTokenInvalid) or code in (103, 104, 109, 1003, 1004)
-            self.store.record_result(acc["id"], success=False,
-                elapsed_ms=(time.monotonic() - start) * 1000,
-                error="网络失败" if self._network_failure(exc) else str(exc),
-                code=code, auth_failed=is_auth)
+            await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
+                                    elapsed_ms=(time.monotonic() - start) * 1000,
+                                    error="网络失败" if self._network_failure(exc) else str(exc),
+                                    code=code, auth_failed=is_auth)
             if self._network_failure(exc) or is_auth:
                 await client.close()
             raise
@@ -519,13 +525,13 @@ class AccountScheduler:
             raise HTTPException(status_code=429, detail="当前账号池抓谱额度已满，请稍后重试")
         if errors:
             raise HTTPException(status_code=503, detail="雀魂账号或网络暂不可用，请稍后重试")
-        enabled = [acc for acc in self.store.all() if acc["enabled"]]
+        enabled = [acc for acc in await asyncio.to_thread(self.store.all) if acc["enabled"]]
         if enabled and all(acc["cooldown_until"] > time.time() for acc in enabled):
             raise HTTPException(status_code=429, detail="所有启用账号均处于540冷却期")
         raise HTTPException(status_code=503, detail="当前没有空闲且可用的雀魂账号")
 
     async def _check_idle_accounts(self):
-        for acc in self.store.all():
+        for acc in await asyncio.to_thread(self.store.all):
             if not acc["enabled"] or acc["auth_failed"] or acc["cooldown_until"] > time.time() or acc["id"] in self.busy:
                 continue
             # Reserve the same slot used by regular download jobs; no races.
@@ -539,11 +545,11 @@ class AccountScheduler:
                     await asyncio.wait_for(self._authenticate(acc, client), timeout=15)
                 except Exception as exc:
                     if not self._network_failure(exc):
-                        self.store.record_result(acc["id"], success=False, elapsed_ms=0,
-                            error="账号检测失败", code=getattr(exc, "code", None),
+                        await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
+                            elapsed_ms=0, error="账号检测失败", code=getattr(exc, "code", None),
                             auth_failed=isinstance(exc, MajsoulTokenInvalid) or getattr(exc, "code", None) in (103, 104, 109, 1003, 1004))
                 finally:
-                    self.store.checked(acc["id"])
+                    await asyncio.to_thread(self.store.checked, acc["id"])
             finally:
                 await self.release(acc["id"])
 
@@ -591,7 +597,7 @@ async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> Account
         path = Path(__file__).resolve().parents[1] / "data" / "admin_accounts.sqlite3"
         log_warning(事件="账号数据库", 状态="已降级", 信息="持久化目录不可用，已使用本地数据库")
         store = AccountStore(path)
-    store.bootstrap(legacy_accounts)
+    await asyncio.to_thread(store.bootstrap, legacy_accounts)
     _manager = AccountScheduler(store, cache_dir)
     _manager.periodic_task = asyncio.create_task(_manager.periodic())
     _auto_register_scheduler = AutoRegisterScheduler(store, cache_dir, _manager)
@@ -673,13 +679,13 @@ async def admin_logout(request: Request):
 @admin_router.get("/status")
 async def admin_status(request: Request):
     _authorize(request)
-    return _get_manager().overview()
+    return await asyncio.to_thread(_get_manager().overview)
 
 
 @admin_router.get("/accounts")
 async def admin_accounts(request: Request):
     _authorize(request)
-    return _get_manager().overview()
+    return await asyncio.to_thread(_get_manager().overview)
 
 
 @admin_router.post("/accounts")
@@ -687,7 +693,7 @@ async def admin_add_account(request: Request, data: AdminAccount):
     _authorize(request)
     current = _get_manager()
     try:
-        pk = current.store.add(data.model_dump())
+        pk = await asyncio.to_thread(current.store.add, data.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await current.changed()
@@ -699,7 +705,7 @@ async def admin_import_accounts(request: Request, data: AdminBulk):
     _authorize(request)
     current = _get_manager()
     try:
-        result = current.store.bulk_add([item.model_dump() for item in data.accounts])
+        result = await asyncio.to_thread(current.store.bulk_add, [item.model_dump() for item in data.accounts])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await current.changed()
@@ -712,7 +718,7 @@ async def admin_edit_account(account_pk: int, request: Request, data: AdminEdit)
     _authorize(request)
     current = _get_manager()
     try:
-        current.store.edit(account_pk, data.model_dump(exclude_unset=True))
+        await asyncio.to_thread(current.store.edit, account_pk, data.model_dump(exclude_unset=True))
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await current.changed(account_pk)
@@ -725,7 +731,7 @@ async def admin_delete_account(account_pk: int, request: Request):
     _authorize(request)
     current = _get_manager()
     try:
-        current.store.delete(account_pk)
+        await asyncio.to_thread(current.store.delete, account_pk)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await current.changed(account_pk)
@@ -739,13 +745,13 @@ class AdminRegisterToggle(BaseModel):
 @admin_router.get("/register/status")
 async def admin_register_status(request: Request):
     _authorize(request)
-    return _get_auto_register_scheduler().overview()
+    return await asyncio.to_thread(_get_auto_register_scheduler().overview)
 
 
 @admin_router.post("/register/toggle")
 async def admin_register_toggle(request: Request, data: AdminRegisterToggle):
     _authorize(request)
-    return _get_auto_register_scheduler().toggle(data.enabled)
+    return await _get_auto_register_scheduler().toggle_async(data.enabled)
 
 
 @admin_router.post("/register/trigger")
@@ -757,4 +763,4 @@ async def admin_register_trigger(request: Request):
 @admin_router.get("/register/history")
 async def admin_register_history(request: Request):
     _authorize(request)
-    return _get_manager().store.get_auto_register_logs(limit=100)
+    return await asyncio.to_thread(_get_manager().store.get_auto_register_logs, limit=100)
