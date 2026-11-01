@@ -401,7 +401,7 @@ class MemoryASGIRequest:
         self.messages.put_nowait({"type": "http.disconnect"})
 
 
-@pytest.mark.parametrize("route", ["paipu", "json", "demo"])
+@pytest.mark.parametrize("route", ["paipu", "demo"])
 def test_asgi_nonstream_disconnect_while_queued_does_not_start_review(review_environment, monkeypatch, route):
     async def scenario():
         control = ControlledReviews(asyncio.get_running_loop())
@@ -415,7 +415,7 @@ def test_asgi_nonstream_disconnect_while_queued_does_not_start_review(review_env
             return "other", [{"name": "other"}], {"names": ["A", "B", "C", "D"]}, 0
 
         monkeypatch.setattr(server_app, "resolve_game_data", resolve)
-        payloads = {"paipu": {"paipu": "other"}, "json": {"content": [{"type": "start_game"}]}, "demo": {}}
+        payloads = {"paipu": {"paipu": "other"}, "demo": {}}
         try:
             first = asyncio.create_task(nonstream("first"))
             await wait_started(control, "first")
@@ -604,61 +604,6 @@ def test_detached_invalid_result_is_rejected_and_next_request_runs(review_enviro
     asyncio.run(scenario())
 
 
-def test_mjai_disconnect_retry_reanalyses_without_inventing_start_time(monkeypatch):
-    async def scenario():
-        now = [1000]
-        monkeypatch.setattr(server_app.time, "time", lambda: now[0])
-        monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
-        monkeypatch.setattr(server_app, "_review_tasks", set())
-        monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
-        monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
-            get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
-        ))
-        started = asyncio.Event()
-        release = threading.Event()
-        calls = []
-        loop = asyncio.get_running_loop()
-        events = [{"type": "start_game", "names": ["A", "B", "C", "D"]}]
-
-        def review(_events, _seat, _manager, **kwargs):
-            calls.append(copy.deepcopy(kwargs["meta"]))
-            loop.call_soon_threadsafe(started.set)
-            if not release.wait(5):
-                raise RuntimeError("test did not release review")
-            return {**valid_result(), "meta": kwargs["meta"]}
-
-        monkeypatch.setattr(server_app, "review_game", review)
-        try:
-            request = MemoryASGIRequest("/api/analyze/stream", {"content": events})
-            owner = request.start()
-            await asyncio.wait_for(started.wait(), 2)
-            first_job = next(iter(server_app._review_tasks))
-            request.disconnect()
-            await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 2)
-            now[0] = 2000
-            game_id, retry_events, meta, seat = await server_app.resolve_game_data(content=events)
-            assert meta["start_time"] is None
-            retry = asyncio.create_task(server_app._run_review(game_id, retry_events, meta, seat, MODEL_ID, 0.1))
-            await asyncio.sleep(0.03)
-            assert not retry.done() and len(calls) == 1
-            release.set()
-            first_result = await asyncio.wait_for(first_job, 2)
-            result = await asyncio.wait_for(retry, 2)
-            assert len(calls) == 2
-            assert result["meta"]["start_time"] is None
-            assert first_result["game_id"] != game_id
-            now[0] = 3000
-            game_id2, events2, meta2, seat2 = await server_app.resolve_game_data(content=events)
-            again = await server_app._run_review(game_id2, events2, meta2, seat2, MODEL_ID, 0.1)
-            assert game_id2 != game_id and again["game_id"] == game_id2
-            assert again["meta"]["start_time"] is None and len(calls) == 3
-            assert not server_app._review_tasks
-        finally:
-            release.set()
-
-    asyncio.run(scenario())
-
-
 def test_uploaded_metadata_start_time_is_preserved_on_every_review(monkeypatch):
     async def scenario():
         monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
@@ -687,13 +632,14 @@ def test_uploaded_metadata_start_time_is_preserved_on_every_review(monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("route", ["paipu", "json", "demo", "stream"])
+@pytest.mark.parametrize("route", ["paipu", "demo", "stream"])
 @pytest.mark.parametrize("caller", ["pages_proxy", "local"])
-def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypatch, route, caller):
+def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypatch, tmp_path, route, caller):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "synthetic-api-token")
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://majsoul.ccwu.cc")
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
+    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path / "reviews")
     monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
@@ -719,7 +665,7 @@ def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypat
     else:
         client = TestClient(server_app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
         headers = {"X-Api-Token": "synthetic-api-token"}
-    payload = {"paipu": "same"} if route in ("paipu", "stream") else ({"content": [{"type": "start_game"}]} if route == "json" else {})
+    payload = {"paipu": "same"} if route in ("paipu", "stream") else {}
     for attempt in range(2):
         response = client.post(f"/api/analyze/{route}", json=payload, headers=headers)
         assert response.status_code == 200
@@ -734,7 +680,7 @@ def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypat
         assert "private_debug" not in result["engine"]
         assert valid_review_source(result, SHA)
         assert result["meta"] == {"label": "preserved"}
-        assert len(results) == attempt + 1
+        assert len(results) == (attempt + 1 if route == "demo" else 1)
         assert results[-1]["engine"]["model_path"] == private_path
         assert results[-1]["engine"]["private_debug"]["path"] == private_path
 

@@ -9,7 +9,7 @@ Majsoul Analyzer 将雀魂四人麻将牌谱转换为 MJAI 事件，使用 Morta
 
 ## 功能
 
-- 导入雀魂牌谱链接、雀魂原始 JSON 或 MJAI JSON/JSONL；可使用内置示例牌谱。
+- 导入雀魂牌谱链接或牌谱号；可使用内置示例牌谱。
 - 在四家视角之间切换，查看牌河、立直、副露、杠、手切/摸切及结算。
 - 显示各合法动作的 Mortal Q 值、候选排序和概率，以及整场和各局的检讨统计。
 - 向听、进张、危险度及其他标签是独立的辅助统计，**不是 Mortal 的 Q 值**。
@@ -42,7 +42,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
    ```
 
 2. 从[固定版本下载 model.onnx](https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a/model.onnx)，校验上述 SHA-256，并保存为 `data/models/model.onnx`。路径和文件名必须完全一致；启动后可通过 `/api/status` 查看校验状态。不要提交模型文件。
-3. 如果需要通过雀魂账号拉取牌谱，将 `data/config.example.json` 复制为 `data/config.local.json`，再按需填写账号、密码或访问令牌。也可直接导入本地牌谱。
+3. 如果需要通过雀魂账号拉取牌谱，将 `data/config.example.json` 复制为 `data/config.local.json`，再按需填写账号、密码或访问令牌。也可使用内置演示牌谱。
 4. 启动服务：
 
    ```bash
@@ -57,7 +57,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
 
 ## 使用与快捷键
 
-输入牌谱链接或选择文件后点击“开始分析”；也可输入 `demo` 使用示例牌谱。首次只分析当前玩家；点击左侧其他座位时按需重新分析相应视角，四家共享同一份已下载的原始牌谱。点击对手手牌仅切换明牌/暗牌，不会触发分析。JSON/MJAI 导入的原始内容只在当前页面会话中用于切换视角。
+输入牌谱链接后点击“开始分析”；也可输入 `demo` 使用示例牌谱。首次只分析当前玩家；点击左侧其他座位时按需重新分析相应视角，四家共享同一份已下载的原始牌谱。点击对手手牌仅切换明牌/暗牌，不会触发分析。
 
 | 按键 | 操作 |
 | --- | --- |
@@ -111,7 +111,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 - Pages 前端通过同源 Pages Function 访问 ModelScope 后端；普通访客不需要手动输入 API 令牌。Function 固定代理到 `https://gxyh513-majsoul-analyzer.ms.show`，并在服务端注入 `X-Api-Token`。同源代理仅开放状态和分析接口；账号登录/登出、服务器本地牌谱、共享引擎配置与模型下载不会开放给匿名访问者。
 - 在 Cloudflare Pages 项目的 **Preview 和 Production** 环境分别设置 Secret `MAJSOUL_API_TOKEN`，并在 ModelScope 后端设置相同的新随机值。不要把令牌写入 `wrangler.toml`、源码、URL、浏览器存储或日志；请在已登录的设置页面中输入，不要粘贴到聊天。
-- 匿名 JSON 分析请求体上限为 4 MiB。按产品选择，不设每 IP 请求限额或等待队列上限；公开接口可被持续调用，可能让共享推理资源一直繁忙或占用等待队列内存。若出现滥用，应另行启用 Cloudflare 限流或队列控制。
+- 公开分析接口只支持牌谱链接；不接收 JSON 文件上传。后端已设置有限推理排队（最多 4 个等待任务），不设置每 IP 请求限流。
 - Pages 静态输出目录为 `web/`，Pages Function 位于仓库根目录的 `functions/`。部署后应检查正式域名的 `/api/status` 版本，并完成一次分析验证。
 
 ## API
@@ -121,7 +121,6 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 | GET | `/api/status` | 查询模型和连接状态 |
 | POST | `/api/analyze/stream` | SSE 流式检讨 |
 | POST | `/api/analyze/paipu` | 检讨雀魂牌谱链接或 ID |
-| POST | `/api/analyze/json` | 检讨原始 JSON 或 MJAI 事件 |
 | POST | `/api/analyze/demo` | 检讨示例牌谱 |
 | GET | `/api/records/local` | 列出后端本地牌谱 |
 | POST | `/api/login` | 配置雀魂账号登录 |
@@ -146,7 +145,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 数据与安全
 
-本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。历史浏览器和后端检讨缓存不再使用，但不会自动删除。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
+本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。完整的公开牌谱检讨结果缓存于持久化目录 `reviews/`（默认 `/mnt/workspace/majsoul-analyzer/reviews/`），保存 24 小时、总容量上限 256 MiB；内置演示及内部 JSON 输入不会写入。原始牌谱仍永久保存在 `records/`，不可与检讨缓存混淆。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 

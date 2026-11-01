@@ -92,58 +92,6 @@
   box-shadow: inset 0 1.5px 3px rgba(0, 0, 0, 0.4), 0 0 0 3px rgba(10, 132, 255, 0.35);
 }
 
-/* Drag and Drop Zone */
-.kd-dropzone {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1.5px dashed rgba(255, 255, 255, 0.22);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  text-align: left;
-  user-select: none;
-}
-
-.kd-dropzone:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(48, 209, 88, 0.5);
-}
-
-.kd-dropzone.is-dragover {
-  background: rgba(48, 209, 88, 0.15);
-  border-color: #30d158;
-  box-shadow: 0 0 16px rgba(48, 209, 88, 0.3);
-}
-
-.kd-dropzone-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #30d158;
-  flex-shrink: 0;
-}
-
-.kd-dropzone-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.kd-dropzone-primary {
-  font-size: 13px;
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.kd-dropzone-sub {
-  font-size: 11.5px;
-  color: rgba(235, 235, 245, 0.6);
-}
-
-/* Single Model Card for Landing Page */
 .kd-single-model-card {
   width: 100%;
   box-sizing: border-box;

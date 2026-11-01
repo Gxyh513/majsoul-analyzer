@@ -1,5 +1,5 @@
 // ============================================================================
-// Local Paipu Cache & Drag/Drop Import
+// Local Paipu Records
 // ============================================================================
 async function loadLocalCachedRecords() {
   const container = $("localRecordsList");
@@ -7,7 +7,7 @@ async function loadLocalCachedRecords() {
   if (!container) return;
   if (isPagesProxyMode()) {
     if (countEl) countEl.textContent = "";
-    container.innerHTML = `<div class="kd-local-empty">公开页面不展示服务器本地缓存；请导入本地牌谱文件进行检讨</div>`;
+    container.innerHTML = `<div class="kd-local-empty">公开页面不展示服务器本地缓存；请粘贴雀魂牌谱链接进行检讨</div>`;
     return;
   }
 
@@ -17,7 +17,7 @@ async function loadLocalCachedRecords() {
     if (countEl) countEl.textContent = `共 ${records.length} 场`;
 
     if (records.length === 0) {
-      container.innerHTML = `<div class="kd-local-empty">暂无本地缓存牌谱，可选择或拖入本地文件进行检讨</div>`;
+      container.innerHTML = `<div class="kd-local-empty">暂无本地缓存牌谱，请粘贴雀魂牌谱链接进行检讨</div>`;
       return;
     }
 
@@ -70,57 +70,3 @@ async function loadLocalCachedRecords() {
   }
 }
 
-function initLocalFileDropzone() {
-  const dropzone = $("fileDropzone");
-  const fileInput = $("localFileInput");
-  if (!dropzone || !fileInput) return;
-
-  dropzone.addEventListener("click", () => {
-    fileInput.click();
-  });
-
-  fileInput.addEventListener("change", (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    readAndAnalyzeFile(file);
-    fileInput.value = "";
-  });
-
-  dropzone.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropzone.classList.add("is-dragover");
-  });
-
-  dropzone.addEventListener("dragleave", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropzone.classList.remove("is-dragover");
-  });
-
-  dropzone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropzone.classList.remove("is-dragover");
-    const file = e.dataTransfer?.files?.[0];
-    if (!file) return;
-    readAndAnalyzeFile(file);
-  });
-}
-
-function readAndAnalyzeFile(file) {
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const content = e.target?.result;
-    if (!content || typeof content !== "string") {
-      showToast("文件内容为空或无法读取", "error");
-      return;
-    }
-    showToast(`正在载入本地牌谱文件: ${file.name}`, "info");
-    startAnalysisFromInput(content);
-  };
-  reader.onerror = () => {
-    showToast(`读取文件失败: ${file.name}`, "error");
-  };
-  reader.readAsText(file, "utf-8");
-}

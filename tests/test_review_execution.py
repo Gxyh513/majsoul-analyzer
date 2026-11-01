@@ -36,6 +36,7 @@ def review():
 def review_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(app, "RECORDS_DIR", tmp_path / "records")
     monkeypatch.setattr(app, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(app, "REVIEWS_DIR", tmp_path / "reviews")
     monkeypatch.setattr(app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(app, "_review_tasks", set())
     monkeypatch.setattr(app, "_review_inflight", {})
@@ -60,8 +61,6 @@ def review_environment(monkeypatch, tmp_path):
 def analyze_payload(route):
     if route in ("paipu", "stream"):
         return {"paipu": UUID, "target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
-    if route == "json":
-        return {"content": EVENTS, "target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
     return {"target_actor": SEAT, "engine": MODEL_ID, "temperature": 0.0}
 
 
@@ -79,13 +78,13 @@ def request_result(client, route):
     return response.json()
 
 
-@pytest.mark.parametrize("route", ["paipu", "json", "demo", "stream"])
+@pytest.mark.parametrize("route", ["paipu", "demo", "stream"])
 def test_repeated_api_requests_run_inference_each_time(review_environment, tmp_path, route):
     client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
     assert request_result(client, route) == {**review(), "game_id": UUID}
     assert request_result(client, route) == {**review(), "game_id": UUID}
-    assert review_environment.call_count == 2
-    assert not (tmp_path / "reviews").exists()
+    assert review_environment.call_count == (2 if route == "demo" else 1)
+    assert (tmp_path / "reviews").exists() == (route != "demo")
     assert not (tmp_path / "metadata").exists()
 
 
@@ -384,3 +383,27 @@ def test_review_queue_rejects_excess_waiters(review_environment, monkeypatch):
                 e.set()
             await asyncio.gather(*(x for x in (first, second) if x is not None), return_exceptions=True)
     asyncio.run(scenario())
+
+
+
+def test_public_endpoints_reject_uploaded_json(review_environment):
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    assert client.post("/api/analyze/json", json={"content": EVENTS}).status_code in (404, 405)
+    response = client.post("/api/analyze/stream", json={"content": EVENTS})
+    assert response.status_code == 400
+    assert "JSON 上传" in response.text
+    assert review_environment.call_count == 0
+
+
+def test_seat_and_model_inputs_are_isolated_in_disk_cache(review_environment, tmp_path):
+    client = TestClient(app.app, base_url="http://127.0.0.1", client=("127.0.0.1", 12345))
+    request_result(client, "paipu")
+    assert review_environment.call_count == 1
+    # Different temperature must never reuse the same cached result.
+    async def review_other():
+        result = await app._run_review(UUID, EVENTS, META, SEAT, MODEL_ID, 0.9, cache_public=True)
+        assert result["game_id"] == UUID
+    asyncio.run(review_other())
+    assert review_environment.call_count == 2
+    for path in (tmp_path / "reviews").glob("*.json"):
+        assert "model_path" not in path.read_text(encoding="utf8")

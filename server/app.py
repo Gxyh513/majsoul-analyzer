@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .storage_paths import storage_paths
-from . import ops_metrics
+from . import review_cache, ops_metrics
 from .admin_accounts import admin_router, start_manager, stop_manager, manager as admin_manager
 from .paipu_performance import (
     build_report as _build_performance_report, measure as _measure, performance as _performance,
@@ -150,6 +150,7 @@ async def _record_mjai_size(events: list[dict]) -> None:
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 CACHE_DIR, RECORDS_DIR = storage_paths(DATA_DIR)
+REVIEWS_DIR = CACHE_DIR.parent / "reviews"
 LEGACY_RECORDS_DIRS = (DATA_DIR / "records",) if RECORDS_DIR != DATA_DIR / "records" else ()
 MODELS_DIR = DATA_DIR / "models"
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -618,14 +619,6 @@ class AnalyzeStreamReq(BaseModel):
     accept_compression: str | None = None
 
 
-class AnalyzeJsonReq(BaseModel):
-    content: Any
-    target_actor: int = 0
-    engine: str = "auto"
-    temperature: float = 0.1
-    title: str | None = None
-
-
 class AnalyzeDemoReq(BaseModel):
     target_actor: int = 0
     engine: str = "auto"
@@ -678,6 +671,7 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
     eng_status["model_download"] = dict(cur_dl)
     return {
         "ok": True,
+        "storage": review_cache.storage_metrics(REVIEWS_DIR),
         "majsoul": {
             "logged_in": ms_client.logged_in,
             "account_pool_count": admin_manager().overview()["total"] if admin_manager() else len(get_all_configured_accounts()),
@@ -834,8 +828,6 @@ async def resolve_game_data(
         await _record_mjai_size(events)
         return "demo", events, meta, select_game_seat(meta, target_actor)
 
-    if content is None and raw_input.startswith(("{", "[")):
-        content = raw_input
     if content is not None:
         if isinstance(content, str):
             text = content.strip()
@@ -955,16 +947,25 @@ def _review_fingerprint(game_id: str, events: list[dict], meta: dict,
                         seat: int, engine: str, temperature: float) -> str:
     # Include source events and metadata, not just the public game UUID; uploaded
     # JSON with the same UUID must never reuse a different player's result.
-    packed = json.dumps([game_id, events, meta, seat, engine, temperature],
+    packed = json.dumps([MODEL_SHA256, REVIEW_SCHEMA, game_id, events, meta, seat, engine, temperature],
                         ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(packed.encode("utf8")).hexdigest()
 
 
 async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
-                            engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
-    # Coalesce both pending and running identical reviews without changing the
-    # single-inference guarantee. The existing worker remains owned until done.
+                            engine: str, temperature: float, progress_callback=None,
+                            cache_public: bool = False) -> asyncio.Task:
+    # A persistent cache is allowed only for URL-based paipu analysis, never
+    # for demo or internal JSON conversion.
     key = _review_fingerprint(game_id, mjai_events, meta, seat, engine, temperature)
+    if cache_public:
+        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
+        if cached is not None:
+            _set_performance_value("分析结果缓存", "命中")
+            if progress_callback is not None:
+                progress_callback(99.0, "已复用服务器缓存的牌谱检讨结果")
+            return asyncio.create_task(asyncio.sleep(0, result=cached))
+        _set_performance_value("分析结果缓存", "未命中")
     entry = _review_inflight.get(key)
     if entry is None:
         callbacks = []
@@ -983,6 +984,7 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             return await _start_review_job_owned(
                 game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                 engine=engine, temperature=temperature, progress_callback=emit_progress,
+                cache_key=key if cache_public else None,
             )
 
         started = asyncio.create_task(launch())
@@ -1015,7 +1017,8 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
 
 
 async def _start_review_job_owned(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
-                                  engine: str, temperature: float, progress_callback=None) -> asyncio.Task:
+                                  engine: str, temperature: float, progress_callback=None,
+                                  cache_key: str | None = None) -> asyncio.Task:
     global _review_waiters
     semaphore = review_semaphore
     if semaphore.locked():
@@ -1092,6 +1095,14 @@ async def _start_review_job_owned(*, game_id: str, mjai_events: list[dict], meta
                     cancelled = True
             if cancelled:
                 raise asyncio.CancelledError
+            # Free the CPU lane before performing the optional disk write.
+            release_once()
+            if cache_key is not None:
+                try:
+                    await asyncio.to_thread(review_cache.save, REVIEWS_DIR, cache_key,
+                                            _public_review_result(result))
+                except Exception:
+                    log_warning(事件="检讨结果缓存写入失败", 原因="缓存目录不可用")
             return result
         finally:
             release_once()
@@ -1120,9 +1131,9 @@ async def _start_review_job_owned(*, game_id: str, mjai_events: list[dict], meta
 
 
 async def _run_review(game_id: str, mjai_events: list[dict], meta: dict, seat: int,
-                      engine: str, temperature: float) -> dict[str, Any]:
+                      engine: str, temperature: float, *, cache_public: bool = False) -> dict[str, Any]:
     task = await _start_review_job(game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
-                                   engine=engine, temperature=temperature)
+                                   engine=engine, temperature=temperature, cache_public=cache_public)
     return await asyncio.shield(task)
 
 
@@ -1201,16 +1212,8 @@ async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Re
     async def work():
         await _wait_for_model_download(req.engine)
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
-        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
-    return await _run_nonstream_until_disconnect(request, response, work())
-
-
-@app.post("/api/analyze/json")
-async def api_analyze_json(req: AnalyzeJsonReq, request: Request, response: Response):
-    async def work():
-        await _wait_for_model_download(req.engine)
-        game_id, mjai_events, meta, seat = await resolve_game_data(content=req.content, target_actor=req.target_actor)
-        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
+        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature,
+                                 cache_public=(game_id != "demo"))
     return await _run_nonstream_until_disconnect(request, response, work())
 
 
@@ -1264,6 +1267,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
     request_id = getattr(request.state, "sse_request_id", None) if request is not None else None
     request_started = getattr(request.state, "sse_request_started", None) if request is not None else None
     request_id = request_id or uuid.uuid4().hex
+    if req.content is not None:
+        raise HTTPException(status_code=400, detail="已停止支持 JSON 上传，请使用雀魂牌谱链接。")
     try:
         normalize_model_id(req.engine)
     except ValueError as exc:
@@ -1304,7 +1309,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
             try:
                 resolve_task = asyncio.create_task(resolve_game_data(
-                    paipu=req.paipu, content=req.content, target_actor=req.target_actor
+                    paipu=req.paipu, target_actor=req.target_actor
                 ))
                 async with aclosing(wait_for_phase(resolve_task, "progress", 5, "正在准备牌谱数据")) as updates:
                     async for update in updates:
@@ -1353,6 +1358,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 start_task = asyncio.create_task(_start_review_job(
                     game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                     engine=req.engine, temperature=req.temperature, progress_callback=on_progress,
+                    cache_public=(req.content is None and game_id != "demo" and bool(req.paipu)),
                 ))
                 async with aclosing(wait_for_phase(start_task, "queued", 5, "服务器正忙，当前正在排队中")) as updates:
                     async for update in updates:
