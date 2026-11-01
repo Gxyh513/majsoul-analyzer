@@ -13,18 +13,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   const initSpeedSel = $("playSpeedSelect");
   if (initSpeedSel) initSpeedSel.value = String(state.playSpeed || "1");
   bindEvents();
-  await refreshServerStatus();
 
-  // Check URL query for paipu parameter
-  const urlParams = new URLSearchParams(window.location.search);
-  const paipuParam = urlParams.get("paipu");
-  if (paipuParam) {
-    const input = $("homePaipuInput");
-    if (input) input.value = paipuParam;
-    await startAnalysisFromInput(paipuParam);
-  } else {
-    const input = $("homePaipuInput");
-    if (input) input.value = "";
-    showTier(1);
+  // Reloading an analysis page always returns to the landing screen. An old
+  // ?paipu= link must never trigger a network request or a new review.
+  // Keep unrelated query parameters (for example backend selection) intact.
+  const url = new URL(window.location.href);
+  if (url.searchParams.has("paipu")) {
+    url.searchParams.delete("paipu");
+    window.history.replaceState(null, "", url.toString());
   }
+  showTier(1);
+  await refreshServerStatus();
 });

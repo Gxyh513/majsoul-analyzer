@@ -230,9 +230,7 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     currentReviewSource = source;
     applyPerspective(result, false);
     showTier(2);
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("paipu", source.identity);
-    window.history.pushState(null, "", newUrl.toString());
+    // Review navigation stays in memory; refreshing must not reopen a paipu.
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);
     logReviewViewCompletion(timings, version);

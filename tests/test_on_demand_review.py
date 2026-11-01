@@ -37,7 +37,7 @@ const showAnalysisError=(message, retry)=>errors.push({message,retry});
 const updateEngineStatusDisplay=()=>{}, renderSummaryDashboard=()=>{}, showTier=()=>{}, showToast=()=>{};
 const selectKyoku=(n)=>{state.kyokuIdx=n;state.stepIdx=0}, setStep=n=>state.stepIdx=n;
 const cancelScheduledStep=()=>{}, togglePlay=()=>{}, getPlayerDisplayName=s=>`seat${s}`;
-const window={location:{href:'https://example.test/'},history:{pushState(){}}};
+const window={location:{href:'https://example.test/'},history:{pushState(){throw Error('analysis must not add paipu URL history')}}};
 ''' + parse_code + constants + code + r'''
 const watchdog = setTimeout(()=>{console.error('async test timed out'); process.exit(1)}, 5000);
 (async () => {
