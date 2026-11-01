@@ -21,6 +21,7 @@ from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA, valid_review_sourc
 CACHE_TTL_SECONDS = 24 * 3600
 CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 CACHE_ENTRY_LIMIT_BYTES = 20 * 1024 * 1024
+LOW_DISK_WARNING_BYTES = 512 * 1024 * 1024
 _KEY = re.compile(r"[0-9a-f]{64}")
 _cache_lock = threading.RLock()
 
@@ -124,7 +125,10 @@ def storage_metrics(directory: Path) -> dict:
         capacity = shutil.disk_usage(directory if directory.is_dir() else directory.parent)
         return {"entries": len(entries), "bytes": sum(entries),
                 "budget_bytes": CACHE_BUDGET_BYTES, "free_bytes": capacity.free,
-                "disk_total_bytes": capacity.total}
+                "disk_total_bytes": capacity.total,
+                "low_disk_space": capacity.free < LOW_DISK_WARNING_BYTES,
+                "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}
     except OSError:
         return {"entries": 0, "bytes": 0, "budget_bytes": CACHE_BUDGET_BYTES,
-                "free_bytes": None, "disk_total_bytes": None}
+                "free_bytes": None, "disk_total_bytes": None,
+                "low_disk_space": None, "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}

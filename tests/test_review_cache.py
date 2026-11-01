@@ -76,3 +76,15 @@ def test_symlink_does_not_leak_external_cache_data(tmp_path):
     (cache_dir / ("f" * 64 + ".json")).symlink_to(external)
     assert review_cache.load(cache_dir, "f" * 64, result()["game_id"], 0) is None
     assert review_cache.storage_metrics(cache_dir)["entries"] == 0
+
+
+def test_storage_space_warning_is_numeric_only(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(review_cache.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=100, total=1000))
+    limited = review_cache.storage_metrics(tmp_path)
+    assert limited["low_disk_space"] is True
+    assert limited["warning_threshold_bytes"] == 512 * 1024 * 1024
+    monkeypatch.setattr(review_cache.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=2 * 1024**3, total=4 * 1024**3))
+    assert review_cache.storage_metrics(tmp_path)["low_disk_space"] is False
