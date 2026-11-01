@@ -23,8 +23,11 @@ CACHE_TTL_SECONDS = 24 * 3600
 CACHE_BUDGET_BYTES = 256 * 1024 * 1024
 CACHE_ENTRY_LIMIT_BYTES = 20 * 1024 * 1024
 LOW_DISK_WARNING_BYTES = 512 * 1024 * 1024
+# Lazy housekeeping: no permanent scheduler and no work while the service is idle.
+CACHE_HOUSEKEEPING_SECONDS = 60 * 60
 _KEY = re.compile(r"[0-9a-f]{64}")
 _cache_lock = threading.RLock()
+_last_cleanup: dict[Path, float] = {}
 
 
 def _cache_path(directory: Path, key: str) -> Path:
@@ -36,6 +39,7 @@ def _cache_path(directory: Path, key: str) -> Path:
 def load(directory: Path, key: str, game_id: str, seat: int):
     """Return a verified, unexpired review, never following symbolic links."""
     path = _cache_path(directory, key)
+    _maybe_cleanup(directory)
     try:
         if path.is_symlink():
             return None
@@ -93,12 +97,36 @@ def save(directory: Path, key: str, result: dict) -> bool:
             os.replace(temporary, path)
             temporary = None
             _evict(directory)
+            _last_cleanup[directory] = time.monotonic()
             return True
         except OSError:
             return False
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
+
+def _maybe_cleanup(directory: Path) -> None:
+    """Prune expired public reviews on reads/status, at most hourly per directory.
+
+    Uses the same lock as writes. No daemon, timer, or raw-record deletion.
+    """
+    directory = Path(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        return
+    with _cache_lock:
+        now = time.monotonic()
+        last = _last_cleanup.get(directory)
+        if last is not None and now - last < CACHE_HOUSEKEEPING_SECONDS:
+            return
+        try:
+            _evict(directory)
+        except OSError:
+            return
+        _last_cleanup[directory] = now
+        # Keep memory bounded even if callers use many temporary directories.
+        if len(_last_cleanup) > 32:
+            _last_cleanup.pop(next(iter(_last_cleanup)))
 
 
 def _evict(directory: Path):
@@ -130,6 +158,7 @@ def _evict(directory: Path):
 def storage_metrics(directory: Path) -> dict:
     """No filenames, paths, UUIDs or user data are ever returned."""
     directory = Path(directory)
+    _maybe_cleanup(directory)
     try:
         entries = [p.stat().st_size for p in directory.glob("[0-9a-f]*.json")
                    if _KEY.fullmatch(p.stem) and not p.is_symlink()]
