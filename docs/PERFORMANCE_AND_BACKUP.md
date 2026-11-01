@@ -59,4 +59,8 @@ python -m scripts.benchmark_replay
 
 ## 依赖可重复性
 
-当前仓库固定 Mortal 原生源码提交和 ONNX 模型 SHA-256，但 Python 依赖仍是版本范围，因此运行环境仍可能受到依赖升级影响。正式固定精确版本应使用在生产构建上确认兼容的 `pip freeze`、完整测试通过结果与安全更新计划，不应盲目填入未经验证的版本号。
+生产 Docker 构建现在安装 `requirements.lock.txt` 中的 **28 个精确版本**，来自 2026-11-01
+完整模型构建与测试通过的 CI 运行 41271373222，在安装测试工具前的 Python 3.12 镜像中执行 `pip freeze` 采集。
+`requirements.txt` 保留为上层依赖声明。每次更新锁文件必须在相同 Python 3.12 / Linux 目标环境验证、
+检查依赖安全性，再跑完整模型与麻将回放测试。CI 对照镜像实际 `pip freeze` 和锁文件，防止漂移。
+这锁定了版本，但尚未锁 wheel 文件哈希与基础镜像 digest，不应声称跨平台位级可重现。
