@@ -145,7 +145,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 数据与安全
 
-本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。历史浏览器和后端检讨缓存不再使用，但不会自动删除。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
+本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。完整的公开牌谱检讨结果缓存于持久化目录 `reviews/`（默认 `/mnt/workspace/majsoul-analyzer/reviews/`），保存 24 小时、总容量上限 256 MiB；内置演示及内部 JSON 输入不会写入。原始牌谱仍永久保存在 `records/`，不可与检讨缓存混淆。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 

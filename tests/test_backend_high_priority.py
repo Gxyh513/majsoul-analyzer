@@ -634,11 +634,12 @@ def test_uploaded_metadata_start_time_is_preserved_on_every_review(monkeypatch):
 
 @pytest.mark.parametrize("route", ["paipu", "demo", "stream"])
 @pytest.mark.parametrize("caller", ["pages_proxy", "local"])
-def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypatch, route, caller):
+def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypatch, tmp_path, route, caller):
     monkeypatch.setenv("MAJSOUL_API_TOKEN", "synthetic-api-token")
     monkeypatch.setenv("MAJSOUL_ALLOWED_ORIGINS", "https://majsoul.ccwu.cc")
     monkeypatch.setattr(server_app, "review_semaphore", asyncio.Semaphore(1))
     monkeypatch.setattr(server_app, "_review_tasks", set())
+    monkeypatch.setattr(server_app, "REVIEWS_DIR", tmp_path / "reviews")
     monkeypatch.setattr(server_app, "model_download_state", {"status": "idle"})
     monkeypatch.setattr(server_app, "engine_mgr", SimpleNamespace(
         get_mortal=lambda _: (SimpleNamespace(weight_sha256=SHA), MODEL_ID, None),
@@ -679,7 +680,7 @@ def test_analysis_responses_hide_engine_paths_without_mutating_results(monkeypat
         assert "private_debug" not in result["engine"]
         assert valid_review_source(result, SHA)
         assert result["meta"] == {"label": "preserved"}
-        assert len(results) == attempt + 1
+        assert len(results) == (attempt + 1 if route == "demo" else 1)
         assert results[-1]["engine"]["model_path"] == private_path
         assert results[-1]["engine"]["private_debug"]["path"] == private_path
 
