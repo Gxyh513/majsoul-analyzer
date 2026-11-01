@@ -22,7 +22,7 @@ jobs:
       - name: 本机真实模型 API 基线（4 请求、并发 2）
         timeout-minutes: 5
         run: |
-          docker run --rm -d --name majsoul-ci-baseline -p 127.0.0.1:7860:7860 majsoul-analyzer-onnx
+          docker run --rm -d --name majsoul-ci-baseline -e MAJSOUL_API_TOKEN=ci-local-only-benchmark -p 127.0.0.1:7860:7860 majsoul-analyzer-onnx
           trap 'docker rm -f majsoul-ci-baseline >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 45); do
             if curl -fsS --max-time 2 http://127.0.0.1:7860/api/status -o /dev/null; then break; fi
