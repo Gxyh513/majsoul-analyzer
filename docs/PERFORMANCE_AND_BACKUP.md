@@ -57,6 +57,22 @@ python -m scripts.benchmark_api --url http://127.0.0.1:7860 --requests 8 --concu
 可信 `/api/status` 同时提供最近请求阶段分位数、成功/失败数量、当前排队及 Linux RSS（进程内，重启清空）。
 不经实际运行不可虚报 ModelScope 生产 P95 或内存改善。
 
+## 生产环境只读性能采样
+
+生产后端的可信 `GET /api/status` 已包含最近最多 256 次分析的阶段 P50/P95、推理队列、当前进程 RSS 和检讨缓存空间信息。可以在**自己能够安全提供服务端 API Token 的可信终端**执行：
+
+```bash
+python -m scripts.sample_service_performance --url https://gxyh513-majsoul-analyzer.ms.show --samples 3 --interval-seconds 30
+```
+
+只从环境变量 `MAJSOUL_API_TOKEN` 获取 Token；不要把 Token 放进 URL、命令行参数、仓库或日志。该工具最多采样 12 次，多次采样至少间隔 5 秒，只发送状态 GET 请求，不触发牌谱抓取或 AI 推理；只输出经过白名单筛选的汇总数值，不打印账号、UUID、昵称、密钥、请求原文或服务端原始 JSON。无 Token 或权限不足时会明确失败，**不会把匿名健康状态误认为可信性能指标**。
+
+`latest.latency_ms` 是最后一次读取时后端进程的**滚动窗口** P50/P95，并非本采样工具统计的全时段分位数；如果最近没有分析请求，`status=no_recent_requests`，不能据此得出性能结论。`max_observed_rss_bytes` 和 `max_observed_queue_waiting` 只是多次读数的最大值，**不代表内存峰值或整段时间内的最大队列**，也没有 CPU 峰值数据。进程重启或 ModelScope 休眠会清空进程内历史。应结合 ModelScope 平台提供的 CPU、内存监控和真实业务访问时段对照分析；不要对生产地址运行批量压测、凭空宣布优化收益或依照 CI 最快配置直接调整 ONNX 线程。
+
+## 公开检讨缓存维护
+
+`reviews/` 与永久的 `records/` 分离。24 小时 TTL、256 MiB 上限及低磁盘拒绝写入仍然生效。为了避免空闲缓存持续占用空间，缓存读取和可信 `/api/status` 检查会**每个进程/目录最多每小时**进行一次惰性清理；保存缓存时也会清理。只匹配检讨缓存文件名，不访问或清理永久牌谱、账号数据库及私人 JSON。没有访问、状态检查或写入时**不会自动唤醒后台清理**，多进程各自有独立的清理计时。
+
 ## ONNX CPU 性能基准
 
 在安装原生 `libriichi` 并拥有已校验的固定 `model.onnx` 的机器上，在仓库根目录运行：
