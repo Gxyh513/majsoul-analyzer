@@ -2,11 +2,6 @@
 // Event Bindings
 // ============================================================================
 function bindEvents() {
-  $("landingModelCard")?.addEventListener("click", async () => {
-    openModal("engineModal");
-    await refreshServerStatus();
-  });
-
   // Tier 1 Submit
   $("btnHomeAnalyze")?.addEventListener("click", () => {
     const val = $("homePaipuInput")?.value.trim();
