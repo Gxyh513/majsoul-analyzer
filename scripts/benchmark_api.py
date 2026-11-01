@@ -54,13 +54,15 @@ async def benchmark(base_url: str, total: int, concurrency: int, *, token: str =
     if client is not None:
         await asyncio.gather(*(run_one(client) for _ in range(total)))
     else:
-        async with httpx.AsyncClient(base_url=base_url, timeout=180.0,
+        async with httpx.AsyncClient(base_url=base_url, timeout=180.0, trust_env=False,
                                      limits=httpx.Limits(max_connections=concurrency)) as http:
             await asyncio.gather(*(run_one(http) for _ in range(total)))
     elapsed = time.perf_counter() - started
     successes = [ms for ms, status in records if status is not None and 200 <= status < 300]
     return {"requests": total, "concurrency": concurrency,
             "completed_2xx": len(successes), "failed": total - len(successes),
+            "status_counts": {str(code) if code is not None else "network_error": sum(x == code for _, x in records)
+                              for code in sorted({code for _, code in records}, key=lambda x: x if x is not None else -1)},
             "duration_s": round(elapsed, 3),
             "throughput_rps": round(total / elapsed, 3) if elapsed else None,
             "latency_ms": {"p50": _percentile(successes, 0.5),
@@ -77,6 +79,8 @@ def main():
     result = asyncio.run(benchmark(args.url, args.requests, args.concurrency,
                                    token=os.environ.get("MAJSOUL_API_TOKEN", "")))
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result["failed"]:
+        raise SystemExit("本机演示牌谱基准存在失败请求")
 
 
 if __name__ == "__main__":
