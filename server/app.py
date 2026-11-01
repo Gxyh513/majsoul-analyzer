@@ -1053,6 +1053,13 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
         if isinstance(source_info, tuple) and len(source_info) == 2 and source_info[0] == game_id:
             disk_key = _public_raw_review_key(game_id, source_info[1], seat, engine, temperature)
         cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, disk_key, game_id, seat)
+        if cached is None and disk_key != key:
+            # A review saved before the raw-key optimization can still be
+            # reused on the first revisit. Rewrite on demand under the new key
+            # so later requests skip conversion; normal eviction bounds space.
+            cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
+            if cached is not None:
+                await asyncio.to_thread(review_cache.save, REVIEWS_DIR, disk_key, cached)
         if cached is not None:
             _set_performance_value("分析结果缓存", "命中")
             if progress_callback is not None:
@@ -1418,8 +1425,19 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
             # decode or MJAI conversion; the stream framing remains unchanged.
             cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature)
             if cached is not None:
+                stats["mode"] = "公开牌谱缓存快速命中"
+                completed_at = time.perf_counter()
+                stats["100%事件生成时间"] = (completed_at - stats["_started"]) * 1000
+                if request_started is not None:
+                    stats["ASGI请求至100%事件生成"] = (completed_at - request_started) * 1000
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '已复用公开牌谱缓存'}, ensure_ascii=False)}\n\n"
-                yield _complete_review_event(cached)
+                event = _complete_review_event(cached)
+                completion_at = time.perf_counter()
+                stats["complete事件生成时间"] = (completion_at - stats["_started"]) * 1000
+                if request_started is not None:
+                    stats["ASGI请求至complete事件生成"] = (completion_at - request_started) * 1000
+                stats["100%至complete事件生成间隔"] = (completion_at - completed_at) * 1000
+                yield event
                 return
 
             yield f"data: {json.dumps({'type': 'progress', 'percent': 5, 'message': '正在解析输入并准备牌谱数据...'}, ensure_ascii=False)}\n\n"
