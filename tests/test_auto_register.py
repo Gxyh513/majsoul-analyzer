@@ -23,6 +23,11 @@ from server.admin_accounts import AccountScheduler, AccountStore, start_manager,
 
 
 @pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
 def store(tmp_path: Path) -> AccountStore:
     db_file = tmp_path / "test_admin.sqlite3"
     return AccountStore(db_file)
@@ -191,6 +196,8 @@ def test_task_lock_prevents_duplicate_executions(store: AccountStore):
     assert store.acquire_auto_register_lock(inst1, timeout_sec=10) is True
     # 实例2在锁未过期时获取失败
     assert store.acquire_auto_register_lock(inst2, timeout_sec=10) is False
+    # Re-entrant acquisition by the same process must also be rejected.
+    assert store.acquire_auto_register_lock(inst1, timeout_sec=10) is False
 
     # 实例1释放锁
     store.release_auto_register_lock(inst1)
@@ -360,3 +367,90 @@ def test_ensure_private_repo_force_update(monkeypatch, tmp_path: Path):
 
     assert reg_dir == target_dir
     assert old_file.read_text(encoding="utf-8") == "# new version updated\n"
+
+
+@pytest.mark.anyio
+async def test_scheduled_registration_waits_for_persisted_due_date(monkeypatch, store, tmp_path):
+    """On first startup, never replace a persisted future deadline with now."""
+    from server import account_register as reg
+    monkeypatch.setattr(reg, "DEFAULT_REGISTER_INTERVAL_SECONDS", 0.15)
+    monkeypatch.setattr(reg, "SCHEDULER_POLL_SECONDS", 0.02)
+    due = time.time() + 0.10
+    store.update_auto_register_state(enabled=1, last_run_at=None, next_run_at=due)
+    event = asyncio.Event()
+    calls = []
+
+    async def fake_attempt(**kwargs):
+        calls.append(time.time())
+        event.set()
+        return {"ok": True}
+
+    monkeypatch.setattr(reg, "register_and_ingest", fake_attempt)
+    scheduler = AutoRegisterScheduler(store, tmp_path)
+    scheduler.start()
+    try:
+        await asyncio.sleep(0.025)
+        assert calls == []
+        assert store.get_auto_register_state()["next_run_at"] == due
+        await asyncio.wait_for(event.wait(), 1)
+        assert calls[0] >= due - 0.01
+        assert scheduler.overview()["scheduler_alive"] is True
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.anyio
+async def test_resume_wakes_paused_scheduler_immediately_when_due(monkeypatch, store, tmp_path):
+    from server import account_register as reg
+    monkeypatch.setattr(reg, "SCHEDULER_POLL_SECONDS", 30)
+    store.update_auto_register_state(enabled=0, last_run_at=None, next_run_at=time.time() - 5)
+    event = asyncio.Event()
+    calls = []
+
+    async def fake_attempt(**kwargs):
+        calls.append(time.time())
+        event.set()
+        return {"ok": True}
+
+    monkeypatch.setattr(reg, "register_and_ingest", fake_attempt)
+    scheduler = AutoRegisterScheduler(store, tmp_path)
+    scheduler.start()
+    try:
+        await asyncio.sleep(0)
+        assert calls == []
+        active = scheduler.toggle(True)
+        assert active["enabled"] is True
+        await asyncio.wait_for(event.wait(), 1)
+        assert len(calls) == 1
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.anyio
+async def test_scheduler_survives_one_unhandled_attempt_error(monkeypatch, store, tmp_path):
+    from server import account_register as reg
+    monkeypatch.setattr(reg, "DEFAULT_REGISTER_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(reg, "SCHEDULER_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(reg, "SCHEDULER_ERROR_RETRY_SECONDS", 0.02)
+    store.update_auto_register_state(enabled=1, last_run_at=None, next_run_at=time.time() - 1)
+    event = asyncio.Event()
+    count = 0
+
+    async def sometimes_fails(**kwargs):
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise OSError("temporary filesystem problem")
+        event.set()
+        return {"ok": True}
+
+    monkeypatch.setattr(reg, "register_and_ingest", sometimes_fails)
+    scheduler = AutoRegisterScheduler(store, tmp_path)
+    scheduler.start()
+    try:
+        await asyncio.wait_for(event.wait(), 1)
+        assert count >= 2
+        assert scheduler.task is not None and not scheduler.task.done()
+        assert store.get_auto_register_state()["last_status"] in ("调度异常", "运行中")
+    finally:
+        await scheduler.stop()

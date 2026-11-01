@@ -189,8 +189,8 @@ class AccountStore:
             cur = db.execute(
                 """UPDATE auto_register_state
                    SET locked_until=?, locked_by=?
-                   WHERE id=1 AND (locked_until < ? OR locked_by=?)""",
-                (now + timeout_sec, instance_id, now, instance_id),
+                   WHERE id=1 AND locked_until < ?""",
+                (now + timeout_sec, instance_id, now),
             )
             db.commit()
             return cur.rowcount > 0
