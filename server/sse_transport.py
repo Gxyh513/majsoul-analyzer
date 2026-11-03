@@ -89,12 +89,13 @@ class _SSESendMetricsMiddleware:
             compression_ms = 0.0
             send_wait_ms = 0.0
             try:
-                # Large complete frames are sent incrementally; every gzip slice
-                # is flushed so downstream can consume it before the stream ends.
-                parts = range(0, len(body), 65536) if event == "complete" else (0,)
+                # Group large complete frames into fewer sends and gzip flushes.
+                # Consumers parse this event only after its terminating newline.
+                complete_chunk_bytes = 256 * 1024
+                parts = range(0, len(body), complete_chunk_bytes) if event == "complete" else (0,)
                 for offset in parts:
-                    raw = body[offset:offset + 65536] if event == "complete" else body
-                    last = event != "complete" or offset + 65536 >= len(body)
+                    raw = body[offset:offset + complete_chunk_bytes] if event == "complete" else body
+                    last = event != "complete" or offset + complete_chunk_bytes >= len(body)
                     more = message.get("more_body", False) if last else True
                     if compressor is not None:
                         compression_started = time.perf_counter()

@@ -165,7 +165,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 前端资源组织
 
-前端 JavaScript 由 `web/index.html` 按依赖顺序加载，`web/app.js` 负责初始化。CSS 文件现在由 HTML 中的多个 `<link rel="stylesheet">` 直接按序加载，避免单一 `styles.css` 的 `@import` 请求瀑布；旧的 `web/styles.css` 继续保留作兼容入口。部分大体积牌面 SVG 已移除 Inkscape/Sodipodi 编辑器元数据，不修改 SVG 标准绘图节点。
+前端 JavaScript 由 `web/index.html` 按依赖顺序加载，`web/app.js` 负责初始化。CSS 文件现在由 HTML 中的多个 `<link rel="stylesheet">` 直接按序加载，避免单一 `styles.css` 的 `@import` 请求瀑布；旧的 `web/styles.css` 继续保留作兼容入口。全部 38 个牌面 SVG 均已移除 Inkscape/Sodipodi 编辑器元数据和注释，不修改 SVG 标准绘图节点；文件总体积从 708,336 字节降至 644,544 字节，减少 63,792 字节（约 9.0%）。
 
 项目不保留测试文件，也不设置自动构建和验证工作流；GitHub Actions 仅保留 ModelScope 部署。
 
@@ -180,3 +180,12 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 ## 运行期间性能汇总
 
 通过带有效 API 令牌的 `GET /api/status` 可读取 `performance_recent`，包含最近最多 256 次分析请求的总耗时、排队、ONNX 推理和结果大小的 P50/P95。仅保存在当前服务进程的有界内存中，重启清空；不存储用户昵称、牌谱编号或 IP。匿名状态接口不包含这些统计。不同实例分别统计，不应将单进程分位数直接视为全站压测结果。
+
+## 补充性能优化
+
+- SSE 流式分析的进度等待同时监听进度队列和任务完成通知，不再每 250 毫秒轮询；保留 10 秒心跳。大型 complete 事件按 256 KiB 分块发送。
+- SSE 分析解析器和诊断逻辑在首次发起分析时才加载，首页初始 API 脚本不再携带完整流式解析代码。
+- 回放中手牌和牌河 DOM 只在对应 HTML 变化时替换；牌面异步解码，11 个前端脚本保持执行顺序并使用 `defer`。
+- 全部 38 个牌面 SVG 仅清理编辑器元数据与注释；原始绘图节点保持不变。
+- 雀魂抓谱优先选择最久未尝试的空闲账号；每小时账号检测最多并发 3 个会话。网关 routes 发现合并并发请求；限流冷却条目与网关失效记录过期后回收；指定客户端的登录和换线重试都使用该客户端。
+- 可以设置 `MAJSOUL_REVIEW_MAX_WAITERS`（1–32，默认 4）及 `MAJSOUL_REVIEW_QUEUE_TIMEOUT_SECONDS`（15–300 秒，默认 90）。默认 ONNX 推理并发仍为 1，避免未经负载评估增加内存压力。
