@@ -1,6 +1,15 @@
 // ============================================================================
 // Board Rendering (KillerDucky 4-Player Layout with Green Discard Bars)
 // ============================================================================
+// Keep stable Mahjong tiles attached while scrubbing adjacent replay steps.
+// This avoids repeatedly decoding identical SVGs and rebuilding entire hands.
+function updateBoardMarkup(element, html) {
+  if (element && element.__boardMarkup !== html) {
+    element.innerHTML = html;
+    element.__boardMarkup = html;
+  }
+}
+
 function renderBoard(kyoku, snap, activeDecision) {
   const hero = state.targetActor;
 
@@ -42,7 +51,7 @@ function renderBoard(kyoku, snap, activeDecision) {
     for (let i = 0; i < 5; i++) {
       const m = markers[i];
       const img = m ? `/tiles/${encodeURIComponent(m)}.svg` : getTileBackSrc();
-      doraHtml += `<div class="tileDiv"><img src="${img}" class="tileImg"></div>`;
+      doraHtml += `<div class="tileDiv"><img decoding="async" src="${img}" class="tileImg"></div>`;
     }
     // Keep identical dora indicator DOM nodes alive between replay steps.
     if (dorasEl.__doraHtml !== doraHtml) {
@@ -221,13 +230,13 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
       if (isLast) divCls.push("has-last-discard");
       if (r.called) divCls.push("called");
 
-      rowHtml += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
+      rowHtml += `<div class="${divCls.join(" ")}" title="${escapeHtml(tip)}"><img decoding="async" src="/tiles/${encodeURIComponent(r.pai)}.svg" class="${cls.join(" ")}"></div>`;
     }
     rowHtml += `</div>`;
     html += rowHtml;
   }
 
-  container.innerHTML = html;
+  updateBoardMarkup(container, html);
 }
 
 function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor = null, isRon = false, nextSnap = null) {
@@ -293,20 +302,20 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
   let handHtml = "";
   hand.forEach((pai, idx) => {
     const isAct = highlightedIdxs.has(idx);
-    handHtml += `<div class="tileDiv" data-pai="${escapeHtml(pai)}"><img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""}"></div>`;
+    handHtml += `<div class="tileDiv" data-pai="${escapeHtml(pai)}"><img decoding="async" src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""}"></div>`;
   });
 
   if (drawn) {
     const isAct = highlightedIdxs.has(hand.length);
     const isWinTile = seat === winActor;
-    handHtml += `<div class="tileDiv is-drawn ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
+    handHtml += `<div class="tileDiv is-drawn ${isWinTile ? "agari-tile" : ""}" data-pai="${escapeHtml(drawn)}" title="${isWinTile ? `自摸: ${tileCn(drawn)}` : tileCn(drawn)}"><img decoding="async" src="/tiles/${encodeURIComponent(drawn)}.svg" class="tileImg ${isAct ? "tileImgHighlight" : ""} ${isWinTile ? "agari-tile" : ""}"></div>`;
   }
 
   if (isRon && seat === winActor && agariTile) {
-    handHtml += `<div class="tileDiv is-drawn agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${escapeHtml(tileCn(agariTile))}"><img src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
+    handHtml += `<div class="tileDiv is-drawn agari-tile" data-pai="${escapeHtml(agariTile)}" title="荣和: ${escapeHtml(tileCn(agariTile))}"><img decoding="async" src="/tiles/${encodeURIComponent(agariTile)}.svg" class="tileImg agari-tile"></div>`;
   }
   if (closedWrap.__lastHandMarkup !== handHtml) {
-    closedWrap.innerHTML = handHtml;
+    updateBoardMarkup(closedWrap, handHtml);
     closedWrap.__lastHandMarkup = handHtml;
   }
 
@@ -357,7 +366,7 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     const melds = snap.melds[seat] || [];
     const markup = renderCallsHtml(melds, seat, 0);
     if (callsWrap.__lastCallsMarkup !== markup) {
-      callsWrap.innerHTML = markup;
+      updateBoardMarkup(callsWrap, markup);
       callsWrap.__lastCallsMarkup = markup;
     }
   }
@@ -397,22 +406,22 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
   hand.forEach((pai, idx) => {
     const isThisDiscard = idx === highlightedIdx;
     const src = showTiles ? `/tiles/${encodeURIComponent(pai)}.svg` : backSrc;
-    html += `<div class="tileDiv"><img src="${src}" class="tileImg ${isThisDiscard ? "tileImgHighlight" : ""}"></div>`;
+    html += `<div class="tileDiv"><img decoding="async" src="${src}" class="tileImg ${isThisDiscard ? "tileImgHighlight" : ""}"></div>`;
   });
 
   if (drawn) {
     const isDrawnDiscard = highlightedIdx === 999;
     const src = showTiles ? `/tiles/${encodeURIComponent(drawn)}.svg` : backSrc;
-    html += `<div class="tileDiv is-drawn ${isWinner ? "agari-tile" : ""}"><img src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""} ${isDrawnDiscard ? "tileImgHighlight" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
+    html += `<div class="tileDiv is-drawn ${isWinner ? "agari-tile" : ""}"><img decoding="async" src="${src}" class="tileImg ${isWinner ? "agari-tile" : ""} ${isDrawnDiscard ? "tileImgHighlight" : ""}" title="${isWinner ? `自摸: ${tileCn(drawn)}` : ""}"></div>`;
   }
 
   if (isRon && isWinner && agariTile) {
     const src = `/tiles/${encodeURIComponent(agariTile)}.svg`;
-    html += `<div class="tileDiv is-drawn agari-tile"><img src="${src}" class="tileImg agari-tile" title="荣和: ${escapeHtml(tileCn(agariTile))}"></div>`;
+    html += `<div class="tileDiv is-drawn agari-tile"><img decoding="async" src="${src}" class="tileImg agari-tile" title="荣和: ${escapeHtml(tileCn(agariTile))}"></div>`;
   }
 
   if (closedWrap.__lastHandMarkup !== html) {
-    closedWrap.innerHTML = html;
+    updateBoardMarkup(closedWrap, html);
     closedWrap.__lastHandMarkup = html;
   }
 
@@ -421,7 +430,7 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
     const povSeat = pos === "Right" ? 1 : (pos === "Top" ? 2 : 3);
     const markup = renderCallsHtml(melds, seat, povSeat);
     if (callsWrap.__lastCallsMarkup !== markup) {
-      callsWrap.innerHTML = markup;
+      updateBoardMarkup(callsWrap, markup);
       callsWrap.__lastCallsMarkup = markup;
     }
   }
@@ -446,7 +455,7 @@ function renderCallsHtml(melds, seat, povSeat) {
       const cTiles = m.consumed?.length >= 4 ? m.consumed : (m.tiles?.length >= 4 ? m.tiles : [pai, pai, pai, pai]);
       for (let i = 0; i < 4; i++) {
         const src = (i === 0 || i === 3) ? backSrc : `/tiles/${encodeURIComponent(cTiles[i] || pai)}.svg`;
-        html += `<div class="tileDiv"><img src="${src}" class="tileImg"></div>`;
+        html += `<div class="tileDiv"><img decoding="async" src="${src}" class="tileImg"></div>`;
       }
       continue;
     }
@@ -499,7 +508,7 @@ function renderCallsHtml(melds, seat, povSeat) {
       if (isRotated) imgClasses.push("rotate");
       if (isFloated) imgClasses.push("float");
 
-      html += `<div class="${divClasses.join(" ")}"><img src="/tiles/${encodeURIComponent(tile)}.svg" class="${imgClasses.join(" ")}"></div>`;
+      html += `<div class="${divClasses.join(" ")}"><img decoding="async" src="/tiles/${encodeURIComponent(tile)}.svg" class="${imgClasses.join(" ")}"></div>`;
     }
   }
 
@@ -521,7 +530,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     const tile = pai || consumed[0];
     const tilesList = consumed.length >= 4 ? consumed.slice(0, 4) : (tile ? [tile, tile, tile, tile] : []);
     const tilesHtml = tilesList.length > 0
-      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="暗杠: ${tileCn(t)}">`).join("")}</div>`
+      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img decoding="async" src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="暗杠: ${tileCn(t)}">`).join("")}</div>`
       : "";
     return `
       <div class="kd-action-combo-wrap">
@@ -534,7 +543,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   }
   if (actType.includes("kakan") || actType.includes("加杠")) {
     const tile = pai || actionObj?.pai || actionObj?.consumed?.[0];
-    const tileHtml = tile ? `<div class="kd-action-combo-tiles"><img src="/tiles/${encodeURIComponent(tile)}.svg" class="tileImg" title="加杠: ${tileCn(tile)}"></div>` : "";
+    const tileHtml = tile ? `<div class="kd-action-combo-tiles"><img decoding="async" src="/tiles/${encodeURIComponent(tile)}.svg" class="tileImg" title="加杠: ${tileCn(tile)}"></div>` : "";
     return `
       <div class="kd-action-combo-wrap">
         <div class="action-badge action-badge-kan" title="加杠">
@@ -549,7 +558,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     const tile = pai || actionObj?.pai || consumed[0];
     const tilesList = consumed.length >= 3 ? consumed : (tile ? [tile, tile, tile] : []);
     const tilesHtml = tilesList.length > 0
-      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="明杠: ${tileCn(t)}">`).join("")}</div>`
+      ? `<div class="kd-action-combo-tiles">${tilesList.map((t) => `<img decoding="async" src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="明杠: ${tileCn(t)}">`).join("")}</div>`
       : "";
     return `
       <div class="kd-action-combo-wrap">
@@ -566,7 +575,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     if (pai && !comboTiles.includes(pai)) comboTiles.push(pai);
     comboTiles.sort((a, b) => tileSortOrder(a) - tileSortOrder(b));
     const tilesHtml = comboTiles.length > 0
-      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="吃: ${tileCn(t)}">`).join("")}</div>`
+      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img decoding="async" src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="吃: ${tileCn(t)}">`).join("")}</div>`
       : "";
     return `
       <div class="kd-action-combo-wrap">
@@ -581,7 +590,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
     const tile = pai || actionObj?.pai || actionObj?.consumed?.[0];
     const comboTiles = actionObj?.consumed?.length ? actionObj.consumed : (tile ? [tile, tile] : []);
     const tilesHtml = comboTiles.length > 0
-      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="碰: ${tileCn(t)}">`).join("")}</div>`
+      ? `<div class="kd-action-combo-tiles">${comboTiles.map((t) => `<img decoding="async" src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" title="碰: ${tileCn(t)}">`).join("")}</div>`
       : "";
     return `
       <div class="kd-action-combo-wrap">
@@ -595,7 +604,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   if (actType.includes("riichi") || actType.includes("reach") || actType.includes("立直")) {
     const reachTile = pai || actionObj?.pai;
     if (reachTile && reachTile !== "none" && reachTile !== "pass" && !reachTile.startsWith("none")) {
-      return `<img src="/tiles/${encodeURIComponent(reachTile)}.svg" class="tileImg" title="立直: ${tileCn(reachTile)}">`;
+      return `<img decoding="async" src="/tiles/${encodeURIComponent(reachTile)}.svg" class="tileImg" title="立直: ${tileCn(reachTile)}">`;
     }
     return `
       <div class="action-badge action-badge-riichi" title="立直">
@@ -614,7 +623,7 @@ function renderDecisionTileOrBadge(pai, actionObj, actionCn = "") {
   }
 
   if (pai && pai !== "none" && pai !== "pass" && !pai.startsWith("none")) {
-    return `<img src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg">`;
+    return `<img decoding="async" src="/tiles/${encodeURIComponent(pai)}.svg" class="tileImg">`;
   }
 
   const defaultLabel = actionCn ? escapeHtml(actionCn) : "等待";
