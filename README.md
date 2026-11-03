@@ -151,6 +151,18 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 
+## 后端模块结构
+
+`server/app.py` 仅承担应用初始化、共享依赖组装与剩余分析入口，按职责拆分为以下模块：
+
+- **API 与安全**：`api_security.py`、`api_schemas.py`、`api_status.py`、`api_accounts.py`、`api_local_records.py`、`api_stream.py`。
+- **检讨任务与缓存**：`game_data.py`、`review_jobs.py`、`public_review_cache.py`、`model_download.py`、`analysis_logging.py`、`sse_transport.py`。
+- **牌谱 AI**：`engine/reviewer.py` 编排流程；`engine/review_replay.py` 构建回放与观测；`engine/review_scoring.py` 处理 Q 值、决策评分和汇总；`engine/actions.py` 处理动作映射。
+- **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
+- **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
+
+为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录或 Pytest 配置。GitHub Actions 只做生产镜像构建、源码语法、应用导入/API 文档生成及内置演示牌谱的最小运行校验；这些检查不代表完整回归覆盖。
+
 ## 开发验证
 
 前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为普通脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
