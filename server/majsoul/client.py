@@ -41,10 +41,11 @@ CN_BASE = "https://game.maj-soul.com/1"
 CN_ORIGIN = "https://game.maj-soul.com"
 DEFAULT_RES_VERSION = "0.16.289"
 DEFAULT_PKG_VERSION = "4.0.51"
-LOCAL_PROTOCOL_VERSION = "0.11.252.w"
-# Hash of the parsed schema serialized with sorted keys and no extra whitespace.
-LOCAL_PROTOCOL_SHA256 = "3d9191ef064daeed099feb482501e2d24e7c1da80a738e9b671b4618f178fed2"
-BUNDLED_PROTOCOL_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
+# Re-export stable protocol constants and caches from the isolated loader.
+from .protocol_loader import (
+    LOCAL_PROTOCOL_VERSION, LOCAL_PROTOCOL_SHA256, BUNDLED_PROTOCOL_DIR,
+    _PROTOCOL_LOCK, _PROTOCOL_CACHE, _load_local_protocol, _local_protocol,
+)
 ROUTES_CACHE_TTL_SECONDS = 300
 # Bound individual network waits and give each download one overall retry budget.
 ROUTES_HTTP_TIMEOUT_SECONDS = 3
@@ -82,114 +83,10 @@ def _build_route_request_connection(route_id: str) -> bytes:
     return b"\x10\x01\x1a" + bytes([len(rid)]) + rid + b"\x20" + ts + b"\x32\x03Web"
 
 
-class MajsoulError(Exception):
-    def __init__(self, message: str, code: int | None = None):
-        super().__init__(message)
-        self.code = code
+from .errors import MajsoulError, MajsoulTokenInvalid
+from .paipu_links import decode_log_id, decode_account_id, parse_paipu, parse_paipu_seat
 
 
-class MajsoulTokenInvalid(MajsoulError):
-    """The server explicitly rejected a token; password fallback is allowed."""
-
-
-@lru_cache(maxsize=8)
-def _load_local_protocol(path: Path, file_state: tuple[int, int, int]) -> LiqiProto:
-    """Read and build the pinned schema once per unchanged file in this process."""
-    try:
-        with measure("Protobuf协议本地缓存读取耗时"):
-            raw = path.read_bytes()
-    except OSError as exc:
-        raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
-    try:
-        with measure("Protobuf JSON解析及协议初始化耗时"):
-            liqi = json.loads(raw)
-        normalized = json.dumps(liqi, sort_keys=True, separators=(",", ":")).encode("utf8")
-    except (ValueError, TypeError, UnicodeError) as exc:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
-    if hashlib.sha256(normalized).hexdigest() != LOCAL_PROTOCOL_SHA256:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 完整性校验失败，请恢复原文件。")
-    proto = _PROTOCOL_CACHE.get(LOCAL_PROTOCOL_SHA256)
-    if proto is not None:
-        return proto
-    try:
-        with measure("Protobuf JSON解析及协议初始化耗时"):
-            # The bundled schema predates the Unity WebGL device UUID field.
-            fields = liqi["nested"]["lq"]["nested"]["ClientDeviceInfo"]["fields"]
-            fields.setdefault("uuid", {"type": "string", "id": 14})
-            proto = LiqiProto(liqi)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
-    _PROTOCOL_CACHE[LOCAL_PROTOCOL_SHA256] = proto
-    return proto
-
-
-def _local_protocol(cache_dir: Path) -> LiqiProto:
-    filename = f"liqi-{LOCAL_PROTOCOL_VERSION}.json"
-    # lru_cache alone can construct the same entry twice under concurrent calls.
-    with _PROTOCOL_LOCK:
-        for path in (cache_dir / filename, BUNDLED_PROTOCOL_DIR / filename):
-            try:
-                path = path.resolve()
-                stat = path.stat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
-            return _load_local_protocol(path, (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-    raise MajsoulError(f"找不到本地雀魂协议文件 {filename}，请恢复随项目提供的协议文件。")
-
-
-# --------------------------------------------------------------------------
-# paipu id helpers (port of tensoul/deobfuse.js)
-# --------------------------------------------------------------------------
-def decode_log_id(s: str) -> str:
-    out = []
-    for i, ch in enumerate(s):
-        if "0" <= ch <= "9":
-            o = ord(ch) - 48
-        elif "a" <= ch <= "z":
-            o = ord(ch) - 97 + 10
-        else:
-            out.append(ch)
-            continue
-        o = (o + 55 - i) % 36
-        out.append(chr(o + 48) if o < 10 else chr(o - 10 + 97))
-    return "".join(out)
-
-
-def decode_account_id(n: int) -> int:
-    return (((n - 1358437) ^ 86216345) - 1117113) // 7
-
-
-def parse_paipu(text: str) -> tuple[str, int | None]:
-    """Accept a full share link or a raw id. Returns (game_uuid, account_id|None)."""
-    text = text.strip()
-    m = re.search(r"paipu=([^&#\s]+)", text)
-    pid = m.group(1) if m else text
-    seps = pid.split("_")
-    uuid_ = seps[0]
-    target = None
-    if len(seps) >= 3 and seps[2] == "2":
-        uuid_ = decode_log_id(uuid_)
-    if len(seps) >= 2 and seps[1]:
-        if seps[1][0] == "a":
-            target = decode_account_id(int(seps[1][1:]))
-        elif seps[1].isdigit():
-            target = int(seps[1])
-    if not re.fullmatch(r"\d{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", uuid_):
-        raise MajsoulError(f"无法识别的牌谱 ID: {pid}")
-    return uuid_, target
-
-
-def parse_paipu_seat(text: str) -> int | None:
-    match = re.search(r"paipu=([^&#\s]+)", text)
-    parts = (match.group(1) if match else text.strip()).split("_")
-    if len(parts) > 1 and parts[1] in ("0", "1", "2", "3"):
-        return int(parts[1])
-    return None
-
-
-# --------------------------------------------------------------------------
 class MajsoulClient:
     def __init__(self, cache_dir: Path, base: str = CN_BASE, origin: str = CN_ORIGIN):
         self.base = base
