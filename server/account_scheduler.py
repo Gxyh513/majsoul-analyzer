@@ -83,7 +83,16 @@ class AccountScheduler:
                 ]
                 idle = [acc for acc in possible if acc["id"] not in self.busy]
                 if idle:
-                    selected = random.choice(idle)
+                    # Spread the remote record quota across accounts that have
+                    # been idle the longest; randomize ties to avoid fixed bias.
+                    def last_attempt(acc: dict) -> float:
+                        return max(
+                            float(acc.get("last_success_at") or 0),
+                            float(acc.get("last_failure_at") or 0),
+                        )
+
+                    oldest_attempt = min(last_attempt(acc) for acc in idle)
+                    selected = random.choice([acc for acc in idle if last_attempt(acc) == oldest_attempt])
                     self.busy.add(selected["id"])
                     return selected
                 if not possible:
@@ -227,27 +236,57 @@ class AccountScheduler:
         raise HTTPException(status_code=503, detail="当前没有空闲且可用的雀魂账号")
 
     async def _check_idle_accounts(self):
-        for acc in await asyncio.to_thread(self.store.all):
-            if not acc["enabled"] or acc["auth_failed"] or acc["cooldown_until"] > time.time() or acc["id"] in self.busy:
-                continue
-            # Reserve the same slot used by regular download jobs; no races.
-            async with self.condition:
-                if acc["id"] in self.busy:
-                    continue
-                self.busy.add(acc["id"])
-            try:
-                client = self.clients.setdefault(acc["id"], MajsoulClient(self.cache_dir))
+        accounts = await asyncio.to_thread(self.store.all)
+        # A small fixed bound prevents a large pool from opening many
+        # simultaneous login sessions during the hourly health check.
+        semaphore = asyncio.Semaphore(3)
+
+        async def check_one(acc: dict):
+            account_pk = acc["id"]
+            async with semaphore:
+                async with self.condition:
+                    if account_pk in self.busy:
+                        return
+                    self.busy.add(account_pk)
                 try:
-                    await asyncio.wait_for(self._authenticate(acc, client), timeout=15)
+                    current = await asyncio.to_thread(self.store.get, account_pk)
+                    if (current is None or not current["enabled"] or current["auth_failed"]
+                            or current["cooldown_until"] > time.time()):
+                        return
+
+                    client = self.clients.setdefault(account_pk, MajsoulClient(self.cache_dir))
+                    try:
+                        await asyncio.wait_for(self._authenticate(current, client), timeout=15)
+                    except asyncio.CancelledError:
+                        try:
+                            await client.close()
+                        except Exception:
+                            pass
+                        raise
+                    except Exception as exc:
+                        if self._network_failure(exc):
+                            await client.close()
+                        else:
+                            await asyncio.to_thread(
+                                self.store.record_result, account_pk, success=False,
+                                elapsed_ms=0, error="账号检测失败", code=getattr(exc, "code", None),
+                                auth_failed=isinstance(exc, MajsoulTokenInvalid) or getattr(exc, "code", None) in (103, 104, 109, 1003, 1004),
+                            )
+                    finally:
+                        await asyncio.to_thread(self.store.checked, account_pk)
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
-                    if not self._network_failure(exc):
-                        await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
-                            elapsed_ms=0, error="账号检测失败", code=getattr(exc, "code", None),
-                            auth_failed=isinstance(exc, MajsoulTokenInvalid) or getattr(exc, "code", None) in (103, 104, 109, 1003, 1004))
+                    log_warning(事件="账号定时检测", 状态="失败", 错误原因=type(exc).__name__)
                 finally:
-                    await asyncio.to_thread(self.store.checked, acc["id"])
-            finally:
-                await self.release(acc["id"])
+                    try:
+                        await self.release(account_pk)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        log_warning(事件="账号定时检测", 状态="释放连接失败", 错误原因=type(exc).__name__)
+
+        await asyncio.gather(*(check_one(acc) for acc in accounts))
 
     async def periodic(self):
         while True:

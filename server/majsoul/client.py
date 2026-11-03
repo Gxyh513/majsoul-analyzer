@@ -53,6 +53,7 @@ RECORD_RPC_TIMEOUT_SECONDS = 3
 RECORD_HTTP_TIMEOUT_SECONDS = 3
 GATEWAY_FAILURE_COOLDOWN_SECONDS = 60
 _GATEWAY_FAILED_UNTIL: dict[str, float] = {}
+_ROUTE_DISCOVERY_LOCK = asyncio.Lock()
 _ROUTE_CACHE: dict[tuple, tuple[float, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
 DEFAULT_ROUTE_HOSTS = [
     "https://route-2.maj-soul.com",
@@ -141,35 +142,38 @@ class MajsoulClient(AuthMixin, RecordCodecMixin):
         cache_key = (self.package_version, tuple(DEFAULT_ROUTE_HOSTS))
         cached = _ROUTE_CACHE.get(cache_key)
         if cached is None or cached[0] <= time.monotonic():
-            domains: list[str] = []
-            route_ids: dict[str, str] = {}
-            route_hosts = list(DEFAULT_ROUTE_HOSTS)
-            random.shuffle(route_hosts)
-            try:
-                async with asyncio.timeout(ROUTES_DISCOVERY_TIMEOUT_SECONDS):
-                    async with httpx.AsyncClient(follow_redirects=True) as c:
-                        for gw in route_hosts:
-                            try:
-                                data = await self._http_json(
-                                    c,
-                                    f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
-                                    request_stage="雀魂routes线路请求耗时",
-                                )
-                                for rt in data.get("data", {}).get("routes", []):
-                                    if rt.get("state") != "maintenancing" and rt.get("domain"):
-                                        dom = rt["domain"]
-                                        domains.append(dom)
-                                        route_ids[dom] = rt.get("id") or dom.split(".")[0]
-                                if domains:
-                                    break
-                            except Exception as e:  # noqa: BLE001
-                                log_warning(事件="雀魂线路获取", 状态="失败", 网关=gw, 错误原因=str(e))
-            except TimeoutError as exc:
-                raise MajsoulError("获取雀魂服务器线路超时") from exc
-            if not domains:
-                raise MajsoulError("获取雀魂服务器线路失败")
-            cached = (time.monotonic() + ROUTES_CACHE_TTL_SECONDS, tuple(domains), tuple(route_ids.items()))
-            _ROUTE_CACHE[cache_key] = cached
+            async with _ROUTE_DISCOVERY_LOCK:
+                cached = _ROUTE_CACHE.get(cache_key)
+                if cached is None or cached[0] <= time.monotonic():
+                    domains: list[str] = []
+                    route_ids: dict[str, str] = {}
+                    route_hosts = list(DEFAULT_ROUTE_HOSTS)
+                    random.shuffle(route_hosts)
+                    try:
+                        async with asyncio.timeout(ROUTES_DISCOVERY_TIMEOUT_SECONDS):
+                            async with httpx.AsyncClient(follow_redirects=True) as c:
+                                for gw in route_hosts:
+                                    try:
+                                        data = await self._http_json(
+                                            c,
+                                            f"{gw}/api/clientgate/routes?platform=Web&version={self.package_version}&lang=chs_t",
+                                            request_stage="雀魂routes线路请求耗时",
+                                        )
+                                        for rt in data.get("data", {}).get("routes", []):
+                                            if rt.get("state") != "maintenancing" and rt.get("domain"):
+                                                dom = rt["domain"]
+                                                domains.append(dom)
+                                                route_ids[dom] = rt.get("id") or dom.split(".")[0]
+                                        if domains:
+                                            break
+                                    except Exception as e:  # noqa: BLE001
+                                        log_warning(事件="雀魂线路获取", 状态="失败", 网关=gw, 错误原因=str(e))
+                    except TimeoutError as exc:
+                        raise MajsoulError("获取雀魂服务器线路超时") from exc
+                    if not domains:
+                        raise MajsoulError("获取雀魂服务器线路失败")
+                    cached = (time.monotonic() + ROUTES_CACHE_TTL_SECONDS, tuple(domains), tuple(route_ids.items()))
+                    _ROUTE_CACHE[cache_key] = cached
 
         self.domains = list(cached[1])
         self._route_ids = dict(cached[2])
@@ -181,6 +185,9 @@ class MajsoulClient(AuthMixin, RecordCodecMixin):
         # Prefer gateways that have not recently timed out, but still attempt all
         # discovered routes if necessary instead of permanently blacklisting them.
         now = time.monotonic()
+        for domain, expiry in tuple(_GATEWAY_FAILED_UNTIL.items()):
+            if expiry <= now:
+                _GATEWAY_FAILED_UNTIL.pop(domain, None)
         domains = sorted(
             self.domains,
             key=lambda domain: _GATEWAY_FAILED_UNTIL.get(domain, 0) > now,
