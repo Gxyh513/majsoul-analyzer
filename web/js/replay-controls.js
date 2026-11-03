@@ -179,67 +179,16 @@ function toggleHandsVisibility() {
   }
 }
 
-function getStepActionDesc(snap, kyoku) {
-  if (!snap || !snap.event) return "";
-  const ev = snap.event;
-  const currentKyoku = kyoku || state.reviewData?.kyokus?.[state.kyokuIdx];
-  const getPlayerLabel = (seat) => {
-    if (seat === undefined || seat === null) return "";
-    const w = currentKyoku ? handWind(seat, currentKyoku) : WIND_CN[seat % 4];
-    const isHero = seat === state.targetActor;
-    return `${w}家${isHero ? " (自家)" : ""}`;
-  };
-
-  const actorLabel = getPlayerLabel(ev.actor);
-  const targetLabel = getPlayerLabel(ev.target);
-
-  switch (ev.type) {
-    case "tsumo":
-      return `${actorLabel} 摸牌 ${tileCn(ev.pai)}`;
-    case "dahai":
-      return `${actorLabel} ${ev.tsumogiri ? "摸切" : "手切"} ${tileCn(ev.pai)}`;
-    case "chi":
-      return `${actorLabel} 吃 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
-    case "pon":
-      return `${actorLabel} 碰 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
-    case "ankan":
-      return `${actorLabel} 暗杠 ${tileCn(ev.consumed?.[0] || ev.pai)}`;
-    case "kakan":
-      return `${actorLabel} 加杠 ${tileCn(ev.pai)}`;
-    case "daiminkan":
-      return `${actorLabel} 大明杠 ${tileCn(ev.pai)} (来自 ${targetLabel})`;
-    case "reach":
-      return `${actorLabel} 宣告立直`;
-    case "hora":
-      if (ev.actor !== ev.target && ev.target !== undefined && ev.target !== null) {
-        const deltaStr = ev.deltas?.[ev.actor] ? ` (+${ev.deltas[ev.actor]}点)` : "";
-        return `${actorLabel} 荣和 ${targetLabel}${deltaStr}`;
-      } else {
-        const deltaStr = ev.deltas?.[ev.actor] ? ` (+${ev.deltas[ev.actor]}点)` : "";
-        return `${actorLabel} 自摸${deltaStr}`;
-      }
-    case "ryuukyoku":
-    case "ryukyoku":
-      return `荒牌流局结算`;
-    default:
-      return `${actorLabel} 行动`;
-  }
-}
-
 function setStep(stepIdx) {
   const res = state.reviewData;
   if (!res) return;
   const kyoku = res.kyokus[state.kyokuIdx];
   if (!kyoku || !kyoku.steps.length) return;
 
-  const prevStep = state.stepIdx;
   const clamped = Math.max(0, Math.min(kyoku.steps.length - 1, stepIdx));
   state.stepIdx = clamped;
 
   const snap = kyoku.steps[clamped];
-
-  // Play tile discard sound when advancing or landing on a discard
-
 
   const totalSteps = Math.max(0, kyoku.steps.length - 1);
   const sliderEl = $("stepSlider");
@@ -263,13 +212,4 @@ function setStep(stepIdx) {
 
   renderBoard(kyoku, snap, isExactDecisionStep ? decision : null);
   renderDecisionCard(decision, isExactDecisionStep, snap);
-}
-
-function findLatestDecisionBeforeStep(kyoku, stepIdx) {
-  let found = null;
-  for (const d of kyoku.decisions || []) {
-    if (d.step_idx <= stepIdx) found = d;
-    else break;
-  }
-  return found;
 }

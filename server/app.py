@@ -67,11 +67,14 @@ def _log_performance(stats: dict[str, Any], started: float) -> dict[str, Any] | 
 
         acq_result = stats.get("牌谱获取结果")
         last_failure = stats.get("最后失败阶段") or (report["状态"].get("最后失败阶段") if report and "状态" in report else None)
-        failed = bool(last_failure or (acq_result and acq_result not in ("成功", "进行中")))
+        if "_succeeded" in stats or "_failed" in stats:
+            failed = bool(stats.get("_failed") or not stats.get("_succeeded", True))
+        else:
+            failed = bool(last_failure or (acq_result and acq_result not in ("成功", "进行中")))
         ops_metrics.record(report, succeeded=not failed)
 
         if failed:
-            fail_stage = last_failure or "雀魂牌谱请求"
+            fail_stage = last_failure or stats.get("失败阶段") or "雀魂牌谱请求"
             err_type = stats.get("最近雀魂失败类型") or stats.get("错误类型") or "网络失败"
             retries = stats.get("雀魂牌谱请求失败次数") or stats.get("login_failures") or 0
             fail_data: dict[str, Any] = {
@@ -109,6 +112,8 @@ def _log_performance(stats: dict[str, Any], started: float) -> dict[str, Any] | 
             elif acq_mode:
                 success_data["获取方式"] = acq_mode
 
+            if stats.get("分析结果缓存") is not None:
+                success_data["分析结果缓存"] = stats["分析结果缓存"]
             if stats.get("AI检讨流程耗时") is not None:
                 success_data["AI检讨耗时毫秒"] = round(stats["AI检讨流程耗时"], 1)
             if stats.get("ONNX实际推理耗时") is not None:
@@ -702,7 +707,7 @@ async def api_login(req: LoginReq):
         raise HTTPException(status_code=400, detail="请提供雀魂账号密码或 Access Token")
     async with _ms_client_lock:
         try:
-            cfg = load_config()
+            cfg = await asyncio.to_thread(load_config)
             same_token = bool(req.access_token and req.access_token.strip() == ms_client.access_token)
             same_password = bool(not req.access_token and req.account and req.password and cfg.get("account") and cfg.get("password")
                                  and req.account.strip().lower() == str(cfg["account"]).strip().lower()
@@ -717,7 +722,7 @@ async def api_login(req: LoginReq):
                     await ms_client.login_password(req.account.strip(), req.password)
 
             if req.remember:
-                cfg = load_config()
+                cfg = await asyncio.to_thread(load_config)
                 if req.account:
                     cfg["account"] = req.account.strip()
                 if req.password:
@@ -728,9 +733,9 @@ async def api_login(req: LoginReq):
                     cfg["nickname"] = ms_client.nickname
                 if ms_client.account_id:
                     cfg["account_id"] = ms_client.account_id
-                save_config(cfg)
+                await asyncio.to_thread(save_config, cfg)
 
-            return _build_api_status(trusted=True)
+            return await asyncio.to_thread(_build_api_status, trusted=True)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001
@@ -749,11 +754,11 @@ async def api_login(req: LoginReq):
 async def api_logout():
     async with _ms_client_lock:
         await ms_client.close()
-        cfg = load_config()
+        cfg = await asyncio.to_thread(load_config)
         cfg.pop("access_token", None)
         cfg.pop("password", None)
-        save_config(cfg, clear_local_credentials=True)
-        return _build_api_status(trusted=True)
+        await asyncio.to_thread(save_config, cfg, clear_local_credentials=True)
+        return await asyncio.to_thread(_build_api_status, trusted=True)
 
 
 @app.get("/api/recent_games")
@@ -825,9 +830,9 @@ async def resolve_game_data(
     if content is None and (not raw_input or raw_input == "demo" or raw_input.startswith("demo-")):
         if not DEMO_PATH.is_file():
             raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
-        text = DEMO_PATH.read_text(encoding="utf8")
+        text = await asyncio.to_thread(DEMO_PATH.read_text, encoding="utf8")
         with _measure("JSON解析"):
-            events = json.loads(text)
+            events = await asyncio.to_thread(json.loads, text)
         meta = {"uuid": "demo-241024-majsoul-4p", "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
                 "room": "玉之间·四人南 (内置演示)", "start_time": 1729760000}
         await _record_mjai_size(events)
@@ -838,11 +843,13 @@ async def resolve_game_data(
             text = content.strip()
             try:
                 with _measure("JSON解析"):
-                    content = json.loads(text)
+                    content = await asyncio.to_thread(json.loads, text)
             except json.JSONDecodeError:
                 try:
                     with _measure("JSON解析"):
-                        content = [json.loads(line) for line in text.splitlines() if line.strip()]
+                        content = await asyncio.to_thread(
+                            lambda: [json.loads(line) for line in text.splitlines() if line.strip()]
+                        )
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail="无法解析 JSON / JSONL 格式。") from exc
         try:
@@ -851,8 +858,7 @@ async def resolve_game_data(
                 if source_uuid and (not isinstance(source_uuid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,119}", source_uuid)):
                     raise HTTPException(status_code=400, detail="牌谱 UUID 格式无效")
                 with _measure("MJAI转换"):
-                    events = to_mjai(content)
-                    meta = game_meta(content)
+                    events, meta = await asyncio.to_thread(lambda: (to_mjai(content), game_meta(content)))
                 game_id = "upload-" + uuid.uuid4().hex
             elif isinstance(content, list) and content and isinstance(content[0], dict) and "type" in content[0]:
                 events = content
@@ -1038,6 +1044,9 @@ async def _try_fast_public_review(paipu: str | None, target_actor: int | None,
                                   engine: str, temperature: float) -> dict | None:
     cached = await asyncio.to_thread(_load_fast_public_review, paipu, target_actor, engine, temperature)
     if cached is not None:
+        _set_performance_value("mode", "公开牌谱缓存快速命中")
+        _set_performance_value("牌谱获取方式", "本地直接读取")
+        _set_performance_value("牌谱获取结果", "成功")
         _set_performance_value("分析结果缓存", "原始牌谱快速命中")
     return cached
 
@@ -1300,7 +1309,7 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
             if (await request.receive())["type"] == "http.disconnect":
                 return
 
-    stats: dict[str, Any] = {"mode": "准备中", "AI模型加载次数": 0, "AI模型复用次数": 0}
+    stats: dict[str, Any] = {"mode": "准备中", "_succeeded": False, "AI模型加载次数": 0, "AI模型复用次数": 0}
     started = time.perf_counter()
     stats["_started"] = started
     token = _performance.set(stats)
@@ -1311,10 +1320,25 @@ async def _run_nonstream_until_disconnect(request: Request, response: Response, 
         if disconnect_task in done:
             # Propagate receive errors too; don't leave the analysis running.
             disconnect_task.result()
+            stats["_failed"] = True
+            stats.setdefault("失败阶段", "客户端连接中断")
+            stats.setdefault("错误类型", "连接取消")
             raise asyncio.CancelledError
         result = await work_task
         with _measure("结果返回"):
-            return _public_review_result(result)
+            public_result = _public_review_result(result)
+        stats["_succeeded"] = True
+        return public_result
+    except HTTPException as exc:
+        stats["_failed"] = True
+        stats.setdefault("失败阶段", stats.get("最后失败阶段") or "按需分析")
+        stats.setdefault("错误类型", f"HTTP{exc.status_code}")
+        raise
+    except Exception:
+        stats["_failed"] = True
+        stats.setdefault("失败阶段", stats.get("最后失败阶段") or "按需分析")
+        stats.setdefault("错误类型", "服务内部异常")
+        raise
     finally:
         for task in (work_task, disconnect_task):
             if not task.done():
@@ -1332,6 +1356,7 @@ async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Re
         if cached is not None:
             return cached
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
+        _set_performance_value("mode", "按需分析")
         return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature,
                                  cache_public=(game_id != "demo"))
     return await _run_nonstream_until_disconnect(request, response, work())
@@ -1342,6 +1367,7 @@ async def api_analyze_demo(req: AnalyzeDemoReq, request: Request, response: Resp
     async def work():
         await _wait_for_model_download(req.engine)
         game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
+        _set_performance_value("mode", "按需分析")
         return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
     return await _run_nonstream_until_disconnect(request, response, work())
 
@@ -1436,7 +1462,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 if request_started is not None:
                     stats["ASGI请求至100%事件生成"] = (completed_at - request_started) * 1000
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '已复用公开牌谱缓存'}, ensure_ascii=False)}\n\n"
-                event = _complete_review_event(cached)
+                event = await asyncio.to_thread(_complete_review_event, cached)
                 completion_at = time.perf_counter()
                 stats["complete事件生成时间"] = (completion_at - stats["_started"]) * 1000
                 if request_started is not None:
@@ -1455,9 +1481,15 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                         yield update
                 game_id, mjai_events, meta, seat = resolve_task.result()
             except HTTPException as e:
+                stats["_failed"] = True
+                stats.setdefault("失败阶段", "原始牌谱获取总耗时" if stats.get("牌谱获取结果") else "UUID解析")
+                stats.setdefault("错误类型", f"HTTP{e.status_code}")
                 yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
                 return
             except Exception as e:
+                stats["_failed"] = True
+                stats.setdefault("失败阶段", "牌谱数据准备")
+                stats.setdefault("错误类型", "牌谱解析异常")
                 log_error(
                     事件="牌谱解析失败",
                     失败阶段="牌谱数据准备",
@@ -1529,7 +1561,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 if request_started is not None:
                     stats["ASGI请求至100%事件生成"] = (progress_generated - request_started) * 1000
                 yield progress_event
-                complete_event = _complete_review_event(res)
+                complete_event = await asyncio.to_thread(_complete_review_event, res)
                 complete_generated = time.perf_counter()
                 stats["complete事件生成时间"] = (complete_generated - stats["_started"]) * 1000
                 if request_started is not None:
@@ -1542,13 +1574,19 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 listening.clear()
 
         except HTTPException as e:
+            stats["_failed"] = True
+            stats.setdefault("失败阶段", "AI检讨流程耗时" if "AI检讨流程耗时" in stats else ("AI推理排队等待" if "AI推理排队等待" in stats else "初始模型准备阶段耗时"))
+            stats.setdefault("错误类型", f"HTTP{e.status_code}")
             log_error(事件="牌谱分析失败", 失败阶段="SSE流式分析", 异常信息=_safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': e.detail}, ensure_ascii=False)}\n\n"
         except Exception as e:
+            stats["_failed"] = True
+            stats.setdefault("失败阶段", "SSE流式分析")
+            stats.setdefault("错误类型", "服务内部异常")
             log_error(事件="牌谱分析失败", 失败阶段="SSE流式分析", 异常信息=_safe_error_context(e))
             yield f"data: {json.dumps({'type': 'error', 'detail': '分析暂时失败，请稍后重试。'}, ensure_ascii=False)}\n\n"
     async def measured_stream():
-        stats: dict[str, Any] = {"mode": "准备中", "request_id": request_id, "AI模型加载次数": 0, "AI模型复用次数": 0}
+        stats: dict[str, Any] = {"mode": "准备中", "_succeeded": False, "request_id": request_id, "AI模型加载次数": 0, "AI模型复用次数": 0}
         started = time.perf_counter()
         stats["_started"] = started
         if request is not None:
@@ -1568,9 +1606,14 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 yield chunk
                 if chunk.startswith('data: {"type": "complete",'):
                     complete_emitted = True
+                    stats["_succeeded"] = True
             sent = getattr(request.state, "sse_complete_sent", None) if request is not None else None
             if complete_emitted and sent is not None:
                 await sent.wait()
+            if not complete_emitted and not stats.get("_failed"):
+                stats["_failed"] = True
+                stats.setdefault("失败阶段", "客户端连接中断")
+                stats.setdefault("错误类型", "连接取消")
             report = _log_performance(stats, started)
             logged = True
             if report is not None:
@@ -1579,6 +1622,10 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
         finally:
             await generator.aclose()
             if not logged:
+                if not complete_emitted and not stats.get("_failed"):
+                    stats["_failed"] = True
+                    stats.setdefault("失败阶段", "客户端连接中断")
+                    stats.setdefault("错误类型", "连接取消")
                 _log_performance(stats, started)
 
     return _ClosingStreamingResponse(

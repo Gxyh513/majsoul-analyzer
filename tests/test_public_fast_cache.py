@@ -143,6 +143,11 @@ def test_public_api_fast_hit_skips_decode_convert_and_inference(public_record, m
         assert not [e for e in events if e.get("type") == "error"]
         completed = [e for e in events if e.get("type") == "complete"]
         assert len(completed) == 1
+        perf = next(e["performance"] for e in events if e.get("type") == "performance")
+        assert perf["状态"]["牌谱获取结果"] == "成功"
+        assert perf["状态"]["牌谱获取方式"] == "本地直接读取"
+        assert perf["状态"]["是否命中本地记录"] is True
+        assert perf["数据大小_KB"]["原始数据大小"] is not None
         return completed[0]["result"]
 
     assert analyze() == review()

@@ -91,7 +91,9 @@ def read_record(records_dir: Path, game_uuid: str, legacy_dirs: tuple[Path, ...]
             except OSError as exc:
                 raise RecordStorageError("无法读取原始牌谱，请检查存储目录。") from exc
             if suffix == ".pb":
-                return _decode(data)
+                record = _decode(data)
+                set_value("原始数据大小", len(record.response) + len(record.detail))
+                return record
             set_value("原始数据大小", len(data))
             try:
                 with measure("JSON解析"):
