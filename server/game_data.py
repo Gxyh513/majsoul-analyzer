@@ -12,11 +12,24 @@ from fastapi import HTTPException
 from .majsoul.client import MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError
-from .app import (
-    DEMO_PATH, RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client,
-    admin_manager, load_config, _get_or_download_record,
-    fetch_record_with_failover, _measure, _performance, _record_mjai_size,
-)
+from .runtime_state import DEMO_PATH, RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client
+from .admin_accounts import manager as admin_manager
+from .app_config import load_config
+from .record_store import get_or_download_record as _get_or_download_record
+from .account_pool import fetch_record_with_failover
+from .paipu_performance import measure as _measure, performance as _performance
+
+
+
+async def _record_mjai_size(events: list[dict]) -> None:
+    stats = _performance.get()
+    if stats is not None:
+        try:
+            stats["MJAI数据大小"] = await asyncio.to_thread(
+                lambda: len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def select_game_seat(meta: dict, target_actor: int | None, url_acc_id: int | None = None) -> int:

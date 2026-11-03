@@ -11,7 +11,7 @@ from fastapi import APIRouter
 
 from .majsoul.convert import game_meta
 from .record_store import RawRecord, read_record
-from .app import RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client
+from .runtime_state import RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client
 
 router = APIRouter()
 
