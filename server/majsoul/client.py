@@ -19,7 +19,6 @@ import json
 import logging
 import random
 import re
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -54,8 +53,6 @@ RECORD_RPC_TIMEOUT_SECONDS = 3
 RECORD_HTTP_TIMEOUT_SECONDS = 3
 GATEWAY_FAILURE_COOLDOWN_SECONDS = 60
 _GATEWAY_FAILED_UNTIL: dict[str, float] = {}
-_PROTOCOL_LOCK = threading.Lock()
-_PROTOCOL_CACHE: dict[str, LiqiProto] = {}
 _ROUTE_CACHE: dict[tuple, tuple[float, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
 DEFAULT_ROUTE_HOSTS = [
     "https://route-2.maj-soul.com",
