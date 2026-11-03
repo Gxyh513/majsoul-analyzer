@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -17,12 +18,21 @@ from .model_download import engine_mgr
 from .engine.reviewer import review_game, ModelInferenceError
 from .engine.model_policy import normalize_model_id, valid_review_source
 
-# Inference threads retain their permit until they actually finish.
+def _bounded_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Operator-tunable queue bounds; keep the original defaults on bad input."""
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+# One CPU inference lane by default; the queue can be tuned without raising
+# parallel ONNX memory pressure or changing the semantics of in-flight jobs.
 review_semaphore = asyncio.Semaphore(1)
 _review_tasks: set[asyncio.Task] = set()
-# Protect memory and open SSE connections while retaining one CPU inference job.
-REVIEW_MAX_WAITERS = 4
-REVIEW_QUEUE_TIMEOUT_SECONDS = 90
+REVIEW_MAX_WAITERS = _bounded_setting("MAJSOUL_REVIEW_MAX_WAITERS", 4, 1, 32)
+REVIEW_QUEUE_TIMEOUT_SECONDS = _bounded_setting("MAJSOUL_REVIEW_QUEUE_TIMEOUT_SECONDS", 90, 15, 300)
 _review_waiters = 0
 # Coalesce simultaneous jobs; completed results persist only for public paipu links.
 # Internal JSON and demonstration inputs must never enter the disk review cache.

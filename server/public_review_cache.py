@@ -43,7 +43,7 @@ def _public_review_pipeline_identity() -> str:
     """Invalidate raw-input keys when decoding, conversion or review rules change."""
     digest = hashlib.sha256()
     for name in (
-        "public_review_cache.py", "review_jobs.py",
+        "public_review_cache.py", "review_jobs.py", "game_data.py",
         "majsoul/client.py", "majsoul/proto.py", "majsoul/convert.py",
         "majsoul/record_codec.py", "majsoul/protocol_loader.py", "majsoul/paipu_links.py",
         "engine/reviewer.py", "engine/tiles.py", "engine/actions.py",

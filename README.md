@@ -153,10 +153,10 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 后端模块结构
 
-`server/app.py` 仅承担应用初始化、共享依赖组装与剩余分析入口，按职责拆分为以下模块：
+`server/app.py` 仅负责 FastAPI 组合、生命周期与静态页面；共享路径及雀魂客户端在 `server/runtime.py` 中初始化，避免业务服务反向导入应用入口。各职责如下：
 
-- **API 与安全**：`api_security.py`、`api_schemas.py`、`api_status.py`、`api_accounts.py`、`api_local_records.py`、`api_stream.py`。
-- **检讨任务与缓存**：`game_data.py`、`review_jobs.py`、`public_review_cache.py`、`model_download.py`、`analysis_logging.py`、`sse_transport.py`。
+- **API 与安全**：`api_security.py`、`api_schemas.py`、`api_status.py`、`api_accounts.py`、`api_local_records.py`、`api_analysis.py`、`api_stream.py`。
+- **检讨任务与缓存**：`game_data.py`、`review_jobs.py`、`public_review_cache.py`、`model_download.py`、`analysis_service.py`、`analysis_logging.py`、`sse_transport.py`。
 - **牌谱 AI**：`engine/reviewer.py` 编排流程；`engine/review_replay.py` 构建回放与观测；`engine/review_scoring.py` 处理 Q 值、决策评分和汇总；`engine/actions.py` 处理动作映射。
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
@@ -165,7 +165,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 开发验证
 
-前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为普通脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
+前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为 `defer` 脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
 
 前端源代码可使用 Node.js 自带的语法检查命令检查，无需测试目录：
 
@@ -186,3 +186,11 @@ for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
 ## 运行期间性能汇总
 
 通过带有效 API 令牌的 `GET /api/status` 可读取 `performance_recent`，包含最近最多 256 次分析请求的总耗时、排队、ONNX 推理和结果大小的 P50/P95。仅保存在当前服务进程的有界内存中，重启清空；不存储用户昵称、牌谱编号或 IP。匿名状态接口不包含这些统计。不同实例分别统计，不应将单进程分位数直接视为全站压测结果。
+
+## 本轮运行性能优化
+
+- `server/runtime.py` 统一管理进程共享状态，业务模块不再在初始化时反向导入 `server.app`。`api_analysis.py` 与 `analysis_service.py` 承接非流式分析入口与请求生命周期。
+- SSE 进度流在推理队列等待时通过事件完成信号唤醒，不再固定每 250 毫秒轮询。保留 10 秒心跳进度提示。
+- 牌谱界面只在标记发生变化时重建手牌/牌河 DOM；SVG 异步解码，按顺序延迟执行脚本，并清理 38 张 SVG 的 Inkscape 编辑元数据（不更改可见图形）。
+- 雀魂 routes 发现针对同时连接的客户端合并为单次请求，24 小时限流记录会择机回收；自定义客户端登录和换线重连使用同一个客户端实例。
+- 排队容量和等待上限可通过 `MAJSOUL_REVIEW_MAX_WAITERS`（1–32，默认 4）以及 `MAJSOUL_REVIEW_QUEUE_TIMEOUT_SECONDS`（15–300 秒，默认 90）调整；默认仍只有一个 ONNX 推理工作位。请根据线上 CPU/RSS 和 P95 指标调优，不宜盲目提高并发。
