@@ -45,6 +45,7 @@ def _public_review_pipeline_identity() -> str:
         "majsoul/client.py", "majsoul/proto.py", "majsoul/convert.py",
         "majsoul/record_codec.py", "majsoul/protocol_loader.py", "majsoul/paipu_links.py",
         "engine/reviewer.py", "engine/tiles.py", "engine/actions.py",
+        "engine/review_replay.py", "engine/review_labels.py",
         "engine/review_scoring.py", "engine/model_manager.py",
         "engine/onnx_mortal.py", "engine/model_policy.py",
     ):
