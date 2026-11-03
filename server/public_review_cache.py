@@ -12,7 +12,9 @@ from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA
 from .majsoul.client import LOCAL_PROTOCOL_SHA256, MajsoulError, parse_paipu, parse_paipu_seat
 from .paipu_performance import performance as _performance, set_value as _set_performance_value
 from .record_store import RawRecord, RecordStorageError, read_record
-from .app import ROOT_DIR, REVIEWS_DIR, RECORDS_DIR, LEGACY_RECORDS_DIRS, select_game_seat, admin_manager
+from .runtime import ROOT_DIR, REVIEWS_DIR, RECORDS_DIR, LEGACY_RECORDS_DIRS
+from .game_data import select_game_seat
+from .admin_accounts import manager as admin_manager
 
 
 def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:

@@ -9,13 +9,13 @@ from fastapi import HTTPException
 
 from . import review_cache
 from .logger import log_error, log_warning
-from .app import (
-    REVIEWS_DIR, _review_fingerprint, _public_raw_review_key,
-    _public_review_result, _safe_error_context,
-    _performance, _measure, _set_performance_value,
-    engine_mgr, review_game, ModelInferenceError, normalize_model_id,
-    valid_review_source,
-)
+from .runtime import REVIEWS_DIR
+from .public_review_cache import _review_fingerprint, _public_raw_review_key, _public_review_result
+from .error_context import _safe_error_context
+from .paipu_performance import performance as _performance, measure as _measure, set_value as _set_performance_value
+from .model_download import engine_mgr
+from .engine.reviewer import review_game, ModelInferenceError
+from .engine.model_policy import normalize_model_id, valid_review_source
 
 # Inference threads retain their permit until they actually finish.
 review_semaphore = asyncio.Semaphore(1)
