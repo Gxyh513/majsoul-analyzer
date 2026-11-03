@@ -26,4 +26,4 @@ jobs:
 
       - name: 检查应用模块导入与 API 路由注册
         run: |
-          docker run --rm majsoul-analyzer:ci python -c "from server.app import app; schema = app.openapi(); print('FastAPI routes:', len(app.routes), 'OpenAPI paths:', len(schema.get('paths', {})))"
+          docker run --rm majsoul-analyzer:ci python -c "from server.app import app; from server.account_register import AutoRegisterScheduler; from server.admin_accounts import AccountStore; schema = app.openapi(); print('FastAPI routes:', len(app.routes), 'OpenAPI paths:', len(schema.get('paths', {})), 'scheduler:', AutoRegisterScheduler.__name__, 'store:', AccountStore.__name__)"
