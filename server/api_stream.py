@@ -193,18 +193,30 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 progress = {"percent": 15, "message": "牌谱准备就绪，启动 AI 检讨引擎..."}
                 progress_started = last_update = time.monotonic()
                 yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                # Wait on both completion and new progress instead of polling
+                # an empty queue four times per second per SSE connection.
                 while not task.done():
+                    next_progress = asyncio.create_task(q.get())
                     try:
-                        progress = await asyncio.wait_for(q.get(), timeout=0.25)
-                    except asyncio.TimeoutError:
-                        now = time.monotonic()
-                        if now - last_update >= 10:
+                        heartbeat_after = max(0.0, 10.0 - (time.monotonic() - last_update))
+                        done, _ = await asyncio.wait(
+                            (task, next_progress),
+                            timeout=heartbeat_after,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if next_progress in done:
+                            progress = next_progress.result()
+                            progress_started = last_update = time.monotonic()
+                            yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                        elif task not in done:
+                            now = time.monotonic()
                             waiting = {**progress, "message": f"{progress['message']}（已等待 {int(now - progress_started)} 秒）"}
                             yield f"data: {json.dumps({'type': 'progress', **waiting}, ensure_ascii=False)}\n\n"
                             last_update = now
-                        continue
-                    progress_started = last_update = time.monotonic()
-                    yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                    finally:
+                        if not next_progress.done():
+                            next_progress.cancel()
+                            await asyncio.gather(next_progress, return_exceptions=True)
 
                 while not q.empty():
                     progress = q.get_nowait()
