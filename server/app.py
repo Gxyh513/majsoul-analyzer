@@ -191,28 +191,12 @@ from .review_jobs import (
 from .analysis_service import _wait_for_model_download, _run_nonstream_until_disconnect
 
 
-@app.post("/api/analyze/paipu")
-async def api_analyze_paipu(req: AnalyzePaipuReq, request: Request, response: Response):
-    async def work():
-        await _wait_for_model_download(req.engine)
-        cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature)
-        if cached is not None:
-            return cached
-        game_id, mjai_events, meta, seat = await resolve_game_data(paipu=req.paipu, target_actor=req.target_actor)
-        _set_performance_value("mode", "按需分析")
-        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature,
-                                 cache_public=(game_id != "demo"))
-    return await _run_nonstream_until_disconnect(request, response, work())
-
-
-@app.post("/api/analyze/demo")
-async def api_analyze_demo(req: AnalyzeDemoReq, request: Request, response: Response):
-    async def work():
-        await _wait_for_model_download(req.engine)
-        game_id, mjai_events, meta, seat = await resolve_game_data(paipu="demo", target_actor=req.target_actor)
-        _set_performance_value("mode", "按需分析")
-        return await _run_review(game_id, mjai_events, meta, seat, req.engine, req.temperature)
-    return await _run_nonstream_until_disconnect(request, response, work())
+# Register non-stream routes before the SSE streaming router.
+from . import api_analysis as _api_analysis
+app.include_router(_api_analysis.router)
+api_analyze_paipu = _api_analysis.api_analyze_paipu
+api_analyze_demo = _api_analysis.api_analyze_demo
+api_download_mortal_model = _api_analysis.api_download_mortal_model
 
 
 # Routes are registered here after the shared analysis helpers are defined.
@@ -221,12 +205,6 @@ app.include_router(_api_stream.router)
 _ClosingStreamingResponse = _api_stream._ClosingStreamingResponse
 _complete_review_event = _api_stream._complete_review_event
 api_analyze_stream = _api_stream.api_analyze_stream
-
-
-@app.post("/api/engine/download")
-async def api_download_mortal_model():
-    trigger_model_download(MODEL_ID)
-    return {"status": "started", "message": "已在后台启动 Mortal S42 ONNX 模型下载"}
 
 
 app.mount("/tiles", StaticFiles(directory=str(WEB_DIR / "tiles")), name="tiles")
