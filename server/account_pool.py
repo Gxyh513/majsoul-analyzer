@@ -47,7 +47,6 @@ async def login_with_account_spec(
 ):
     """Log in using a specific account dict (token first, fallback to password)."""
     if client is None:
-        from .runtime_state import ms_client
         client = ms_client
 
     log_debug(事件="WebSocket连接", 状态="建立会话")
@@ -100,7 +99,6 @@ async def login_with_account_spec(
 
 async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     """Ensure client is logged in with an available account."""
-    from .runtime_state import ms_client
     if client is None:
         client = ms_client
 
@@ -161,7 +159,6 @@ async def _fetch_record_with_failover_inner(
 ):
     """Fetch through a shared session; reconnect or switch accounts exclusively."""
     from contextlib import asynccontextmanager
-    from .runtime_state import ms_client, _ms_client_lock
 
     client = client or ms_client
     client_lock = client_lock or _ms_client_lock
