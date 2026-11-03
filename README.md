@@ -161,7 +161,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
 
-为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录、Pytest 配置或构建验证工作流。部署工作流仅负责同步和触发发布，不负责确认实际服务可用；上线状态应以线上观测为准。
+后端共享会话、目录和连接锁现在由 `runtime.py` 统一持有；`api_analyze.py`、`api_stream.py`、检讨任务及缓存服务不再依赖 FastAPI 的入口导入顺序。为兼容已有入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 保留部分转发导入。仓库不含 `tests/` 目录、Pytest 配置或构建验证工作流。部署工作流仅负责同步和触发发布，不负责确认实际服务可用；上线状态应以线上观测为准。
 
 ## 开发验证
 
@@ -186,3 +186,10 @@ for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
 ## 运行期间性能汇总
 
 通过带有效 API 令牌的 `GET /api/status` 可读取 `performance_recent`，包含最近最多 256 次分析请求的总耗时、排队、ONNX 推理和结果大小的 P50/P95。仅保存在当前服务进程的有界内存中，重启清空；不存储用户昵称、牌谱编号或 IP。匿名状态接口不包含这些统计。不同实例分别统计，不应将单进程分位数直接视为全站压测结果。
+
+
+## 推理并发与线上可用性监测
+
+单实例默认同时运行 1 个 Mortal 推理任务。可选设置 `MAJSOUL_REVIEW_CONCURRENCY=2`（允许 1～4，越界值被限制到范围内）以提高并行吞吐；增加并发可能导致 CPU 和内存竞争，并不保证降低单次延迟。调整前后应对照可信 `/api/status` 的排队、延迟和进程 RSS 数据。此设置不改变自动注册调度或抓谱账号并发。
+
+`.github/workflows/monitor-service.yml` 每小时及手动触发时读取公开 `https://majsoul.ccwu.cc/api/status`，最多尝试 3 次，检查服务应答和 Mortal 权重就绪；失败会反映在 GitHub Actions 中。该检查是运行中服务的可用性监测，**不是构建验证或测试套件**，不判断登录、抓谱、SSE 全链路正确性。仍需由维护者为仓库开启失败通知及安排异地牌谱备份。

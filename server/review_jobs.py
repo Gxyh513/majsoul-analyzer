@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -17,8 +18,19 @@ from .model_download import engine_mgr
 from .engine.reviewer import review_game, ModelInferenceError
 from .engine.model_policy import normalize_model_id, valid_review_source
 
+# A single lane is the safe CPU default. Allow operators to raise the ceiling
+# after observing model memory usage and response latency on their own machine.
+def _review_concurrency() -> int:
+    try:
+        count = int(os.environ.get("MAJSOUL_REVIEW_CONCURRENCY", "1"))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(count, 4))
+
+
+REVIEW_CONCURRENCY = _review_concurrency()
 # Inference threads retain their permit until they actually finish.
-review_semaphore = asyncio.Semaphore(1)
+review_semaphore = asyncio.Semaphore(REVIEW_CONCURRENCY)
 _review_tasks: set[asyncio.Task] = set()
 # Protect memory and open SSE connections while retaining one CPU inference job.
 REVIEW_MAX_WAITERS = 4

@@ -14,7 +14,7 @@ from .admin_accounts import manager as admin_manager
 from .account_credentials import get_all_configured_accounts
 from . import review_cache, ops_metrics
 from . import review_jobs as _review_jobs
-from .review_jobs import review_semaphore, REVIEW_MAX_WAITERS
+from .review_jobs import review_semaphore, REVIEW_MAX_WAITERS, REVIEW_CONCURRENCY
 
 router = APIRouter()
 
@@ -72,7 +72,8 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         "performance_recent": {**ops_metrics.summary(),
                                "queue": {"waiting": _review_jobs._review_waiters,
                                          "inference_busy": review_semaphore.locked(),
-                                         "max_waiters": REVIEW_MAX_WAITERS}},
+                                         "max_waiters": REVIEW_MAX_WAITERS,
+                                          "max_concurrent_reviews": REVIEW_CONCURRENCY}},
     }
 
 
