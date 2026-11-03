@@ -83,7 +83,15 @@ class AccountScheduler:
                 ]
                 idle = [acc for acc in possible if acc["id"] not in self.busy]
                 if idle:
-                    selected = random.choice(idle)
+                    # Spread the per-account remote record quota across the pool.
+                    # Prefer the least recently attempted account; break ties
+                    # randomly so fresh/unused accounts do not share a fixed bias.
+                    def last_attempt(acc: dict) -> float:
+                        return max(float(acc.get("last_success_at") or 0),
+                                   float(acc.get("last_failure_at") or 0))
+
+                    oldest = min(last_attempt(acc) for acc in idle)
+                    selected = random.choice([acc for acc in idle if last_attempt(acc) == oldest])
                     self.busy.add(selected["id"])
                     return selected
                 if not possible:
