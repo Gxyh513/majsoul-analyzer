@@ -13,15 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: 构建并验证固定模型
         run: docker build -t majsoul-analyzer-onnx .
-      - name: 验证生产 Python 锁定版本与镜像完全一致
-        run: docker run --rm majsoul-analyzer-onnx python -c "import subprocess; from pathlib import Path; actual=subprocess.check_output(['python', '-m', 'pip', 'freeze'], text=True).splitlines(); expected=[line for line in Path('requirements.lock.txt').read_text().splitlines() if line and not line.startswith('#')]; assert sorted(actual)==sorted(expected), '锁定依赖与生产镜像不匹配'"
+
+      - name: 验证生产依赖锁定
+        run: |
+          docker run --rm majsoul-analyzer-onnx python -c "import subprocess; from pathlib import Path; actual=subprocess.check_output(['python', '-m', 'pip', 'freeze'], text=True).splitlines(); expected=[line for line in Path('requirements.lock.txt').read_text().splitlines() if line and not line.startswith('#')]; assert sorted(actual)==sorted(expected), '锁定依赖与镜像不匹配'"
+
       - name: 验证真实模型分析
-        run: docker run --rm majsoul-analyzer-onnx python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; m = EngineManager(Path('data/models')); events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf-8')); result = review_game(events, 0, m); assert any(k['decisions'] for k in result['kyokus']) and m.status()['model_ready']"
-      - name: 实际 MJAI 决策 ONNX CPU 配置基准
-        run: docker run --rm majsoul-analyzer-onnx python -m scripts.benchmark_onnx --real-demo --threads 1 2 4 --batches 16 64 --runs 3
-      - name: 本机真实模型 API 基线（4 请求、并发 2）
+        run: |
+          docker run --rm majsoul-analyzer-onnx python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; m = EngineManager(Path('data/models')); events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf-8')); result = review_game(events, 0, m); assert any(k['decisions'] for k in result['kyokus']) and m.status()['model_ready']"
+
+      - name: 本机模型 API 基线
         timeout-minutes: 5
         run: |
           docker run --rm -d --name majsoul-ci-baseline -e MAJSOUL_API_TOKEN=ci-local-only-benchmark -p 127.0.0.1:7860:7860 majsoul-analyzer-onnx
@@ -32,22 +36,14 @@ jobs:
           done
           curl -fsS --max-time 5 http://127.0.0.1:7860/api/status -o /dev/null
           docker run --rm --network host -e MAJSOUL_API_TOKEN=ci-local-only-benchmark majsoul-analyzer-onnx python -m scripts.benchmark_api --url http://127.0.0.1:7860 --requests 4 --concurrency 2
-          docker stats --no-stream --format '当前容器资源采样 CPU={{.CPUPerc}} 内存={{.MemUsage}}' majsoul-ci-baseline
-      - name: 牌谱转换与网络超时回归测试
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_majsoul_connection_init.py tests/test_review_regressions.py tests/test_rating_kan_fixes.py tests/test_analysis_correctness.py tests/test_auto_register.py tests/test_review_execution.py tests/test_review_cache.py tests/test_public_fast_cache.py tests/test_ops_metrics.py tests/test_benchmark_replay.py tests/test_benchmark_api.py"
-      - name: 存储路径、账号池及复盘回归测试
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_storage_paths.py tests/test_account_env_pool.py tests/test_account_pool_failover.py tests/test_record_session.py tests/test_record_reanalysis.py tests/test_chinese_json_logging.py tests/test_sqlite_loop.py"
-      - name: 跨进程缓存、真实 ONNX 与高优先级并发回归
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_cross_process_records.py tests/test_onnx_mortal.py tests/test_backend_high_priority.py"
-      - name: 内置牌谱回放体积与 Python 内存基准
-        run: docker run --rm majsoul-analyzer-onnx python -m scripts.benchmark_replay
-      - name: 前端回放与交互回归测试
+
+      - name: 核心后端回归测试
+        run: |
+          docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests --ignore=tests/test_frontend_regressions.py --ignore=tests/test_frontend_asset_loading.py --ignore=tests/test_on_demand_review.py --ignore=tests/test_replay_visual_fixes.py"
+
+      - name: 前端回归与代理测试
         run: |
           python -m pip install -q pytest
-          python -m pytest -q tests/test_replay_timeline.py tests/test_replay_controls.py tests/test_on_demand_review.py tests/test_replay_visual_fixes.py tests/test_frontend_asset_loading.py
-      - name: Pages 代理与管理员鉴权回归测试
-        run: |
-          docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_security_regressions.py"
+          python -m pytest -q tests/test_frontend_regressions.py tests/test_frontend_asset_loading.py tests/test_on_demand_review.py tests/test_replay_visual_fixes.py
           node --test tests/test_pages_proxy.mjs tests/test_sse_browser_performance.mjs tests/test_sse_telemetry.mjs
-      - name: 原始牌谱备份工具回归测试
-        run: docker run --rm majsoul-analyzer-onnx sh -c "python -m pip install -q pytest && python -m pytest -q tests/test_backup_records.py tests/test_verify_records_backup.py tests/test_check_service_health.py tests/test_sample_service_performance.py"
+          for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done

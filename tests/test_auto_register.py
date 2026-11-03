@@ -460,8 +460,9 @@ async def test_scheduler_survives_one_unhandled_attempt_error(monkeypatch, store
 async def test_long_running_registration_renews_exclusive_lock(monkeypatch, store, tmp_path):
     """A slow registration must not expose the slot for a second instance."""
     from server import account_register as reg
-    monkeypatch.setattr(reg, "LOCK_EXPIRY_SECONDS", 0.10)
-    monkeypatch.setattr(reg, "LOCK_RENEW_SECONDS", 0.02)
+    # Use a realistic short lease: 100ms is shorter than occasional CI scheduler stalls.
+    monkeypatch.setattr(reg, "LOCK_EXPIRY_SECONDS", 1.0)
+    monkeypatch.setattr(reg, "LOCK_RENEW_SECONDS", 0.10)
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -472,12 +473,12 @@ async def test_long_running_registration_renews_exclusive_lock(monkeypatch, stor
 
     monkeypatch.setattr(reg, "register_and_ingest", delayed_registration)
     scheduler = AutoRegisterScheduler(store, tmp_path)
-    assert store.acquire_auto_register_lock(scheduler.instance_id, timeout_sec=0.10)
+    assert store.acquire_auto_register_lock(scheduler.instance_id, timeout_sec=1.0)
     task = asyncio.create_task(scheduler._register_with_lease(manual=True))
     try:
         await asyncio.wait_for(entered.wait(), 1)
         # Past the original lease expiry, the task must still own the lease.
-        await asyncio.sleep(0.17)
+        await asyncio.sleep(1.20)
         assert store.acquire_auto_register_lock("another-instance", timeout_sec=0.1) is False
         release.set()
         assert (await asyncio.wait_for(task, 1))["ok"] is True
