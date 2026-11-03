@@ -239,3 +239,52 @@ def test_account_credentials_not_leaked(caplog):
     assert token not in redacted
     assert password not in redacted
     assert "[已隐藏]" in redacted
+
+
+def test_post_fetch_failure_and_recovered_retry_outcomes(monkeypatch, caplog):
+    from collections import deque
+    from server import ops_metrics
+
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.setattr(ops_metrics, "_samples", deque(maxlen=8))
+
+    # 1. Post-fetch failure (e.g. inference error after successful record read)
+    post_fetch_fail = {
+        "request_id": "1" * 32,
+        "_succeeded": False,
+        "_failed": True,
+        "牌谱获取结果": "成功",
+        "失败阶段": "AI检讨流程耗时",
+        "错误类型": "HTTP503",
+    }
+    # 2. Recovered retry (login retry set 最后失败阶段, but overall request succeeded)
+    recovered_success = {
+        "request_id": "2" * 32,
+        "_succeeded": True,
+        "mode": "公开牌谱缓存快速命中",
+        "牌谱获取方式": "本地直接读取",
+        "牌谱获取结果": "成功",
+        "是否命中本地记录": True,
+        "分析结果缓存": "原始牌谱快速命中",
+        "最后失败阶段": "雀魂登录",
+    }
+
+    with caplog.at_level("INFO", logger="majsoul-analyzer"):
+        caplog.clear()
+        t0 = time.perf_counter()
+        server_app._log_performance(post_fetch_fail, t0)
+        server_app._log_performance(recovered_success, t0)
+
+    summary_records = [json.loads(r.getMessage()) for r in caplog.records if '"事件":"牌谱分析"' in r.getMessage()]
+    assert len(summary_records) == 2
+    assert summary_records[0]["状态"] == "失败"
+    assert summary_records[0]["失败阶段"] == "AI检讨流程耗时"
+    assert summary_records[0]["错误类型"] == "HTTP503"
+    assert summary_records[1]["状态"] == "成功"
+    assert summary_records[1]["获取方式"] == "本地读取"
+    assert summary_records[1]["分析结果缓存"] == "原始牌谱快速命中"
+    assert _is_all_chinese_keys(summary_records[0])
+    assert _is_all_chinese_keys(summary_records[1])
+
+    snap = ops_metrics.summary()
+    assert (snap["successful"], snap["failed"]) == (1, 1)

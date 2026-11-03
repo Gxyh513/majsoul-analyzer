@@ -21,8 +21,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from .account_pool import _redact_error
 from .logger import log_warning
 from .majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
+from .paipu_performance import measure, set_value
 
 
 def _db_path() -> Path:
@@ -459,12 +461,21 @@ class AccountScheduler:
             ):
                 return
         await client.close()
-        await client.connect()
+        set_value("雀魂连接结果", "进行中")
+        try:
+            await client.connect()
+        except Exception:
+            set_value("雀魂连接结果", "失败")
+            raise
+        else:
+            set_value("雀魂连接结果", "成功")
         refreshed = False
         try:
-            await client.login_token(acc["access_token"])
+            with measure("雀魂登录", failure_count="雀魂登录失败次数"):
+                await client.login_token(acc["access_token"])
         except MajsoulTokenInvalid:
-            await client.login_password(acc["account"], acc["password"])
+            with measure("雀魂登录", failure_count="雀魂登录失败次数"):
+                await client.login_password(acc["account"], acc["password"])
             refreshed = True
         if acc["account_id"] and str(acc["account_id"]) != str(client.account_id):
             await client.close()
@@ -486,7 +497,7 @@ class AccountScheduler:
             await self._authenticate(acc, client)
             try:
                 record = await client.fetch_record(game_uuid)
-            except TimeoutError:
+            except (TimeoutError, httpx.TimeoutException):
                 # A stalled RPC should switch gateways with the SAME account first.
                 client.mark_current_gateway_unhealthy()
                 await client.close()
@@ -498,9 +509,12 @@ class AccountScheduler:
         except Exception as exc:
             code = getattr(exc, "code", None)
             is_auth = isinstance(exc, MajsoulTokenInvalid) or code in (103, 104, 109, 1003, 1004)
+            safe_error = "网络失败" if self._network_failure(exc) else _redact_error(
+                exc, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)
+            )
             await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
                                     elapsed_ms=(time.monotonic() - start) * 1000,
-                                    error="网络失败" if self._network_failure(exc) else str(exc),
+                                    error=safe_error,
                                     code=code, auth_failed=is_auth)
             if self._network_failure(exc) or is_auth:
                 await client.close()
@@ -522,18 +536,29 @@ class AccountScheduler:
                         attempted.add(acc["id"])
                         errors.append(exc)
                         if getattr(exc, "code", None) == 1203:
+                            set_value("最近雀魂失败类型", "牌谱不存在或无权访问")
                             raise HTTPException(status_code=400, detail="牌谱不存在或无权查看（1203）") from exc
                     finally:
                         await self.release(acc["id"])
         except TimeoutError as exc:
+            set_value("最近雀魂失败类型", "网络失败")
             raise HTTPException(status_code=503, detail="雀魂牌谱下载累计等待超过60秒") from exc
         if errors and all(getattr(exc, "code", None) == 540 for exc in errors):
+            set_value("最近雀魂失败类型", "抓取限流")
             raise HTTPException(status_code=429, detail="当前账号池抓谱额度已满，请稍后重试")
         if errors:
+            if all(isinstance(exc, MajsoulTokenInvalid) or getattr(exc, "code", None) in (103, 104, 109, 1003, 1004) for exc in errors):
+                set_value("最近雀魂失败类型", "登录失效")
+            elif any(self._network_failure(exc) for exc in errors):
+                set_value("最近雀魂失败类型", "网络失败")
+            else:
+                set_value("最近雀魂失败类型", "雀魂接口失败")
             raise HTTPException(status_code=503, detail="雀魂账号或网络暂不可用，请稍后重试")
         enabled = [acc for acc in await asyncio.to_thread(self.store.all) if acc["enabled"]]
         if enabled and all(acc["cooldown_until"] > time.time() for acc in enabled):
+            set_value("最近雀魂失败类型", "抓取限流")
             raise HTTPException(status_code=429, detail="所有启用账号均处于540冷却期")
+        set_value("最近雀魂失败类型", "未配置账号" if not enabled else "登录失败")
         raise HTTPException(status_code=503, detail="当前没有空闲且可用的雀魂账号")
 
     async def _check_idle_accounts(self):
@@ -594,7 +619,7 @@ async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> Account
     from .account_register import AutoRegisterScheduler
     path = _db_path()
     try:
-        store = AccountStore(path)
+        store = await asyncio.to_thread(AccountStore, path)
     except (sqlite3.Error, OSError):
         if os.environ.get("MAJSOUL_ADMIN_DB_PATH"):
             raise
@@ -602,7 +627,7 @@ async def start_manager(cache_dir: Path, legacy_accounts: list[dict]) -> Account
         # Prefer a usable local database over preventing the service from starting.
         path = Path(__file__).resolve().parents[1] / "data" / "admin_accounts.sqlite3"
         log_warning(事件="账号数据库", 状态="已降级", 信息="持久化目录不可用，已使用本地数据库")
-        store = AccountStore(path)
+        store = await asyncio.to_thread(AccountStore, path)
     await asyncio.to_thread(store.bootstrap, legacy_accounts)
     _manager = AccountScheduler(store, cache_dir)
     _manager.periodic_task = asyncio.create_task(_manager.periodic())
