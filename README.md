@@ -155,15 +155,13 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为普通脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
 
-```bash
-python -m pytest tests -q
-```
+前端源代码可使用 Node.js 自带的语法检查命令检查，无需测试目录：
 
 ```bash
 for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
 ```
 
-部分测试需要已安装的原生扩展、Node.js 或指定模型权重；符号链接测试还依赖系统权限。
+后端通过 `docker build -t majsoul-analyzer:latest .` 构建；Dockerfile 会验证固定 ONNX 权重，GitHub Actions 只运行构建和源码语法检查。
 
 ## 致谢
 

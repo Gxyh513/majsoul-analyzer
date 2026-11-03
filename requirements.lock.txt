@@ -1,6 +1,6 @@
 # Verified Python 3.12 Linux production Docker environment.
-# From CI run 41271373222 (pip freeze BEFORE adding CI-only pytest).
-# Regenerate from a passing production image, then rerun the complete CI.
+# From the Python 3.12 production image in CI run 41271373222.
+# Regenerate from a successful production image build; validate with pip check.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
