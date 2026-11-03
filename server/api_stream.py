@@ -194,17 +194,28 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 progress_started = last_update = time.monotonic()
                 yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
                 while not task.done():
+                    # Wake immediately on new progress or worker completion.
+                    # Avoid polling an otherwise idle SSE connection 4 times/sec.
+                    progress_task = asyncio.create_task(q.get())
                     try:
-                        progress = await asyncio.wait_for(q.get(), timeout=0.25)
-                    except asyncio.TimeoutError:
+                        timeout = max(0.0, 10.0 - (time.monotonic() - last_update))
+                        done, _ = await asyncio.wait(
+                            (task, progress_task), timeout=timeout,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        if not progress_task.done():
+                            progress_task.cancel()
+                            await asyncio.gather(progress_task, return_exceptions=True)
+                    if progress_task in done:
+                        progress = progress_task.result()
+                        progress_started = last_update = time.monotonic()
+                        yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                    elif task not in done:
                         now = time.monotonic()
-                        if now - last_update >= 10:
-                            waiting = {**progress, "message": f"{progress['message']}（已等待 {int(now - progress_started)} 秒）"}
-                            yield f"data: {json.dumps({'type': 'progress', **waiting}, ensure_ascii=False)}\n\n"
-                            last_update = now
-                        continue
-                    progress_started = last_update = time.monotonic()
-                    yield f"data: {json.dumps({'type': 'progress', **progress}, ensure_ascii=False)}\n\n"
+                        waiting = {**progress, "message": f"{progress['message']}（已等待 {int(now - progress_started)} 秒）"}
+                        yield f"data: {json.dumps({'type': 'progress', **waiting}, ensure_ascii=False)}\n\n"
+                        last_update = now
 
                 while not q.empty():
                     progress = q.get_nowait()

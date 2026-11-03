@@ -161,7 +161,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
 
-为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录或 Pytest 配置。GitHub Actions 只做生产镜像构建、源码语法、应用导入/API 文档生成及内置演示牌谱的最小运行校验；这些检查不代表完整回归覆盖。
+为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录、Pytest 配置或构建验证工作流。部署工作流仅负责同步和触发发布，不负责确认实际服务可用；上线状态应以线上观测为准。
 
 ## 开发验证
 
