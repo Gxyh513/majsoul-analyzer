@@ -19,7 +19,6 @@ import json
 import logging
 import random
 import re
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -33,18 +32,17 @@ from .proto import LiqiProto
 
 log = logging.getLogger(__name__)
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
-)
+from .auth import AuthMixin, UA
+
 CN_BASE = "https://game.maj-soul.com/1"
 CN_ORIGIN = "https://game.maj-soul.com"
 DEFAULT_RES_VERSION = "0.16.289"
 DEFAULT_PKG_VERSION = "4.0.51"
-LOCAL_PROTOCOL_VERSION = "0.11.252.w"
-# Hash of the parsed schema serialized with sorted keys and no extra whitespace.
-LOCAL_PROTOCOL_SHA256 = "3d9191ef064daeed099feb482501e2d24e7c1da80a738e9b671b4618f178fed2"
-BUNDLED_PROTOCOL_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
+# Re-export stable protocol constants and caches from the isolated loader.
+from .protocol_loader import (
+    LOCAL_PROTOCOL_VERSION, LOCAL_PROTOCOL_SHA256, BUNDLED_PROTOCOL_DIR,
+    _PROTOCOL_LOCK, _PROTOCOL_CACHE, _load_local_protocol, _local_protocol,
+)
 ROUTES_CACHE_TTL_SECONDS = 300
 # Bound individual network waits and give each download one overall retry budget.
 ROUTES_HTTP_TIMEOUT_SECONDS = 3
@@ -55,8 +53,6 @@ RECORD_RPC_TIMEOUT_SECONDS = 3
 RECORD_HTTP_TIMEOUT_SECONDS = 3
 GATEWAY_FAILURE_COOLDOWN_SECONDS = 60
 _GATEWAY_FAILED_UNTIL: dict[str, float] = {}
-_PROTOCOL_LOCK = threading.Lock()
-_PROTOCOL_CACHE: dict[str, LiqiProto] = {}
 _ROUTE_CACHE: dict[tuple, tuple[float, tuple[str, ...], tuple[tuple[str, str], ...]]] = {}
 DEFAULT_ROUTE_HOSTS = [
     "https://route-2.maj-soul.com",
@@ -82,115 +78,14 @@ def _build_route_request_connection(route_id: str) -> bytes:
     return b"\x10\x01\x1a" + bytes([len(rid)]) + rid + b"\x20" + ts + b"\x32\x03Web"
 
 
-class MajsoulError(Exception):
-    def __init__(self, message: str, code: int | None = None):
-        super().__init__(message)
-        self.code = code
+from .errors import MajsoulError, MajsoulTokenInvalid
+from .paipu_links import decode_log_id, decode_account_id, parse_paipu, parse_paipu_seat
 
 
-class MajsoulTokenInvalid(MajsoulError):
-    """The server explicitly rejected a token; password fallback is allowed."""
+from .record_codec import RecordCodecMixin, _to_dict
 
 
-@lru_cache(maxsize=8)
-def _load_local_protocol(path: Path, file_state: tuple[int, int, int]) -> LiqiProto:
-    """Read and build the pinned schema once per unchanged file in this process."""
-    try:
-        with measure("Protobuf协议本地缓存读取耗时"):
-            raw = path.read_bytes()
-    except OSError as exc:
-        raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
-    try:
-        with measure("Protobuf JSON解析及协议初始化耗时"):
-            liqi = json.loads(raw)
-        normalized = json.dumps(liqi, sort_keys=True, separators=(",", ":")).encode("utf8")
-    except (ValueError, TypeError, UnicodeError) as exc:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
-    if hashlib.sha256(normalized).hexdigest() != LOCAL_PROTOCOL_SHA256:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 完整性校验失败，请恢复原文件。")
-    proto = _PROTOCOL_CACHE.get(LOCAL_PROTOCOL_SHA256)
-    if proto is not None:
-        return proto
-    try:
-        with measure("Protobuf JSON解析及协议初始化耗时"):
-            # The bundled schema predates the Unity WebGL device UUID field.
-            fields = liqi["nested"]["lq"]["nested"]["ClientDeviceInfo"]["fields"]
-            fields.setdefault("uuid", {"type": "string", "id": 14})
-            proto = LiqiProto(liqi)
-    except (ValueError, KeyError, TypeError) as exc:
-        raise MajsoulError(f"本地雀魂协议文件 {path} 无法解析，请恢复原文件。") from exc
-    _PROTOCOL_CACHE[LOCAL_PROTOCOL_SHA256] = proto
-    return proto
-
-
-def _local_protocol(cache_dir: Path) -> LiqiProto:
-    filename = f"liqi-{LOCAL_PROTOCOL_VERSION}.json"
-    # lru_cache alone can construct the same entry twice under concurrent calls.
-    with _PROTOCOL_LOCK:
-        for path in (cache_dir / filename, BUNDLED_PROTOCOL_DIR / filename):
-            try:
-                path = path.resolve()
-                stat = path.stat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                raise MajsoulError(f"无法读取本地雀魂协议文件 {path}，请恢复该文件。") from exc
-            return _load_local_protocol(path, (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
-    raise MajsoulError(f"找不到本地雀魂协议文件 {filename}，请恢复随项目提供的协议文件。")
-
-
-# --------------------------------------------------------------------------
-# paipu id helpers (port of tensoul/deobfuse.js)
-# --------------------------------------------------------------------------
-def decode_log_id(s: str) -> str:
-    out = []
-    for i, ch in enumerate(s):
-        if "0" <= ch <= "9":
-            o = ord(ch) - 48
-        elif "a" <= ch <= "z":
-            o = ord(ch) - 97 + 10
-        else:
-            out.append(ch)
-            continue
-        o = (o + 55 - i) % 36
-        out.append(chr(o + 48) if o < 10 else chr(o - 10 + 97))
-    return "".join(out)
-
-
-def decode_account_id(n: int) -> int:
-    return (((n - 1358437) ^ 86216345) - 1117113) // 7
-
-
-def parse_paipu(text: str) -> tuple[str, int | None]:
-    """Accept a full share link or a raw id. Returns (game_uuid, account_id|None)."""
-    text = text.strip()
-    m = re.search(r"paipu=([^&#\s]+)", text)
-    pid = m.group(1) if m else text
-    seps = pid.split("_")
-    uuid_ = seps[0]
-    target = None
-    if len(seps) >= 3 and seps[2] == "2":
-        uuid_ = decode_log_id(uuid_)
-    if len(seps) >= 2 and seps[1]:
-        if seps[1][0] == "a":
-            target = decode_account_id(int(seps[1][1:]))
-        elif seps[1].isdigit():
-            target = int(seps[1])
-    if not re.fullmatch(r"\d{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", uuid_):
-        raise MajsoulError(f"无法识别的牌谱 ID: {pid}")
-    return uuid_, target
-
-
-def parse_paipu_seat(text: str) -> int | None:
-    match = re.search(r"paipu=([^&#\s]+)", text)
-    parts = (match.group(1) if match else text.strip()).split("_")
-    if len(parts) > 1 and parts[1] in ("0", "1", "2", "3"):
-        return int(parts[1])
-    return None
-
-
-# --------------------------------------------------------------------------
-class MajsoulClient:
+class MajsoulClient(AuthMixin, RecordCodecMixin):
     def __init__(self, cache_dir: Path, base: str = CN_BASE, origin: str = CN_ORIGIN):
         self.base = base
         self.origin = origin
@@ -425,99 +320,6 @@ class MajsoulClient:
         return (res, data) if return_payload else res
 
     # ---------------------------------------------------------------- auth
-    def _device(self, random_key: str):
-        return {
-            "platform": "pc",
-            "hardware": "unknown",
-            "os": "windows",
-            "os_version": "Windows 10",
-            "is_browser": True,
-            "sale_platform": "web",
-            "screen_width": 1920,
-            "screen_height": 1080,
-            "user_agent": UA,
-            "screen_type": 1,
-            "uuid": random_key,
-        }
-
-    async def login_password(self, account: str, password: str):
-        pw = hmac.new(b"lailai", password.encode(), hashlib.sha256).hexdigest()
-        # In CN Mahjong Soul: 0 = email/account, 1 = mobile phone
-        primary_type = 1 if account.strip().isdigit() else 0
-        types_to_try = [primary_type, 1 - primary_type]
-        last_err = None
-        res = None
-        for acc_type in types_to_try:
-            rkey = str(uuid.uuid4())
-            try:
-                res = await self.call(
-                    "login",
-                    account=account,
-                    password=pw,
-                    reconnect=False,
-                    device=self._device(rkey),
-                    random_key=rkey,
-                    client_version=self.client_version_info,
-                    gen_access_token=True,
-                    currency_platforms=[1, 2, 5, 6, 8, 10, 11],
-                    type=acc_type,
-                    client_version_string=self.client_version_string,
-                    tag="cn",
-                )
-                break
-            except MajsoulError as e:
-                last_err = e
-                # Only retry with alternate type on account-not-found / wrong-type errors
-                if "1003" in str(e) or "104" in str(e) or "1004" in str(e):
-                    continue
-                raise
-        if res is None:
-            raise last_err or MajsoulError("登录失败")
-        self._after_login(res)
-        self.access_token = res.access_token or self.access_token
-        self.current_account = account
-        return res
-
-    async def login_token(self, token: str):
-        # Only an explicit token rejection permits a password fallback.
-        try:
-            chk = await self.call("oauth2Check", type=0, access_token=token)
-        except MajsoulError as exc:
-            if exc.code == 109:
-                raise MajsoulTokenInvalid("access_token 无效或已过期", code=109) from exc
-            raise
-        if not getattr(chk, "has_account", True):
-            raise MajsoulTokenInvalid("access_token 无效或已过期", code=109)
-        rkey = str(uuid.uuid4())
-        try:
-            res = await self.call(
-                "oauth2Login",
-                type=0,
-                access_token=token,
-                reconnect=False,
-                device=self._device(rkey),
-                random_key=rkey,
-                client_version=self.client_version_info,
-                gen_access_token=False,
-                currency_platforms=[1, 2, 5, 6, 8, 10, 11],
-                client_version_string=self.client_version_string,
-                tag="cn",
-            )
-        except MajsoulError as exc:
-            if exc.code == 109:
-                raise MajsoulTokenInvalid("access_token 无效或已过期", code=109) from exc
-            raise
-        self._after_login(res)
-        self.access_token = token
-        return res
-
-    def _after_login(self, res):
-        if not res.account_id:
-            raise MajsoulError("登录失败（未返回账号信息）")
-        self.logged_in = True
-        self.account_id = res.account_id
-        self.nickname = res.account.nickname if res.HasField("account") else None
-
     # ---------------------------------------------------------------- records
     async def fetch_record(self, game_uuid: str):
         from server.record_store import RawRecord
@@ -537,74 +339,6 @@ class MajsoulClient:
             raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
         return RawRecord(self.protocol_version, payload, detail)
 
-    def _get_record_proto(self, protocol_version: str):
-        if self._record_proto is not None and self._record_proto[0] == protocol_version:
-            return self._record_proto[1]
-        filename = f"liqi-{protocol_version}.json"
-        paths = (self.cache_dir / filename, Path(__file__).resolve().parents[2] / "data" / "cache" / filename)
-        try:
-            path = next(path for path in paths if path.is_file())
-            schema = path.read_text(encoding="utf8")
-            with measure("JSON解析"):
-                schema = json.loads(schema)
-            proto = LiqiProto(schema)
-        except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
-            raise MajsoulError("原始牌谱对应的雀魂协议文件不可用，请恢复协议文件。") from exc
-        self._record_proto = (protocol_version, proto)
-        return proto
-
-    def decode_record_head(self, record, game_uuid: str) -> dict:
-        from google.protobuf.json_format import MessageToDict
-        from server.record_store import CorruptRecordError
-
-        proto = self._get_record_proto(record.protocol_version)
-        try:
-            with measure("Protobuf实际解码"):
-                res = proto.decode("ResGameRecord", record.response)
-            data = res.data or record.detail
-            if res.head.uuid != game_uuid or not data or (res.HasField("error") and res.error.code):
-                raise ValueError("invalid game response")
-            head = MessageToDict(res.head, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
-            return {"head": head}
-        except Exception as exc:
-            raise CorruptRecordError("原始牌谱无法解码，请从备份恢复；系统不会自动重新下载。") from exc
-
-    def decode_record(self, record, game_uuid: str) -> dict:
-        from google.protobuf.json_format import MessageToDict
-        from server.record_store import CorruptRecordError
-
-        proto = self._get_record_proto(record.protocol_version)
-        try:
-            with measure("Protobuf实际解码"):
-                res = proto.decode("ResGameRecord", record.response)
-            data = res.data or record.detail
-            if res.head.uuid != game_uuid or not data or (res.HasField("error") and res.error.code):
-                raise ValueError("invalid game response")
-            with measure("Protobuf实际解码"):
-                name, payload = proto.unwrap(data)
-            if name not in (".lq.GameDetailRecords", "lq.GameDetailRecords", "GameDetailRecords"):
-                raise ValueError("invalid game detail")
-            with measure("Protobuf实际解码"):
-                detail = proto.decode(name, payload)
-            actions = []
-            if getattr(detail, "version", 0) < 210715 and len(detail.records) > 0:
-                for rec in detail.records:
-                    with measure("Protobuf实际解码"):
-                        n, d = proto.unwrap(rec)
-                        message = proto.decode(n, d)
-                    actions.append(_to_dict(n, message))
-            else:
-                for act in detail.actions:
-                    if act.result:
-                        with measure("Protobuf实际解码"):
-                            n, d = proto.unwrap(act.result)
-                            message = proto.decode(n, d)
-                        actions.append(_to_dict(n, message))
-            head = MessageToDict(res.head, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
-            return {"head": head, "actions": actions}
-        except Exception as exc:
-            raise CorruptRecordError("原始牌谱无法解码，请从备份恢复；系统不会自动重新下载。") from exc
-
     async def fetch_recent_records(self, count: int = 15) -> list[dict]:
         from google.protobuf.json_format import MessageToDict
         from .convert import game_meta
@@ -615,13 +349,6 @@ class MajsoulClient:
             hd = MessageToDict(r, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
             items.append(game_meta({"head": hd}))
         return items
-
-
-def _to_dict(name, msg):
-    from google.protobuf.json_format import MessageToDict
-
-    d = MessageToDict(msg, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)
-    return {"name": name.split(".")[-1], "data": d}
 
 
 def _fill(msg, fields: dict):

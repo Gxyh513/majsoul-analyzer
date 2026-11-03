@@ -1,0 +1,407 @@
+"""MJAI event replay, board snapshots and Mortal observation collection."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+_ENGINE_DIR = Path(__file__).resolve().parent
+if str(_ENGINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_ENGINE_DIR))
+import libriichi.state as lstate  # noqa: E402
+
+from .actions import next_player_action, event_to_label
+from .tiles import sort_key, deaka, tid
+from .review_labels import BAKAZE_CN, _hora_score_description
+
+
+def build_replay(
+    mjai_events: list[dict], target_actor: int, obs_version: int,
+    mortal: Any, meta: dict | None,
+    progress_callback: Callable[[float, str], None] | None,
+):
+    names = (meta or {}).get("names") or ["东家", "南家", "西家", "北家"]
+    for ev in mjai_events:
+        if ev.get("type") == "start_game" and ev.get("names"):
+            names = list(ev["names"])
+            break
+
+    ps = lstate.PlayerState(target_actor)
+
+    kyokus: list[dict[str, Any]] = []
+    cur_kyoku: dict[str, Any] | None = None
+
+    # Board tracking state per kyoku
+    hands: list[list[str]] = [[], [], [], []]
+    drawn_tile: list[str | None] = [None, None, None, None]
+    melds: list[list[dict]] = [[], [], [], []]
+    rivers: list[list[dict]] = [[], [], [], []]
+    riichi_declared: list[bool] = [False, False, False, False]
+    scores: list[int] = [25000, 25000, 25000, 25000]
+    dora_markers: list[str] = []
+    kyotaku = 0
+    honba = 0
+    bakaze = "E"
+    kyoku_num = 1
+    oya = 0
+    tiles_left = 70
+    junme = 0
+    pending_riichi_Discard: int | None = None
+    last_actor = 0
+    last_tile: str | None = None
+
+    # Batch buffers for Mortal neural network evaluation
+    pending_decisions: list[dict[str, Any]] = []
+    mortal_obs_batch: list[np.ndarray] = []
+    mortal_mask_batch: list[np.ndarray] = []
+    # Reuse immutable-by-convention snapshot lists within one review. The
+    # serialized replay JSON stays identical: no wire/schema change.
+    sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
+    cached_melds: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
+    cached_rivers: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
+
+    def frozen_snapshot_lists(source: list[list[dict]], cache: list) -> list[list[dict]]:
+        snapshots = []
+        for seat, items in enumerate(source):
+            # Meld/river entries are replaced on change, not modified in place.
+            # Existing snapshots already share their dicts; only the outer lists
+            # are now shared when their entries have not changed.
+            identity = tuple(id(item) for item in items)
+            saved = cache[seat]
+            if saved is None or saved[0] != identity:
+                saved = (identity, list(items))
+                cache[seat] = saved
+            snapshots.append(saved[1])
+        return snapshots
+
+    def snapshot_board(ev: dict, event_idx: int) -> dict[str, Any]:
+        snapshot_hands = []
+        for seat, hand in enumerate(hands):
+            hand_state = tuple(hand)
+            cached = sorted_hands[seat]
+            if cached is None or cached[0] != hand_state:
+                cached = (hand_state, sorted(hand, key=sort_key))
+                sorted_hands[seat] = cached
+            snapshot_hands.append(cached[1])
+        return {
+            "event": ev,
+            # The same MJAI event keeps its identity across seat-specific snapshots.
+            "event_idx": event_idx,
+            "hands": snapshot_hands,
+            "drawn": list(drawn_tile),
+            # Entries are replaced rather than mutated when calls or kans change them.
+            "melds": frozen_snapshot_lists(melds, cached_melds),
+            "rivers": frozen_snapshot_lists(rivers, cached_rivers),
+            "riichi": list(riichi_declared),
+            "scores": list(scores),
+            "dora_markers": list(dora_markers),
+            "kyotaku": kyotaku,
+            "honba": honba,
+            "tiles_left": tiles_left,
+            "junme": junme,
+            "decision_idx": None,
+        }
+
+    def fold_drawn_into_hand(seat: int):
+        if drawn_tile[seat] is not None:
+            hands[seat].append(drawn_tile[seat])
+            drawn_tile[seat] = None
+
+    def remove_from_hand(seat: int, tile: str):
+        fold_drawn_into_hand(seat)
+        if tile in hands[seat]:
+            hands[seat].remove(tile)
+        else:
+            base = deaka(tile)
+            for x in list(hands[seat]):
+                if deaka(x) == base:
+                    hands[seat].remove(x)
+                    break
+
+    for i, ev in enumerate(mjai_events):
+        etype = ev["type"]
+        ps.update(json.dumps(ev))
+
+        if etype == "start_kyoku":
+            bakaze = ev["bakaze"]
+            kyoku_num = int(ev["kyoku"])
+            honba = int(ev["honba"])
+            kyotaku = int(ev["kyotaku"])
+            oya = int(ev["oya"])
+            scores = [int(x) for x in ev["scores"]]
+            hands = [sorted(list(h), key=sort_key) for h in ev["tehais"]]
+            drawn_tile = [None, None, None, None]
+            melds = [[], [], [], []]
+            rivers = [[], [], [], []]
+            riichi_declared = [False, False, False, False]
+            dora_markers = [ev["dora_marker"]]
+            tiles_left = 70
+            junme = 0
+            pending_riichi_Discard = None
+            last_actor = oya
+            last_tile = None
+
+            label = f"{BAKAZE_CN.get(bakaze, bakaze)}{kyoku_num}局"
+            if honba > 0:
+                label += f" {honba}本场"
+            if progress_callback:
+                pct = 15.0 + (i / max(1, len(mjai_events))) * 65.0
+                progress_callback(pct, f"正在检讨 {label} (Mortal)...")
+            cur_kyoku = {
+                "kyoku_idx": len(kyokus),
+                "bakaze": bakaze,
+                "kyoku_num": kyoku_num,
+                "honba": honba,
+                "kyotaku": kyotaku,
+                "oya": oya,
+                "label": label,
+                "init_scores": list(scores),
+                "end_scores": list(scores),
+                "score_deltas": [0, 0, 0, 0],
+                "end_summaries": [],
+                "steps": [],
+                "decisions": [],
+            }
+            cur_kyoku["steps"].append(snapshot_board(ev, i))
+            continue
+
+        if cur_kyoku is None:
+            continue
+
+        if etype == "end_kyoku":
+            cur_kyoku["end_scores"] = list(scores)
+            cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
+            kyokus.append(cur_kyoku)
+            cur_kyoku = None
+            continue
+
+        if etype == "dora":
+            dora_markers.append(ev["dora_marker"])
+            if cur_kyoku["steps"]:
+                cur_kyoku["steps"][-1]["dora_markers"] = list(dora_markers)
+            continue
+
+        if etype == "reach_accepted":
+            r_seat = int(ev["actor"])
+            scores[r_seat] -= 1000
+            kyotaku += 1
+            cur_kyoku["end_scores"] = list(scores)
+            cur_kyoku["score_deltas"][r_seat] -= 1000
+            if cur_kyoku["steps"]:
+                cur_kyoku["steps"][-1]["scores"] = list(scores)
+                cur_kyoku["steps"][-1]["kyotaku"] = kyotaku
+            continue
+
+        if etype == "reach":
+            r_seat = int(ev["actor"])
+            riichi_declared[r_seat] = True
+            pending_riichi_Discard = r_seat
+            # We do not add a separate visual board step for `reach`, except we
+            # still check if target_actor has multiple tenpai discard choices.
+            if r_seat == target_actor and ps.last_cans.can_act:
+                obs_4, mask_4 = ps.encode_obs(4, False)
+                if int(mask_4.sum()) > 1:
+                    actual_ev = next_player_action(mjai_events, target_actor, False, False, False, i + 1)
+                    if actual_ev is not None and actual_ev.get("type") == "dahai":
+                        obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
+                        # Separate the riichi declaration from its discard choice,
+                        # so both decisions have an independently navigable step.
+                        step_ref = len(cur_kyoku["steps"])
+                        cur_kyoku["steps"].append(snapshot_board(ev, i))
+                        pending_decisions.append(
+                            {
+                                "kyoku_idx": cur_kyoku["kyoku_idx"],
+                                "step_idx": step_ref,
+                                "junme": junme,
+                                "tiles_left": tiles_left,
+                                "at_furiten": bool(ps.at_furiten),
+                                "decision_type": "riichi_discard",
+                                "context_tile": last_tile,
+                                "last_actor": last_actor,
+                                "actual_ev": actual_ev,
+                                "mask": mask_4,
+                                "akas_in_hand": list(ps.akas_in_hand),
+                                "ankan_cands": ps.ankan_candidates(),
+                                "kakan_cands": ps.kakan_candidates(),
+                            }
+                        )
+                        if mortal is not None:
+                            mortal_obs_batch.append(obs_m)
+                            mortal_mask_batch.append(mask_4)
+            continue
+
+        # Update board state for normal events
+        if etype == "tsumo":
+            seat = int(ev["actor"])
+            fold_drawn_into_hand(seat)
+            drawn_tile[seat] = ev["pai"]
+            tiles_left = max(0, tiles_left - 1)
+            if seat == target_actor:
+                junme += 1
+            last_actor = seat
+            last_tile = ev["pai"]
+
+        elif etype == "dahai":
+            seat = int(ev["actor"])
+            pai = ev["pai"]
+            remove_from_hand(seat, pai)
+            is_r = pending_riichi_Discard == seat
+            if is_r:
+                pending_riichi_Discard = None
+            rivers[seat].append(
+                {
+                    "pai": pai,
+                    "tsumogiri": bool(ev.get("tsumogiri")),
+                    "riichi": is_r,
+                    "called": False,
+                    "step": len(cur_kyoku["steps"]),
+                }
+            )
+            last_actor = seat
+            last_tile = pai
+
+        elif etype in ("chi", "pon", "daiminkan"):
+            seat = int(ev["actor"])
+            target = int(ev["target"])
+            pai = ev["pai"]
+            consumed = list(ev["consumed"])
+            for c in consumed:
+                remove_from_hand(seat, c)
+            if rivers[target]:
+                # Bind the actual call to this discard at conversion time.
+                # Identical tiles can be called repeatedly later in one round.
+                rivers[target][-1] = {
+                    **rivers[target][-1], "called": True,
+                    "call_actor": seat, "call_type": etype,
+                }
+            melds[seat].append({"type": etype, "pai": pai, "consumed": consumed, "from": target, "tiles": [pai] + consumed})
+            if seat == target_actor and etype in ("chi", "pon"):
+                junme += 1
+            last_actor = seat
+
+        elif etype == "ankan":
+            seat = int(ev["actor"])
+            consumed = list(ev["consumed"])
+            for c in consumed:
+                remove_from_hand(seat, c)
+            melds[seat].append({"type": "ankan", "pai": consumed[0], "consumed": consumed, "from": seat, "tiles": consumed})
+            last_actor = seat
+            last_tile = consumed[0]
+
+        elif etype == "kakan":
+            seat = int(ev["actor"])
+            pai = ev["pai"]
+            remove_from_hand(seat, pai)
+            base = deaka(pai)
+            for meld_idx, m in enumerate(melds[seat]):
+                if m["type"] == "pon" and deaka(m["pai"]) == base:
+                    melds[seat][meld_idx] = {**m, "type": "kakan", "added": pai, "tiles": [*m["tiles"], pai]}
+                    break
+            last_actor = seat
+            last_tile = pai
+
+        elif etype == "hora":
+            seat = int(ev["actor"])
+            target = int(ev["target"])
+            deltas = ev.get("deltas")
+            if deltas:
+                for s in range(4):
+                    scores[s] += int(deltas[s])
+                    cur_kyoku["score_deltas"][s] += int(deltas[s])
+                cur_kyoku["end_scores"] = list(scores)
+            who = names[seat]
+            pts = f"{deltas[seat]:+d}" if deltas else ""
+            score_desc = _hora_score_description(ev)
+            if seat == target:
+                cur_kyoku["end_summaries"].append(f"{who} 自摸 {score_desc}{pts}")
+            else:
+                cur_kyoku["end_summaries"].append(f"{who} 荣和 {names[target]} {score_desc}{pts}")
+
+        elif etype == "ryukyoku":
+            deltas = ev.get("deltas")
+            if deltas:
+                for s in range(4):
+                    scores[s] += int(deltas[s])
+                    cur_kyoku["score_deltas"][s] += int(deltas[s])
+                cur_kyoku["end_scores"] = list(scores)
+            reason = ev.get("majsoul", {}).get("reason")
+            label = {
+                "exhaustive": "荒牌流局",
+                "nagashi_mangan": "流局满贯",
+                "kyushu_kyuhai": "九种九牌",
+                "suufon_renda": "四风连打",
+                "suukan_sanra": "四杠散了",
+                "suucha_riichi": "四家立直",
+            }.get(reason, "流局")
+            cur_kyoku["end_summaries"].append(label)
+
+        step_idx = len(cur_kyoku["steps"])
+        step_snap = snapshot_board(ev, i)
+        cur_kyoku["steps"].append(step_snap)
+
+        # Check if `target_actor` has a decision at this exact step
+        cans = ps.last_cans
+        if not cans.can_act:
+            continue
+
+        obs_4, mask_4 = ps.encode_obs(4, False)
+        if int(mask_4.sum()) <= 1:
+            continue
+
+        can_pon_or_kan = bool(mask_4[41] or mask_4[42])
+        can_agari = bool(mask_4[43])
+        can_ryukyoku = bool(mask_4[44])
+        actual_ev = next_player_action(mjai_events, target_actor, can_pon_or_kan, can_agari, can_ryukyoku, i + 1)
+        if actual_ev is None:
+            continue
+
+        actual_label = event_to_label(actual_ev)
+        if not mask_4[actual_label]:
+            # Occasionallyaka vs non-aka discard mismatch if tile_of_action_idx differs; fallback to deaka
+            if actual_ev.get("type") == "dahai":
+                alt = tid(actual_ev["pai"])
+                if mask_4[alt]:
+                    actual_label = alt
+                else:
+                    continue
+            else:
+                continue
+
+        obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
+        if cans.can_discard:
+            dtype = "discard_after_call" if etype in ("chi", "pon") else "self_turn"
+        else:
+            dtype = "call_response"
+
+        pending_decisions.append(
+            {
+                "kyoku_idx": cur_kyoku["kyoku_idx"],
+                "step_idx": step_idx,
+                "junme": junme,
+                "tiles_left": tiles_left,
+                "at_furiten": bool(ps.at_furiten),
+                "decision_type": dtype,
+                "context_tile": last_tile,
+                "last_actor": last_actor,
+                "actual_ev": actual_ev,
+                "actual_label": actual_label,
+                "mask": mask_4,
+                "akas_in_hand": list(ps.akas_in_hand),
+                "ankan_cands": ps.ankan_candidates(),
+                "kakan_cands": ps.kakan_candidates(),
+            }
+        )
+        if mortal is not None:
+            mortal_obs_batch.append(obs_m)
+            mortal_mask_batch.append(mask_4)
+
+    if cur_kyoku is not None:
+        cur_kyoku["end_scores"] = list(scores)
+        cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
+        kyokus.append(cur_kyoku)
+
+
+    return kyokus, pending_decisions, mortal_obs_batch, mortal_mask_batch, names

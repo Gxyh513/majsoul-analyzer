@@ -5,7 +5,6 @@ backups/
 data/models/*.pth
 data/models/*.onnx
 data/models/*.tmp
-.pytest_cache/
 data/records/
 data/config.local.json
 
