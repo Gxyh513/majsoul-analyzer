@@ -20,6 +20,10 @@ jobs:
       - name: 检查 Python 源码语法
         run: docker run --rm majsoul-analyzer:ci python -m compileall -q server run.py
 
+      - name: 验证内置演示牌谱可完成 AI 检讨
+        run: |
+          docker run --rm majsoul-analyzer:ci python -c "import json; from pathlib import Path; from server.engine.reviewer import EngineManager, review_game; events = json.loads(Path('data/demo_mjai.json').read_text(encoding='utf8')); result = review_game(events, 0, EngineManager(Path('data/models'))); print('Demo kyokus:', len(result['kyokus']), 'decisions:', result['summary']['total_reviewed'])"
+
       - name: 检查应用模块导入与 API 路由注册
         run: |
           docker run --rm majsoul-analyzer:ci python -c "from server.app import app; schema = app.openapi(); print('FastAPI routes:', len(app.routes), 'OpenAPI paths:', len(schema.get('paths', {})))"
