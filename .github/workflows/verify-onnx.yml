@@ -19,3 +19,7 @@ jobs:
 
       - name: 检查 Python 源码语法
         run: docker run --rm majsoul-analyzer:ci python -m compileall -q server run.py
+
+      - name: 检查应用模块导入与 API 路由注册
+        run: |
+          docker run --rm majsoul-analyzer:ci python -c "from server.app import app; schema = app.openapi(); print('FastAPI routes:', len(app.routes), 'OpenAPI paths:', len(schema.get('paths', {})))"
