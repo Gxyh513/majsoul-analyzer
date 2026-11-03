@@ -73,8 +73,8 @@ def get_all_configured_accounts(
         if load_config_fn is not None:
             cfg = load_config_fn()
         else:
-            import server.app as server_app
-            cfg = server_app.load_config()
+            from .app_config import load_config
+            cfg = load_config()
 
     raw_candidates: list[tuple[dict, bool]] = []
 
@@ -176,8 +176,8 @@ def get_all_configured_accounts(
 def is_client_logged_in_as(acc: dict, client: MajsoulClient | None = None) -> bool:
     """Checks if client is currently active, connected, and logged in as the specified account."""
     if client is None:
-        import server.app as server_app
-        client = server_app.ms_client
+        from .runtime_state import ms_client
+        client = ms_client
 
     if not client.logged_in:
         return False
@@ -223,9 +223,9 @@ def _persist_updated_token(
         _env_pool_token_overrides[key] = (source_token, new_token)
         return
     try:
-        import server.app as server_app
-        loader = load_config_fn or server_app.load_config
-        saver = save_config_fn or server_app.save_config
+        from .app_config import load_config, save_config
+        loader = load_config_fn or load_config
+        saver = save_config_fn or save_config
         cfg = loader()
         updated = False
         target_acc = (acc.get("account") or "").strip().lower()

@@ -180,3 +180,10 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 ## 运行期间性能汇总
 
 通过带有效 API 令牌的 `GET /api/status` 可读取 `performance_recent`，包含最近最多 256 次分析请求的总耗时、排队、ONNX 推理和结果大小的 P50/P95。仅保存在当前服务进程的有界内存中，重启清空；不存储用户昵称、牌谱编号或 IP。匿名状态接口不包含这些统计。不同实例分别统计，不应将单进程分位数直接视为全站压测结果。
+
+## 补充性能优化
+
+- SSE 流式分析的进度等待使用队列与任务完成通知，不再每 250 毫秒轮询；保留 10 秒心跳提示。
+- 回放中手牌和牌河 DOM 只在对应 HTML 变化时替换；牌面异步解码，11 个前端脚本保持执行顺序并使用 `defer`。
+- 雀魂网关 routes 发现合并并发请求；限流冷却条目与网关失效记录过期后回收；指定客户端的登录和换线重试都使用该客户端。
+- 可以设置 `MAJSOUL_REVIEW_MAX_WAITERS`（1–32，默认 4）及 `MAJSOUL_REVIEW_QUEUE_TIMEOUT_SECONDS`（15–300 秒，默认 90）。默认 ONNX 推理并发仍为 1，避免未经负载评估增加内存压力。
