@@ -9,11 +9,11 @@ from fastapi import APIRouter, HTTPException
 
 from .logger import log_warning
 from .majsoul.client import MajsoulError
-from .app import (
-    LoginReq, ms_client, _ms_client_lock,
-    load_config, save_config, is_client_logged_in_as,
-    _build_api_status, _redact_error, ensure_ms_logged_in,
-)
+from .api_schemas import LoginReq
+from .runtime_state import ms_client, _ms_client_lock
+from .app_config import load_config, save_config
+from .account_pool import is_client_logged_in_as, _redact_error, ensure_ms_logged_in
+from .api_status import _build_api_status
 
 router = APIRouter()
 
