@@ -119,7 +119,7 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     for idx, acc in enumerate(accs):
         acc_label = acc.get("nickname") or _mask_account(acc.get("account")) or f"账号{idx+1}"
         try:
-            await login_spec_fn(acc)
+            await login_spec_fn(acc, client=client)
             return
         except Exception as e:
             log_warning(
@@ -169,7 +169,7 @@ async def _fetch_record_with_failover_inner(
     is_logged_in = is_client_logged_in_as
     accounts = list(get_accounts())
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
-        if not any(is_logged_in(account) for account in accounts):
+        if not any(is_logged_in(account, client) for account in accounts):
             accounts.insert(0, {"account": client.current_account, "account_id": client.account_id,
                                 "access_token": client.access_token})
     if not accounts:
@@ -184,6 +184,13 @@ async def _fetch_record_with_failover_inner(
         else:
             async with client_lock:
                 yield
+
+    # Keep long-lived processes from retaining cooldown entries for retired accounts.
+    if len(_rate_limited_until) > 128:
+        now = time.monotonic()
+        for key, expiry in tuple(_rate_limited_until.items()):
+            if expiry <= now:
+                _rate_limited_until.pop(key, None)
 
     attempted: set[str] = set()
     outcomes: list[str] = []
@@ -205,7 +212,7 @@ async def _fetch_record_with_failover_inner(
             break
 
         async with read_session():
-            account = next((a for a in available if is_logged_in(a)), None)
+            account = next((a for a in available if is_logged_in(a, client)), None)
             if account is not None:
                 session = client._ws
                 try:
@@ -223,8 +230,8 @@ async def _fetch_record_with_failover_inner(
                         mark_unhealthy()
                     await client.close()
                     try:
-                        await login(account)
-                        if not is_logged_in(account):
+                        await login(account, client=client)
+                        if not is_logged_in(account, client):
                             raise MajsoulError("更换线路后雀魂会话不可用")
                         return await client.fetch_record(game_uuid)
                     except Exception as retry_error:
@@ -232,13 +239,13 @@ async def _fetch_record_with_failover_inner(
 
         if account is None:
             async with client_lock:
-                if any(is_logged_in(a) for a in available):
+                if any(is_logged_in(a, client) for a in available):
                     continue
                 account = available[0]
                 key = _account_pool_key(account)
                 try:
-                    await login(account)
-                    if not is_logged_in(account):
+                    await login(account, client=client)
+                    if not is_logged_in(account, client):
                         raise MajsoulError("登录后雀魂会话不可用")
                 except Exception as error:
                     log_warning(
