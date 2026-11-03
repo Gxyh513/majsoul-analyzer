@@ -97,139 +97,15 @@ _review_waiters = 0
 _review_inflight: dict[str, dict[str, Any]] = {}
 
 
-def load_config() -> dict[str, Any]:
-    cfg: dict[str, Any] = {}
-    if CONFIG_PATH.is_file():
-        try:
-            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf8"))
-        except Exception:  # noqa: BLE001
-            pass
-    elif EXAMPLE_CONFIG_PATH.is_file():
-        try:
-            cfg = json.loads(EXAMPLE_CONFIG_PATH.read_text(encoding="utf8"))
-        except Exception:  # noqa: BLE001
-            pass
-
-    # Safe local config overrides git-tracked template
-    if LOCAL_CONFIG_PATH.is_file():
-        try:
-            local_cfg = json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf8"))
-            cfg.update(local_cfg)
-        except Exception:  # noqa: BLE001
-            pass
-
-    if os.environ.get("MAJSOUL_ACCOUNT"):
-        cfg["account"] = os.environ["MAJSOUL_ACCOUNT"]
-    if os.environ.get("MAJSOUL_PASSWORD"):
-        cfg["password"] = os.environ["MAJSOUL_PASSWORD"]
-    if os.environ.get("MAJSOUL_ACCESS_TOKEN"):
-        cfg["access_token"] = os.environ["MAJSOUL_ACCESS_TOKEN"]
-
-    # A secret-managed pool is authoritative, so editing it can add or remove
-    # accounts without stale local or individual environment entries returning.
-    if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
-        try:
-            pool = json.loads(os.environ["MAJSOUL_ACCOUNTS_JSON"])
-        except (TypeError, ValueError):
-            raise ValueError("MAJSOUL_ACCOUNTS_JSON 必须是账号对象组成的 JSON 数组") from None
-        if not isinstance(pool, list) or any(not isinstance(item, dict) for item in pool):
-            raise ValueError("MAJSOUL_ACCOUNTS_JSON 必须是账号对象组成的 JSON 数组")
-        for item in pool:
-            if any(item.get(k) is not None and not isinstance(item[k], str) for k in ("account", "password", "access_token", "nickname")):
-                raise ValueError("MAJSOUL_ACCOUNTS_JSON 中的账号、密码和令牌必须为字符串")
-            if not (item.get("access_token") or (item.get("account") and item.get("password"))):
-                raise ValueError("账号池每一项须提供访问令牌，或账号和密码")
-        for key in ("account", "password", "access_token", "nickname", "account_id", "backup_accounts", "accounts", "account_pool"):
-            cfg.pop(key, None)
-        if pool:
-            cfg.update({k: pool[0][k] for k in ("account", "password", "access_token", "nickname", "account_id") if k in pool[0]})
-            cfg["backup_accounts"] = pool[1:]
-    return cfg
+from .app_config import load_config, save_config
 
 
-def save_config(cfg: dict[str, Any], *, clear_local_credentials: bool = False):
-    cfg = dict(cfg)
-    if "MAJSOUL_ACCOUNTS_JSON" in os.environ or any(
-        os.environ.get(key) for key in ("MAJSOUL_ACCOUNT", "MAJSOUL_PASSWORD", "MAJSOUL_ACCESS_TOKEN")
-    ):
-        # Preserve existing local credentials rather than persisting environment
-        # values or tokens derived from an environment-managed primary account.
-        try:
-            local = json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf8")) if LOCAL_CONFIG_PATH.is_file() else {}
-        except (ValueError, OSError):
-            raise RuntimeError("本地配置无法读取，已取消保存") from None
-        keys = ["account", "password", "access_token", "nickname", "account_id"]
-        if "MAJSOUL_ACCOUNTS_JSON" in os.environ:
-            keys += ["backup_accounts", "accounts", "account_pool"]
-        for key in keys:
-            cfg.pop(key, None)
-            if key in local and not (clear_local_credentials and key in ("password", "access_token")):
-                cfg[key] = local[key]
-    LOCAL_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf8")
-
-
-engine_mgr = EngineManager(MODELS_DIR)
-
-
-# One immutable, independently verified model; never accept a user-supplied URL.
-MODEL_SIZE = 43_673_425
-MODEL_REVISION = "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a"
-MODEL_URL = f"https://huggingface.co/xzhe121/Mortal-S42-onnx/resolve/{MODEL_REVISION}/model.onnx"
-model_download_state = {"status": "idle", "progress_pct": 0.0, "downloaded_bytes": 0,
-                        "total_bytes": MODEL_SIZE, "error_msg": None}
-_model_download_lock = threading.Lock()
-_model_download_metrics: dict[str, Any] = {}
-
-
-def _download_model_sync(model_id: str) -> None:
-    global _model_download_metrics
-    if model_id != MODEL_ID:
-        return
-    state = model_download_state
-    with _model_download_lock:
-        if state["status"] == "downloading":
-            return
-        metrics: dict[str, Any] = {}
-        _model_download_metrics = metrics
-        state.update(status="downloading", progress_pct=0.0, downloaded_bytes=0,
-                     total_bytes=MODEL_SIZE, error_msg=None)
-
-    try:
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        # Use a unique directory on the same filesystem so replacement is atomic.
-        with tempfile.TemporaryDirectory(prefix=".model-download-", dir=MODELS_DIR) as tmp_dir:
-            tmp_path = Path(tmp_dir) / MODEL_FILE
-            req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=300) as resp, tmp_path.open("wb") as output:
-                downloaded = 0
-                while chunk := resp.read(512 * 1024):
-                    downloaded += len(chunk)
-                    if downloaded > MODEL_SIZE:
-                        raise ValueError("下载模型大小超过预期")
-                    output.write(chunk)
-                    state.update(downloaded_bytes=downloaded,
-                                 progress_pct=min(99.0, round(downloaded / MODEL_SIZE * 100, 1)))
-            if downloaded != MODEL_SIZE or sha256_file(tmp_path) != MODEL_SHA256:
-                raise ValueError("下载模型大小或 SHA-256 不匹配")
-            # The manager validates with OnnxMortal and atomically installs the model.
-            token = _performance.set(metrics)
-            try:
-                engine_mgr.install_model(tmp_path)
-            finally:
-                _performance.reset(token)
-        state.update(status="ready", progress_pct=100.0, downloaded_bytes=MODEL_SIZE,
-                     total_bytes=MODEL_SIZE, error_msg=None)
-        log_debug(事件="AI模型就绪", 模型="Mortal S42 ONNX", 状态="校验通过并启用")
-    except Exception as exc:
-        log_warning(事件="AI模型下载失败", 异常信息=_safe_error_context(exc))
-        state.update(status="error", error_msg="模型下载或校验失败，请查看服务端日志。")
-
-
-def trigger_model_download(model_id: str) -> bool:
-    if model_id != MODEL_ID:
-        return False
-    threading.Thread(target=_download_model_sync, args=(MODEL_ID,), daemon=True).start()
-    return True
+from . import model_download
+from .model_download import (
+    engine_mgr, MODEL_SIZE, MODEL_REVISION, MODEL_URL,
+    model_download_state, _model_download_lock,
+    _download_model_sync, trigger_model_download,
+)
 
 
 ms_client = MajsoulClient(CACHE_DIR)
@@ -726,27 +602,7 @@ async def resolve_game_data(
     return game_uuid, events, meta, select_game_seat(meta, seat, url_acc_id if url_seat is None else None)
 
 
-def _safe_error_context(error: BaseException) -> str:
-    """Report exception type and source line, never its message or locals."""
-    locations = []
-    seen = set()
-    current = error
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        tb = current.__traceback__
-        while tb is not None:
-            # Emit only fixed package paths and line numbers, never exception
-            # messages, locals, absolute paths, or user-defined filenames.
-            filename = tb.tb_frame.f_code.co_filename
-            for module in ("server/app.py", "server/account_pool.py", "server/engine/reviewer.py", "server/majsoul/convert.py"):
-                if filename.replace("\\", "/").endswith("/" + module):
-                    locations.append(f"{module}:{tb.tb_lineno}")
-                    break
-            tb = tb.tb_next
-        current = current.__cause__
-    code = getattr(error, "code", None)
-    safe_code = f" code={code}" if isinstance(code, int) and not isinstance(code, bool) else ""
-    return f"{type(error).__name__}{safe_code} at {','.join(locations[-4:]) or 'external'}"
+from .error_context import _safe_error_context
 
 
 def _public_review_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -776,7 +632,9 @@ def _public_review_pipeline_identity() -> str:
     digest = hashlib.sha256()
     for name in (
         "majsoul/client.py", "majsoul/proto.py", "majsoul/convert.py",
-        "engine/reviewer.py", "engine/tiles.py",
+        "majsoul/record_codec.py", "majsoul/protocol_loader.py", "majsoul/paipu_links.py",
+        "engine/reviewer.py", "engine/tiles.py", "engine/actions.py",
+        "engine/review_scoring.py", "engine/model_manager.py",
         "engine/onnx_mortal.py", "engine/model_policy.py",
     ):
         digest.update(name.encode("ascii"))
@@ -1082,7 +940,7 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
     if not st:
         return
     wait_started = time.perf_counter()
-    download_metrics = _model_download_metrics if st["status"] == "downloading" else None
+    download_metrics = model_download._model_download_metrics if st["status"] == "downloading" else None
     try:
         with _measure("AI模型准备耗时"), _measure("模型下载等待耗时"):
             if st["status"] == "downloading":
@@ -1093,7 +951,7 @@ async def _wait_for_model_download(model_id: str | None = None, timeout_s: float
                     await asyncio.sleep(0.5)
     finally:
         wait_finished = time.perf_counter()
-        if download_metrics is not None and download_metrics is _model_download_metrics:
+        if download_metrics is not None and download_metrics is model_download._model_download_metrics:
             background, _ = _performance_snapshot(download_metrics)
             init_started = background.get("_model_init_started")
             if init_started is not None:
