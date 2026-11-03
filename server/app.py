@@ -59,17 +59,6 @@ log = logging.getLogger("majsoul-analyzer")
 from .analysis_logging import _log_performance
 
 
-async def _record_mjai_size(events: list[dict]) -> None:
-    stats = _performance.get()
-    if stats is not None:
-        try:
-            stats["MJAI数据大小"] = await asyncio.to_thread(
-                lambda: len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-
 from .runtime import (
     ROOT_DIR, DATA_DIR, CACHE_DIR, RECORDS_DIR, REVIEWS_DIR,
     LEGACY_RECORDS_DIRS, MODELS_DIR, CONFIG_PATH, LOCAL_CONFIG_PATH,
@@ -176,7 +165,7 @@ _collect_local_records = _api_local_records._collect_local_records
 api_records_local = _api_local_records.api_records_local
 
 
-from .game_data import select_game_seat, get_or_download_record, resolve_game_data
+from .game_data import _record_mjai_size, select_game_seat, get_or_download_record, resolve_game_data
 
 
 from .error_context import _safe_error_context
