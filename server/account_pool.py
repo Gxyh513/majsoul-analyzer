@@ -23,9 +23,6 @@ from server.logger import log_debug, log_info, log_warning
 from server.majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
 from server.paipu_performance import get_value, measure, set_value
 
-if TYPE_CHECKING:
-    import server.app as server_app
-
 log = logging.getLogger(__name__)
 
 # A 540 response has no reliable reset timestamp; avoid retrying it for a full day.
@@ -49,8 +46,8 @@ async def login_with_account_spec(
 ):
     """Log in using a specific account dict (token first, fallback to password)."""
     if client is None:
-        import server.app as server_app
-        client = server_app.ms_client
+        from .runtime import ms_client
+        client = ms_client
 
     log_debug(事件="WebSocket连接", 状态="建立会话")
     await client.close()
@@ -102,15 +99,15 @@ async def login_with_account_spec(
 
 async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     """Ensure client is logged in with an available account."""
-    import server.app as server_app
+    from .runtime import ms_client
     if client is None:
-        client = server_app.ms_client
+        client = ms_client
 
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
         return
 
-    get_accounts_fn = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
-    login_spec_fn = getattr(server_app, "login_with_account_spec", login_with_account_spec)
+    get_accounts_fn = get_all_configured_accounts
+    login_spec_fn = login_with_account_spec
 
     accs = get_accounts_fn()
     if not accs:
@@ -163,13 +160,13 @@ async def _fetch_record_with_failover_inner(
 ):
     """Fetch through a shared session; reconnect or switch accounts exclusively."""
     from contextlib import asynccontextmanager
-    import server.app as server_app
+    from .runtime import ms_client, _ms_client_lock
 
-    client = client or server_app.ms_client
-    client_lock = client_lock or server_app._ms_client_lock
-    get_accounts = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
-    login = getattr(server_app, "login_with_account_spec", login_with_account_spec)
-    is_logged_in = getattr(server_app, "is_client_logged_in_as", is_client_logged_in_as)
+    client = client or ms_client
+    client_lock = client_lock or _ms_client_lock
+    get_accounts = get_all_configured_accounts
+    login = login_with_account_spec
+    is_logged_in = is_client_logged_in_as
     accounts = list(get_accounts())
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
         if not any(is_logged_in(account) for account in accounts):

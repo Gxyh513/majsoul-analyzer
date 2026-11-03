@@ -7,18 +7,19 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from .app import (
-    engine_mgr, MODEL_ID, MODEL_REVISION, MODEL_SIZE, REVIEW_SCHEMA,
-    model_download_state, REVIEWS_DIR, ms_client, admin_manager,
-    get_all_configured_accounts, review_cache, ops_metrics,
-)
+from .runtime import REVIEWS_DIR, ms_client
+from .model_download import engine_mgr, MODEL_REVISION, MODEL_SIZE, model_download_state
+from .engine.model_policy import MODEL_ID, REVIEW_SCHEMA
+from .admin_accounts import manager as admin_manager
+from .account_credentials import get_all_configured_accounts
+from . import review_cache, ops_metrics
+from . import review_jobs as _review_jobs
+from .review_jobs import review_semaphore, REVIEW_MAX_WAITERS
 
 router = APIRouter()
 
 
 def _build_api_status(*, trusted: bool) -> dict[str, Any]:
-    # Queue state is initialized later in the application wiring.
-    from .app import _review_jobs, review_semaphore, REVIEW_MAX_WAITERS
     eng_status = engine_mgr.status()
     eng_status["model_revision"] = MODEL_REVISION
     state = model_download_state
