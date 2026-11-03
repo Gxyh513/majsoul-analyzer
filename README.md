@@ -153,27 +153,21 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 ## 后端模块结构
 
-`server/app.py` 仅承担应用初始化、共享依赖组装与剩余分析入口，按职责拆分为以下模块：
+`server/app.py` 负责应用启动及路由装配，存储路径与全局雀魂会话由独立的 `runtime_state.py` 管理，以避免业务模块反向导入 FastAPI 应用：
 
-- **API 与安全**：`api_security.py`、`api_schemas.py`、`api_status.py`、`api_accounts.py`、`api_local_records.py`、`api_stream.py`。
-- **检讨任务与缓存**：`game_data.py`、`review_jobs.py`、`public_review_cache.py`、`model_download.py`、`analysis_logging.py`、`sse_transport.py`。
+- **API 与安全**：`api_security.py`、`api_schemas.py`、`api_status.py`、`api_accounts.py`、`api_local_records.py`、`api_analysis.py`、`api_stream.py`。
+- **检讨任务与缓存**：`game_data.py`、`review_jobs.py`、`public_review_cache.py`、`model_download.py`、`analysis_service.py`、`analysis_logging.py`、`sse_transport.py`。
 - **牌谱 AI**：`engine/reviewer.py` 编排流程；`engine/review_replay.py` 构建回放与观测；`engine/review_scoring.py` 处理 Q 值、决策评分和汇总；`engine/actions.py` 处理动作映射。
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
 
 为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录或 Pytest 配置。GitHub Actions 的自动构建与验证工作流已移除；只保留 ModelScope 发布工作流。仓库不运行自动化构建或回归检查。
 
-## 开发验证
+## 前端资源组织
 
-前端 JavaScript 按功能拆分在 `web/js/`，由 `web/index.html` 按顺序作为普通脚本加载，`web/app.js` 负责初始化；共享状态和函数仍使用现有全局作用域。样式由 `web/styles.css` 按顺序引入 `web/css/` 中的文件，调整顺序时需注意 CSS 层叠。无需构建步骤。
+前端 JavaScript 由 `web/index.html` 按依赖顺序加载，`web/app.js` 负责初始化。CSS 文件现在由 HTML 中的多个 `<link rel="stylesheet">` 直接按序加载，避免单一 `styles.css` 的 `@import` 请求瀑布；旧的 `web/styles.css` 继续保留作兼容入口。部分大体积牌面 SVG 已移除 Inkscape/Sodipodi 编辑器元数据，不修改 SVG 标准绘图节点。
 
-前端源代码可使用 Node.js 自带的语法检查命令检查，无需测试目录：
-
-```bash
-for file in web/js/*.js web/app.js; do node --check "$file" || exit 1; done
-```
-
-后端通过 `docker build -t majsoul-analyzer:latest .` 构建；Dockerfile 会验证固定 ONNX 权重，GitHub Actions 只运行构建和源码语法检查。
+项目不保留测试文件，也不设置自动构建和验证工作流；GitHub Actions 仅保留 ModelScope 部署。
 
 ## 致谢
 
