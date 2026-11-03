@@ -395,3 +395,12 @@ footer {
   max-height: 60vh;
   overflow-y: auto;
 }
+
+.modal-dialog-narrow {
+  max-width: 460px;
+}
+
+.modal-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from functools import lru_cache
 from contextlib import aclosing, asynccontextmanager
 import hmac
@@ -777,8 +778,12 @@ async def api_recent_games():
             raise HTTPException(status_code=400, detail="获取最近牌谱失败，请稍后重试。") from e
 
 
-@app.get("/api/records/local")
-async def api_records_local():
+_LOCAL_META_CACHE_MAX = 512
+_local_record_meta_cache: OrderedDict[Path, tuple[tuple[int, int, int], dict[str, Any]]] = OrderedDict()
+_local_record_meta_lock = threading.Lock()
+
+
+def _collect_local_records() -> list[dict[str, Any]]:
     records = []
     seen = set()
     for directory in (RECORDS_DIR, *LEGACY_RECORDS_DIRS):
@@ -789,14 +794,33 @@ async def api_records_local():
                 continue
             seen.add(path.stem)
             try:
-                stored = await asyncio.to_thread(read_record, directory, path.stem)
-                record = await asyncio.to_thread(ms_client.decode_record_head, stored, path.stem) if isinstance(stored, RawRecord) else stored
+                stat = path.stat()
+                file_sig = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                with _local_record_meta_lock:
+                    cached_entry = _local_record_meta_cache.get(path)
+                    if cached_entry is not None and cached_entry[0] == file_sig:
+                        _local_record_meta_cache.move_to_end(path)
+                        records.append(dict(cached_entry[1]))
+                        continue
+                stored = read_record(directory, path.stem)
+                record = ms_client.decode_record_head(stored, path.stem) if isinstance(stored, RawRecord) else stored
                 meta = game_meta(record)
-                meta.update({"uuid": path.stem, "file_name": path.name, "file_size": path.stat().st_size})
+                meta.update({"uuid": path.stem, "file_name": path.name, "file_size": stat.st_size})
+                with _local_record_meta_lock:
+                    _local_record_meta_cache[path] = (file_sig, dict(meta))
+                    _local_record_meta_cache.move_to_end(path)
+                    while len(_local_record_meta_cache) > _LOCAL_META_CACHE_MAX:
+                        _local_record_meta_cache.popitem(last=False)
             except Exception:
                 meta = {"uuid": path.stem, "file_name": path.name, "names": ["无法解析"], "error": "牌谱文件不可读取"}
             records.append(meta)
     records.sort(key=lambda record: record.get("start_time") or 0, reverse=True)
+    return records
+
+
+@app.get("/api/records/local")
+async def api_records_local():
+    records = await asyncio.to_thread(_collect_local_records)
     return {"records": records, "total": len(records)}
 
 
@@ -905,9 +929,17 @@ async def resolve_game_data(
                 stats["原始数据大小"] = len(stored.response) + len(stored.detail)
                 # Keep the exact reviewed source identity in request-local memory.
                 # Do not re-read the record after conversion (it could change).
-                stats["_public_raw_source"] = (
-                    game_uuid, await asyncio.to_thread(_public_raw_source_digest, stored)
-                )
+                prefetched = stats.pop("_prefetched_raw_digest", None)
+                if (
+                    isinstance(prefetched, tuple)
+                    and len(prefetched) == 3
+                    and prefetched[0] == game_uuid
+                    and prefetched[1] == stored
+                ):
+                    digest = prefetched[2]
+                else:
+                    digest = await asyncio.to_thread(_public_raw_source_digest, stored)
+                stats["_public_raw_source"] = (game_uuid, digest)
             with _measure("Protobuf解码"):
                 record = await asyncio.to_thread(ms_client.decode_record, stored, game_uuid)
         else:
@@ -1011,6 +1043,8 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
     """
     if not paipu or paipu == "demo" or paipu.startswith("demo-"):
         return None
+    if not REVIEWS_DIR.is_dir():
+        return None
     try:
         game_id, url_account_id = parse_paipu(paipu)
         stored = read_record(RECORDS_DIR, game_id, LEGACY_RECORDS_DIRS)
@@ -1025,8 +1059,13 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
         else:
             candidates = range(4)
         source_digest = _public_raw_source_digest(stored)
+        stats = _performance.get()
+        if isinstance(stats, dict):
+            stats["_prefetched_raw_digest"] = (game_id, stored, source_digest)
         for seat in candidates:
             key = _public_raw_review_key(game_id, source_digest, seat, engine, temperature)
+            if not (REVIEWS_DIR / f"{key}.json").is_file():
+                continue
             cached = review_cache.load(REVIEWS_DIR, key, game_id, seat)
             if not isinstance(cached, dict) or not isinstance(cached.get("meta"), dict):
                 continue

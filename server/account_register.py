@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from .account_pool import mask_account
 from .logger import log_error, log_info, log_warning
 from .majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
 
@@ -46,22 +48,7 @@ LOCK_RENEW_SECONDS = 60
 # Detect externally changed schedules and retry unexpected scheduler failures.
 SCHEDULER_POLL_SECONDS = 60
 SCHEDULER_ERROR_RETRY_SECONDS = 60
-
-
-def mask_account(name_or_acc: str | None) -> str:
-    """对账号进行脱敏（例如 mj***@nqmo.com），日志和普通响应绝不输出明文。"""
-    if not name_or_acc:
-        return "未知账号"
-    s = str(name_or_acc).strip()
-    if "@" in s:
-        parts = s.split("@", 1)
-        user = parts[0]
-        domain = parts[1]
-        masked_user = (user[:2] + "***" + user[-1:]) if len(user) > 3 else (user[:1] + "***")
-        return f"{masked_user}@{domain}"
-    if len(s) > 4:
-        return s[:2] + "***" + s[-2:]
-    return s[:1] + "***"
+MAX_ZIPBALL_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 
 
 def redact_secrets(text: str, *secrets: Any) -> str:
@@ -106,6 +93,55 @@ def get_register_dir() -> Path:
     return default_dir
 
 
+def _safe_extract_repo_zip(content: bytes, reg_dir: Path) -> None:
+    """Safely extract a GitHub zipball into reg_dir without path traversal or symlinks."""
+    reg_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".reg-zip-", dir=reg_dir.parent) as tmp_dir:
+        staging_root = Path(tmp_dir).resolve()
+        total_bytes = 0
+        with zipfile.ZipFile(io.BytesIO(content)) as z:
+            for member in z.infolist():
+                mode = (member.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise ValueError("压缩包包含不允许的符号链接")
+                raw_parts = [p for p in re.split(r"[/\\]+", member.filename) if p]
+                if any(part in (".", "..") or ":" in part for part in raw_parts):
+                    raise ValueError(f"压缩包包含不安全路径: {member.filename}")
+                if len(raw_parts) <= 1:
+                    continue
+                rel_path = Path(*raw_parts[1:])
+                target_path = (staging_root / rel_path).resolve()
+                if not target_path.is_relative_to(staging_root):
+                    raise ValueError(f"压缩包路径越界: {member.filename}")
+                if member.is_dir() or member.filename.endswith(("/", "\\")):
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+                if member.file_size > MAX_ZIPBALL_UNCOMPRESSED_BYTES:
+                    raise ValueError("压缩包单文件体积超过安全上限")
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(member) as src, open(target_path, "wb") as dst:
+                    while chunk := src.read(65536):
+                        total_bytes += len(chunk)
+                        if total_bytes > MAX_ZIPBALL_UNCOMPRESSED_BYTES:
+                            raise ValueError("压缩包解压总大小超过安全上限")
+                        dst.write(chunk)
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(staging_root, reg_dir, dirs_exist_ok=True)
+
+
+def _git_clone_into_dir(repo_url: str, reg_dir: Path, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    """Clone into a temporary directory and copy into reg_dir so existing directories never fail git clone."""
+    reg_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".reg-git-", dir=reg_dir.parent) as tmp_dir:
+        clone_target = Path(tmp_dir) / "repo"
+        cmd = ["git", "clone", "--depth", "1", repo_url, str(clone_target)]
+        res = subprocess.run(cmd, capture_output=True, timeout=timeout, text=True, encoding="utf-8", errors="replace")
+        if res.returncode == 0 and clone_target.is_dir():
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(clone_target, reg_dir, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+        return res
+
+
 def _download_repo_zipball(token: str, repo_identifier: str, reg_dir: Path) -> tuple[bool, str]:
     """
     通过 GitHub REST API 下载仓库 zipball 并解压到目标目录。
@@ -138,20 +174,7 @@ def _download_repo_zipball(token: str, repo_identifier: str, reg_dir: Path) -> t
                     with httpx.Client(headers=headers, follow_redirects=True, timeout=45) as client:
                         resp = client.get(url)
                         if resp.status_code == 200 and resp.content:
-                            reg_dir.mkdir(parents=True, exist_ok=True)
-                            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                                for member in z.infolist():
-                                    parts = Path(member.filename).parts
-                                    if len(parts) <= 1:
-                                        continue
-                                    rel_path = Path(*parts[1:])
-                                    target_path = reg_dir / rel_path
-                                    if member.is_dir():
-                                        target_path.mkdir(parents=True, exist_ok=True)
-                                    else:
-                                        target_path.parent.mkdir(parents=True, exist_ok=True)
-                                        with z.open(member) as src, open(target_path, "wb") as dst:
-                                            shutil.copyfileobj(src, dst)
+                            _safe_extract_repo_zip(resp.content, reg_dir)
                             if (reg_dir / "majsoul_register.py").is_file():
                                 log_info(事件="私有注册仓库API拉取", 状态="成功", 分支=branch)
                                 return True, ""
@@ -194,11 +217,11 @@ def ensure_private_repo(force_update: bool = False) -> tuple[Path | None, str]:
     if not token:
         if shutil.which("git"):
             try:
-                reg_dir.parent.mkdir(parents=True, exist_ok=True)
-                cmd = ["git", "clone", "--depth", "1", repo_url, str(reg_dir)]
-                subprocess.run(cmd, capture_output=True, timeout=30, check=True)
-                if script_path.is_file():
+                res = _git_clone_into_dir(repo_url, reg_dir, timeout=30)
+                if res.returncode == 0 and script_path.is_file():
                     return reg_dir, ""
+                err_msg = (res.stderr or res.stdout or f"exit {res.returncode}").strip()
+                return None, f"未配置 Token 且 git clone 失败: {err_msg[:150]}"
             except Exception as exc:
                 return None, f"未配置 Token 且 git clone 失败: {str(exc)[:150]}"
         return None, "未配置 MAJSOUL_REGISTER_GITHUB_TOKEN 环境变量且未找到本地注册脚本"
@@ -216,9 +239,7 @@ def ensure_private_repo(force_update: bool = False) -> tuple[Path | None, str]:
         else:
             auth_repo_url = repo_url
         try:
-            reg_dir.parent.mkdir(parents=True, exist_ok=True)
-            cmd = ["git", "clone", "--depth", "1", auth_repo_url, str(reg_dir)]
-            res = subprocess.run(cmd, capture_output=True, timeout=60, text=True, encoding="utf-8", errors="replace")
+            res = _git_clone_into_dir(auth_repo_url, reg_dir, timeout=60)
             if res.returncode == 0 and script_path.is_file():
                 log_info(事件="私有注册仓库Git拉取", 状态="成功")
                 return reg_dir, ""

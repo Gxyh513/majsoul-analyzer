@@ -69,6 +69,28 @@
         </div>
       </section>
 
+      <dialog id="editAccountModal" class="modal-dialog modal-dialog-narrow">
+        <div class="modal-head">
+          <h3>编辑雀魂账号</h3>
+          <button type="button" id="closeEditModalBtn" class="mini secondary">关闭</button>
+        </div>
+        <form id="editAccountForm">
+          <input type="hidden" id="editAccountId" />
+          <label for="editAccountName">雀魂账号</label>
+          <input id="editAccountName" readonly disabled />
+          <label for="editNickname">备注（选填）</label>
+          <input id="editNickname" autocomplete="off" placeholder="输入账号备注" />
+          <label for="editPassword">新密码（留空则保持不变）</label>
+          <input id="editPassword" type="password" autocomplete="new-password" placeholder="留空则不修改密码" />
+          <label for="editToken">新 Access Token（留空则保持不变）</label>
+          <input id="editToken" type="password" autocomplete="off" placeholder="留空则不修改 Token" />
+          <div class="toolbar modal-actions">
+            <button type="button" id="cancelEditModalBtn" class="secondary">取消</button>
+            <button type="submit">保存修改</button>
+          </div>
+        </form>
+      </dialog>
+
       <dialog id="historyModal" class="modal-dialog">
         <div class="modal-head">
           <h3>注册历史与失败日志</h3>

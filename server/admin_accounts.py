@@ -42,7 +42,12 @@ class AccountStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
+        self._accounts_cache: tuple[tuple[int, int, int, int], list[dict]] | None = None
         with self._connect() as db:
+            try:
+                db.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                pass
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS admin_meta (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -116,19 +121,52 @@ class AccountStore:
                 # Do not log database path, SQL statements or account data.
                 log_warning(事件="账号数据库慢操作", 耗时毫秒=round(elapsed_ms, 1))
 
+    def _db_signature(self) -> tuple[int, int, int, int] | None:
+        try:
+            st = self.path.stat()
+            wal_path = self.path.with_name(self.path.name + "-wal")
+            if wal_path.exists():
+                wst = wal_path.stat()
+                return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
+            return (st.st_mtime_ns, st.st_size, 0, 0)
+        except OSError:
+            return None
+
+    def _invalidate_cache(self) -> None:
+        self._accounts_cache = None
+
     def all(self) -> list[dict]:
-        with self.lock, self._connect() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM accounts ORDER BY id")]
+        with self.lock:
+            sig = self._db_signature()
+            if self._accounts_cache is not None and sig is not None and self._accounts_cache[0] == sig:
+                return [dict(row) for row in self._accounts_cache[1]]
+            with self._connect() as db:
+                rows = [dict(row) for row in db.execute("SELECT * FROM accounts ORDER BY id")]
+            new_sig = self._db_signature()
+            if new_sig is not None:
+                self._accounts_cache = (new_sig, [dict(row) for row in rows])
+            return rows
 
     def count(self) -> int:
-        with self.lock, self._connect() as db:
-            row = db.execute("SELECT COUNT(*) FROM accounts").fetchone()
-            return int(row[0]) if row else 0
+        with self.lock:
+            sig = self._db_signature()
+            if self._accounts_cache is not None and sig is not None and self._accounts_cache[0] == sig:
+                return len(self._accounts_cache[1])
+            with self._connect() as db:
+                row = db.execute("SELECT COUNT(*) FROM accounts").fetchone()
+                return int(row[0]) if row else 0
 
     def get(self, account_pk: int) -> dict | None:
-        with self.lock, self._connect() as db:
-            row = db.execute("SELECT * FROM accounts WHERE id=?", (account_pk,)).fetchone()
-            return dict(row) if row else None
+        with self.lock:
+            sig = self._db_signature()
+            if self._accounts_cache is not None and sig is not None and self._accounts_cache[0] == sig:
+                for row in self._accounts_cache[1]:
+                    if row.get("id") == account_pk:
+                        return dict(row)
+                return None
+            with self._connect() as db:
+                row = db.execute("SELECT * FROM accounts WHERE id=?", (account_pk,)).fetchone()
+                return dict(row) if row else None
 
     @staticmethod
     def _required(item: dict):
@@ -153,6 +191,7 @@ class AccountStore:
                     (account, password, token, nickname, account_id, time.time(), time.time()),
                 )
                 db.commit()
+                self._invalidate_cache()
                 return cur.lastrowid
             except sqlite3.IntegrityError as exc:
                 raise ValueError("账号已存在") from exc
@@ -264,6 +303,7 @@ class AccountStore:
                 added += cur.rowcount
                 duplicated += not cur.rowcount
             db.commit()
+            self._invalidate_cache()
         return {"added": added, "duplicates": duplicated}
 
     def edit(self, account_pk: int, values: dict):
@@ -294,6 +334,7 @@ class AccountStore:
             try:
                 db.execute(f"UPDATE accounts SET {columns} WHERE id=?", (*changes.values(), account_pk))
                 db.commit()
+                self._invalidate_cache()
             except sqlite3.IntegrityError as exc:
                 raise ValueError("账号已存在") from exc
 
@@ -301,6 +342,7 @@ class AccountStore:
         with self.lock, self._connect() as db:
             cur = db.execute("DELETE FROM accounts WHERE id=?", (account_pk,))
             db.commit()
+            self._invalidate_cache()
             if not cur.rowcount:
                 raise KeyError("账号不存在")
 
@@ -313,6 +355,7 @@ class AccountStore:
         with self.lock, self._connect() as db:
             db.execute(f"UPDATE accounts SET {', '.join(fields)} WHERE id=?", (*args, account_pk))
             db.commit()
+            self._invalidate_cache()
 
     def record_result(self, account_pk: int, *, success: bool, elapsed_ms: float,
                       error: str | None = None, code: int | None = None, auth_failed: bool = False):
@@ -329,11 +372,13 @@ class AccountStore:
                            (time.time(), (error or "")[:160], code, int(auth_failed),
                             code, time.time() + 86400, account_pk))
             db.commit()
+            self._invalidate_cache()
 
     def checked(self, account_pk: int):
         with self.lock, self._connect() as db:
             db.execute("UPDATE accounts SET last_checked_at=? WHERE id=?", (time.time(), account_pk))
             db.commit()
+            self._invalidate_cache()
 
     def bootstrap(self, legacy_accounts: list[dict]):
         """Import complete legacy triples once, never reintroduce deleted accounts."""
@@ -352,6 +397,7 @@ class AccountStore:
                      item.get("account_id"), time.time(), time.time()))
             db.execute("INSERT INTO admin_meta(key,value) VALUES('initialized','1')")
             db.commit()
+            self._invalidate_cache()
 
 
 def _public_account(acc: dict, busy: bool) -> dict:

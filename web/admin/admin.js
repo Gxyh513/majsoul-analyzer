@@ -224,6 +224,17 @@ $("accountRows").addEventListener("click", async event => {
     } else if (button.dataset.action === "toggle") {
       await request(path + "/edit", "POST", {enabled: !account.enabled});
     } else if (button.dataset.action === "edit") {
+      const editModal = $("editAccountModal");
+      if (editModal && typeof editModal.showModal === "function") {
+        $("editAccountId").value = String(account.id);
+        $("editAccountName").value = account.account || "";
+        $("editNickname").value = account.nickname || "";
+        $("editPassword").value = "";
+        $("editToken").value = "";
+        editModal.showModal();
+        $("editNickname").focus();
+        return;
+      }
       const nickname = prompt("备注（取消则不修改）", account.nickname || "");
       if (nickname === null) return;
       const password = prompt("新密码（留空则不修改）", "");
@@ -239,6 +250,26 @@ $("accountRows").addEventListener("click", async event => {
     say("操作成功");
   } catch (err) { say(err.message, true); }
 });
+$("editAccountForm")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const id = Number($("editAccountId").value);
+  if (!id) return;
+  const edit = { nickname: $("editNickname").value.trim() };
+  const password = $("editPassword").value;
+  const access_token = $("editToken").value.trim();
+  if (password.trim()) edit.password = password;
+  if (access_token) edit.access_token = access_token;
+  try {
+    await request("/accounts/" + id + "/edit", "POST", edit);
+    $("editAccountModal")?.close();
+    await refresh();
+    say("账号修改已保存");
+  } catch (err) {
+    say(err.message, true);
+  }
+});
+$("closeEditModalBtn")?.addEventListener("click", () => $("editAccountModal")?.close());
+$("cancelEditModalBtn")?.addEventListener("click", () => $("editAccountModal")?.close());
 $("toggleRegisterBtn").addEventListener("click", async () => {
   if (!currentAutoRegisterState) return;
   const target = !currentAutoRegisterState.enabled;
