@@ -85,6 +85,12 @@ def to_mjai(record: dict) -> list[dict]:
         events.append({"type": "end_kyoku"})
         in_kyoku = False
 
+    def require_seat(raw_seat: object) -> int:
+        seat = int(0 if raw_seat is None else raw_seat)
+        if not 0 <= seat < 4:
+            raise ConvertError(f"座位编号超出范围: {seat}")
+        return seat
+
     for act in record["actions"]:
         name, d = act["name"], act["data"]
 
@@ -94,6 +100,8 @@ def to_mjai(record: dict) -> list[dict]:
             if not d.get("tiles3"):
                 raise ConvertError("暂不支持三人麻将牌谱（Mortal 仅支持四麻）")
             chang, ju = int(d.get("chang", 0)), int(d.get("ju", 0))
+            if not (0 <= chang < 4 and 0 <= ju < 4):
+                raise ConvertError(f"场风或局数超出范围: chang={chang}, ju={ju}")
             tiles = [[ms_to_mjai(t) for t in d.get(f"tiles{i}", [])] for i in range(4)]
             first_tsumo = None
             for i in range(4):
@@ -131,7 +139,7 @@ def to_mjai(record: dict) -> list[dict]:
                 take(ju, first_tsumo)
 
         elif name == "RecordDealTile":
-            seat = int(d.get("seat", 0))
+            seat = require_seat(d.get("seat", 0))
             accept_reach()
             emit_doras(d.get("doras", []))
             t = ms_to_mjai(d["tile"])
@@ -140,7 +148,7 @@ def to_mjai(record: dict) -> list[dict]:
             last_kan_actor = None
 
         elif name == "RecordDiscardTile":
-            seat = int(d.get("seat", 0))
+            seat = require_seat(d.get("seat", 0))
             t = ms_to_mjai(d["tile"])
             emit_doras(d.get("doras", []))
             is_reach = bool(d.get("is_liqi") or d.get("is_wliqi"))
@@ -155,7 +163,7 @@ def to_mjai(record: dict) -> list[dict]:
 
         elif name == "RecordChiPengGang":
             last_kan_actor = None
-            seat = int(d.get("seat", 0))
+            seat = require_seat(d.get("seat", 0))
             accept_reach()
             ts = [ms_to_mjai(t) for t in d["tiles"]]
             froms = [int(f) for f in d.get("froms", [])]
@@ -174,7 +182,7 @@ def to_mjai(record: dict) -> list[dict]:
                 pons[seat][deaka(pai)] = [pai] + consumed
 
         elif name == "RecordAnGangAddGang":
-            seat = int(d.get("seat", 0))
+            seat = require_seat(d.get("seat", 0))
             accept_reach()
             t = ms_to_mjai(d["tiles"])
             base = deaka(t)
@@ -215,7 +223,7 @@ def to_mjai(record: dict) -> list[dict]:
                 pending_reach = None
             deltas = [int(x) for x in d.get("delta_scores", [0, 0, 0, 0])]
             for i, h in enumerate(d.get("hules", [])):
-                seat = int(h.get("seat", 0))
+                seat = require_seat(h.get("seat", 0))
                 if h.get("zimo"):
                     target = seat
                 else:

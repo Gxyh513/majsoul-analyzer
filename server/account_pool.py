@@ -69,6 +69,9 @@ def _mask_account(name_or_acc: str | None) -> str:
     return s[:1] + "***"
 
 
+mask_account = _mask_account
+
+
 def _redact_error(error: Exception, *secrets: Any) -> str:
     """Keep useful server-side diagnostics without logging known credentials."""
     text = str(error)

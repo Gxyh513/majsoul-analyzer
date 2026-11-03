@@ -614,3 +614,54 @@ async def test_fetch_preserves_original_api_payload(proto, tmp_path):
     client.call = AsyncMock(return_value=(response, source.response))
     assert await client.fetch_record(U1) == source
     assert client.call.await_args.kwargs["return_payload"] is True
+
+
+def test_convert_and_reviewer_bounds_validation():
+    from server.engine.reviewer import review_game
+    from server.majsoul.convert import ConvertError, to_mjai
+
+    hand13 = ["1m"] * 13
+    with pytest.raises(ConvertError, match="场风或局数超出范围"):
+        to_mjai({
+            "head": {"accounts": []},
+            "actions": [{
+                "name": "RecordNewRound",
+                "data": {"chang": 4, "ju": 0, "dora": "1m", "tiles0": hand13 + ["2m"], "tiles1": hand13, "tiles2": hand13, "tiles3": hand13},
+            }],
+        })
+
+    with pytest.raises(ConvertError, match="座位编号超出范围"):
+        to_mjai({
+            "head": {"accounts": []},
+            "actions": [
+                {
+                    "name": "RecordNewRound",
+                    "data": {"chang": 0, "ju": 0, "dora": "1m", "tiles0": hand13 + ["2m"], "tiles1": hand13, "tiles2": hand13, "tiles3": hand13},
+                },
+                {"name": "RecordDealTile", "data": {"seat": 7, "tile": "3m"}},
+            ],
+        })
+
+    with pytest.raises(ValueError, match="target_actor"):
+        review_game([], 4, SimpleNamespace())
+    with pytest.raises(ValueError, match="target_actor"):
+        review_game([], True, SimpleNamespace())
+
+
+def test_cleanup_stale_locks_removes_expired_lockfiles(tmp_path):
+    import os
+    import time
+    lock_dir = tmp_path / ".locks"
+    lock_dir.mkdir(parents=True)
+    stale_lock = lock_dir / f"{U1}.lock"
+    fresh_lock = lock_dir / f"{U2}.lock"
+    stale_lock.write_bytes(b"0")
+    fresh_lock.write_bytes(b"0")
+    old_time = time.time() - 600
+    os.utime(stale_lock, (old_time, old_time))
+
+    removed = record_store.cleanup_stale_locks(tmp_path, max_age_seconds=300)
+    assert removed == 1
+    assert not stale_lock.exists()
+    assert fresh_lock.exists()
+

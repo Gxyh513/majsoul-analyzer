@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
+import time
 import weakref
 import zlib
 from typing import Awaitable, Callable
@@ -22,6 +23,7 @@ _MAGIC = b"MSRAW\x01"
 _HEADER = struct.Struct(">HQQI")
 _UUID = re.compile(r"\d{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+_LOCK_STALE_SECONDS = 300.0
 _locks: weakref.WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str, str], asyncio.Lock] = weakref.WeakValueDictionary()
 _flights: dict[tuple[asyncio.AbstractEventLoop, str, str], asyncio.Task] = {}
 
@@ -131,9 +133,34 @@ def save_record(records_dir: Path, game_uuid: str, record: RawRecord) -> None:
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
+            cleanup_stale_locks(records_dir)
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+
+
+def cleanup_stale_locks(records_dir: Path, max_age_seconds: float = _LOCK_STALE_SECONDS) -> int:
+    """Remove expired lockfiles from .locks without disturbing active downloaders."""
+    lock_dir = Path(records_dir) / ".locks"
+    try:
+        if not lock_dir.is_dir() or lock_dir.is_symlink():
+            return 0
+        now = time.time()
+        removed = 0
+        for lock_file in lock_dir.glob("*.lock"):
+            try:
+                if lock_file.is_symlink():
+                    continue
+                stat = lock_file.stat()
+                record_exists = (Path(records_dir) / f"{lock_file.stem}.pb").is_file()
+                if (now - stat.st_mtime) >= max_age_seconds or (record_exists and max_age_seconds <= 0):
+                    lock_file.unlink(missing_ok=True)
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+    except OSError:
+        return 0
 
 
 @asynccontextmanager

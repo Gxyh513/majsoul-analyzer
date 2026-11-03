@@ -495,3 +495,50 @@ def test_register_lease_cannot_be_renewed_after_other_owner_takes_over(store):
     assert store.renew_auto_register_lock("first", timeout_sec=20) is False
     assert store.renew_auto_register_lock("second", timeout_sec=2) is True
     store.release_auto_register_lock("second")
+
+
+def test_zipball_rejects_zip_slip_and_symlinks(tmp_path: Path):
+    import io
+    import zipfile
+    from server.account_register import _safe_extract_repo_zip
+
+    outside = tmp_path / "outside.py"
+    reg_dir = tmp_path / "register"
+
+    traversal_buf = io.BytesIO()
+    with zipfile.ZipFile(traversal_buf, "w") as z:
+        z.writestr("repo-root/../../outside.py", "raise SystemExit('pwned')\n")
+    with pytest.raises(ValueError, match="不安全路径"):
+        _safe_extract_repo_zip(traversal_buf.getvalue(), reg_dir)
+    assert not outside.exists()
+
+    symlink_buf = io.BytesIO()
+    with zipfile.ZipFile(symlink_buf, "w") as z:
+        info = zipfile.ZipInfo("repo-root/majsoul_register.py")
+        info.external_attr = 0o120777 << 16
+        z.writestr(info, "/etc/passwd")
+    with pytest.raises(ValueError, match="符号链接"):
+        _safe_extract_repo_zip(symlink_buf.getvalue(), reg_dir)
+    assert not (reg_dir / "majsoul_register.py").exists()
+
+
+def test_account_store_in_memory_cache_and_invalidation(store: AccountStore):
+    pk = store.add({
+        "account": "cached_user@example.com",
+        "password": "Password123!",
+        "access_token": "tok-1",
+        "nickname": "Before",
+    })
+    assert store.count() == 1
+    assert store.get(pk)["nickname"] == "Before"
+    assert store.all()[0]["nickname"] == "Before"
+
+    store.edit(pk, {"nickname": "After"})
+    assert store.get(pk)["nickname"] == "After"
+    assert store.all()[0]["nickname"] == "After"
+
+    store.delete(pk)
+    assert store.count() == 0
+    assert store.get(pk) is None
+    assert store.all() == []
+

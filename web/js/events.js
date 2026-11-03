@@ -50,9 +50,9 @@ function bindEvents() {
   document.addEventListener("click", (e) => {
     if (e.target.closest("button, a, select, input")) return;
     // 如果点击的是自家（p0/底端）手牌或相关区域，坚决不触发别家明牌/暗牌切换！
-    if (e.target.closest(".grid-hand-p0-container, #hand0, .hand-closed-p0, .grid-hand-p0")) return;
+    if (e.target.closest(".grid-hand-p0-container, #handBottomClosed, .hand-closed-p0, .grid-hand-p0")) return;
     // 只有点击其他三家（p1, p2, p3）的手牌区域时，才执行 toggleHandsVisibility()
-    const otherHandTarget = e.target.closest(".grid-hand-p1, .grid-hand-p2, .grid-hand-p3, #hand1, #hand2, #hand3, .hand-closed-p1, .hand-closed-p2, .hand-closed-p3");
+    const otherHandTarget = e.target.closest(".grid-hand-p1, .grid-hand-p2, .grid-hand-p3, #handRightClosed, #handTopClosed, #handLeftClosed, .hand-closed-p1, .hand-closed-p2, .hand-closed-p3");
     if (otherHandTarget) {
       toggleHandsVisibility();
     }
@@ -131,9 +131,7 @@ function bindEvents() {
   bindNavClick(["btnPrevStep"], () => stepDelta(-1));
   bindNavClick(["btnNextStep"], () => stepDelta(1));
 
-  // Round score history modal (Dedicated button, strictly independent from rating badge)
-    $("btnOpenScoreModal")?.addEventListener("click", openRoundScoresModal);
-  $("btnControlsScores")?.addEventListener("click", openRoundScoresModal);
+  // Round settlement & score history modals
   $("infoThisRoundClose")?.addEventListener("click", () => closeModal("infoThisRoundModal"));
   $("infoThisRoundModal")?.addEventListener("click", (e) => {
     const dialog = $("infoThisRoundModal");
@@ -149,11 +147,6 @@ function bindEvents() {
   $("roundModalClose")?.addEventListener("click", () => closeModal("roundModal"));
 
   // Engine modal
-  $("btnOpenEngineModal")?.addEventListener("click", () => {
-    const statusMsg = $("engineModalStatusMsg");
-    if (statusMsg) statusMsg.textContent = "";
-    openModal("engineModal");
-  });
   $("engineModalClose")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnCancelEngineModal")?.addEventListener("click", () => closeModal("engineModal"));
   $("btnRetryModelDownload")?.addEventListener("click", async (e) => {
