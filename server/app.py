@@ -70,20 +70,11 @@ async def _record_mjai_size(events: list[dict]) -> None:
             pass
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT_DIR / "data"
-CACHE_DIR, RECORDS_DIR = storage_paths(DATA_DIR)
-REVIEWS_DIR = CACHE_DIR.parent / "reviews"
-LEGACY_RECORDS_DIRS = (DATA_DIR / "records",) if RECORDS_DIR != DATA_DIR / "records" else ()
-MODELS_DIR = DATA_DIR / "models"
-CONFIG_PATH = DATA_DIR / "config.json"
-LOCAL_CONFIG_PATH = DATA_DIR / "config.local.json"
-EXAMPLE_CONFIG_PATH = DATA_DIR / "config.example.json"
-DEMO_PATH = DATA_DIR / "demo_mjai.json"
-WEB_DIR = ROOT_DIR / "web"
-
-for d in (DATA_DIR, CACHE_DIR, RECORDS_DIR, MODELS_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+from .runtime import (
+    ROOT_DIR, DATA_DIR, CACHE_DIR, RECORDS_DIR, REVIEWS_DIR,
+    LEGACY_RECORDS_DIRS, MODELS_DIR, CONFIG_PATH, LOCAL_CONFIG_PATH,
+    EXAMPLE_CONFIG_PATH, DEMO_PATH, WEB_DIR, ms_client, _ms_client_lock,
+)
 
 from .app_config import load_config, save_config
 
@@ -95,9 +86,6 @@ from .model_download import (
     _download_model_sync, trigger_model_download,
 )
 
-
-ms_client = MajsoulClient(CACHE_DIR)
-_ms_client_lock = SessionLock()
 
 from .account_pool import (  # noqa: E402
     _account_pool_key,

@@ -22,9 +22,7 @@ from fastapi import HTTPException
 from server.logger import log_debug, log_info, log_warning
 from server.majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
 from server.paipu_performance import get_value, measure, set_value
-
-if TYPE_CHECKING:
-    import server.app as server_app
+from .runtime import ms_client, _ms_client_lock
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +47,7 @@ async def login_with_account_spec(
 ):
     """Log in using a specific account dict (token first, fallback to password)."""
     if client is None:
-        import server.app as server_app
-        client = server_app.ms_client
+        client = ms_client
 
     log_debug(事件="WebSocket连接", 状态="建立会话")
     await client.close()
@@ -102,15 +99,14 @@ async def login_with_account_spec(
 
 async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     """Ensure client is logged in with an available account."""
-    import server.app as server_app
     if client is None:
-        client = server_app.ms_client
+        client = ms_client
 
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
         return
 
-    get_accounts_fn = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
-    login_spec_fn = getattr(server_app, "login_with_account_spec", login_with_account_spec)
+    get_accounts_fn = get_all_configured_accounts
+    login_spec_fn = login_with_account_spec
 
     accs = get_accounts_fn()
     if not accs:
@@ -122,7 +118,7 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     for idx, acc in enumerate(accs):
         acc_label = acc.get("nickname") or _mask_account(acc.get("account")) or f"账号{idx+1}"
         try:
-            await login_spec_fn(acc)
+            await login_spec_fn(acc, client=client)
             return
         except Exception as e:
             log_warning(
@@ -163,16 +159,15 @@ async def _fetch_record_with_failover_inner(
 ):
     """Fetch through a shared session; reconnect or switch accounts exclusively."""
     from contextlib import asynccontextmanager
-    import server.app as server_app
 
-    client = client or server_app.ms_client
-    client_lock = client_lock or server_app._ms_client_lock
-    get_accounts = getattr(server_app, "get_all_configured_accounts", get_all_configured_accounts)
-    login = getattr(server_app, "login_with_account_spec", login_with_account_spec)
-    is_logged_in = getattr(server_app, "is_client_logged_in_as", is_client_logged_in_as)
+    client = client or ms_client
+    client_lock = client_lock or _ms_client_lock
+    get_accounts = get_all_configured_accounts
+    login = login_with_account_spec
+    is_logged_in = is_client_logged_in_as
     accounts = list(get_accounts())
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
-        if not any(is_logged_in(account) for account in accounts):
+        if not any(is_logged_in(account, client) for account in accounts):
             accounts.insert(0, {"account": client.current_account, "account_id": client.account_id,
                                 "access_token": client.access_token})
     if not accounts:
@@ -208,7 +203,7 @@ async def _fetch_record_with_failover_inner(
             break
 
         async with read_session():
-            account = next((a for a in available if is_logged_in(a)), None)
+            account = next((a for a in available if is_logged_in(a, client)), None)
             if account is not None:
                 session = client._ws
                 try:
@@ -226,8 +221,8 @@ async def _fetch_record_with_failover_inner(
                         mark_unhealthy()
                     await client.close()
                     try:
-                        await login(account)
-                        if not is_logged_in(account):
+                        await login(account, client=client)
+                        if not is_logged_in(account, client):
                             raise MajsoulError("更换线路后雀魂会话不可用")
                         return await client.fetch_record(game_uuid)
                     except Exception as retry_error:
@@ -235,13 +230,13 @@ async def _fetch_record_with_failover_inner(
 
         if account is None:
             async with client_lock:
-                if any(is_logged_in(a) for a in available):
+                if any(is_logged_in(a, client) for a in available):
                     continue
                 account = available[0]
                 key = _account_pool_key(account)
                 try:
-                    await login(account)
-                    if not is_logged_in(account):
+                    await login(account, client=client)
+                    if not is_logged_in(account, client):
                         raise MajsoulError("登录后雀魂会话不可用")
                 except Exception as error:
                     log_warning(
