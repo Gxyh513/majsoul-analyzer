@@ -14,12 +14,15 @@ from fastapi.responses import StreamingResponse
 
 from .engine.model_policy import normalize_model_id
 from .logger import log_debug, log_error
-from .app import (
-    AnalyzeStreamReq, _measure, _set_performance_value, _performance,
-    _log_performance, _safe_error_context, _public_review_result,
-    _wait_for_model_download, _try_fast_public_review, resolve_game_data,
-    engine_mgr, review_semaphore, _start_review_job,
-)
+from .api_schemas import AnalyzeStreamReq
+from .paipu_performance import measure as _measure, set_value as _set_performance_value, performance as _performance
+from .analysis_logging import _log_performance
+from .error_context import _safe_error_context
+from .public_review_cache import _public_review_result, _try_fast_public_review
+from .analysis_service import _wait_for_model_download
+from .game_data import resolve_game_data
+from .model_download import engine_mgr
+from .review_jobs import review_semaphore, _start_review_job
 
 router = APIRouter()
 
