@@ -1533,3 +1533,39 @@ img.tileImg.tileImgHighlight {
 .info-this-round-table p {
   margin: 4px 0;
 }
+
+
+/* Keep every meld as an independent, non-shrinking group. Kan tiles use four
+   ordinary layout slots; no zero-size float overlays or clipped fourth tile. */
+.hand-calls-p0 .meld-group,
+.hand-calls-p1 .meld-group,
+.hand-calls-p2 .meld-group,
+.hand-calls-p3 .meld-group {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  gap: 0 !important;
+  overflow: visible !important;
+  align-items: flex-end !important;
+}
+
+.hand-calls-p0 .meld-group { flex-direction: row !important; }
+.hand-calls-p1 .meld-group { flex-direction: column-reverse !important; }
+.hand-calls-p2 .meld-group { flex-direction: row-reverse !important; }
+.hand-calls-p3 .meld-group { flex-direction: column !important; }
+
+.hand-calls-p0 .meld-group--kan,
+.hand-calls-p1 .meld-group--kan,
+.hand-calls-p2 .meld-group--kan,
+.hand-calls-p3 .meld-group--kan {
+  flex-shrink: 0 !important;
+}
+
+.meld-group .meld-tile {
+  flex: 0 0 auto !important;
+  overflow: visible !important;
+}
+
+.meld-group .meld-tile--added {
+  position: relative;
+  z-index: 1;
+}
