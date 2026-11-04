@@ -70,7 +70,7 @@ function matchesReview(result, seat) {
 
 async function getReview(source, seat, onProgress = () => {}, timings = null) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
-  const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE };
+  const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE, transport_version: 2 };
   const sourceKey = JSON.stringify([url, source.kind, body, "mortal-s42-onnx", MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA]);
   const cached = reviewCache.get(sourceKey);
   const cachedSeat = seat == null ? cached?.defaultSeat : seat;

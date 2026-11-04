@@ -170,7 +170,7 @@ function apiAuthHeaders() {
 // The stream reader loads independently of the ordered replay UI group.
 function loadReviewStreamClient() {
   if (typeof fetchReviewStreamImpl === "function") return Promise.resolve();
-  return loadClientResource("/js/review-stream.js?v=20261104-lazy-stream-1", "script",
+  return loadClientResource("/js/review-stream.js?v=20261105-compact-v2-1", "script",
     () => typeof fetchReviewStreamImpl === "function");
 }
 
