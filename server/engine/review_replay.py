@@ -87,8 +87,9 @@ def build_replay(
     # Snapshot containers are immutable after publication. Reuse them while
     # their source state is unchanged; JSON output remains byte-for-byte
     # equivalent while long replays allocate far fewer short-lived lists.
-    sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
-    cached_hands_snapshot_key: tuple[tuple[str, ...], ...] | None = None
+    sorted_hands: list[tuple[int, list[str]] | None] = [None] * 4
+    hand_versions = [0] * 4
+    cached_hands_snapshot_key: tuple[int, ...] | None = None
     cached_hands_snapshot: list[list[str]] | None = None
     cached_melds: list[tuple[int, list[dict]] | None] = [None] * 4
     cached_rivers: list[tuple[int, list[dict]] | None] = [None] * 4
@@ -127,12 +128,12 @@ def build_replay(
     def snapshot_board(ev: dict, event_idx: int) -> dict[str, Any]:
         nonlocal cached_hands_snapshot_key, cached_hands_snapshot
         for seat, hand in enumerate(hands):
-            hand_state = tuple(hand)
+            version = hand_versions[seat]
             cached = sorted_hands[seat]
-            if cached is None or cached[0] != hand_state:
-                cached = (hand_state, sorted(hand, key=sort_key))
+            if cached is None or cached[0] != version:
+                cached = (version, sorted(hand, key=sort_key))
                 sorted_hands[seat] = cached
-        hand_key = tuple(cached[0] for cached in sorted_hands)
+        hand_key = tuple(hand_versions)
         if cached_hands_snapshot_key != hand_key:
             cached_hands_snapshot_key = hand_key
             cached_hands_snapshot = [cached[1] for cached in sorted_hands]
@@ -158,17 +159,20 @@ def build_replay(
     def fold_drawn_into_hand(seat: int):
         if drawn_tile[seat] is not None:
             hands[seat].append(drawn_tile[seat])
+            hand_versions[seat] += 1
             drawn_tile[seat] = None
 
     def remove_from_hand(seat: int, tile: str):
         fold_drawn_into_hand(seat)
         if tile in hands[seat]:
             hands[seat].remove(tile)
+            hand_versions[seat] += 1
         else:
             base = deaka(tile)
             for idx, existing in enumerate(hands[seat]):
                 if deaka(existing) == base:
                     del hands[seat][idx]
+                    hand_versions[seat] += 1
                     break
 
     for i, ev in enumerate(mjai_events):
@@ -185,6 +189,7 @@ def build_replay(
             oya = int(ev["oya"])
             scores = [int(x) for x in ev["scores"]]
             hands = [sorted(list(h), key=sort_key) for h in ev["tehais"]]
+            hand_versions = [version + 1 for version in hand_versions]
             drawn_tile = [None, None, None, None]
             melds = [[], [], [], []]
             rivers = [[], [], [], []]
