@@ -226,5 +226,17 @@ def summary():
             "login_successes": _counter_total(rows, "雀魂登录成功次数"),
             "session_reuses": _counter_total(rows, "雀魂会话复用次数"),
             "websocket_connect_attempts": _counter_total(rows, "WebSocket连接尝试次数"),
+            "account_attempts": _counter_total(rows, "雀魂账号尝试次数"),
+            "account_attempt_failures": _counter_total(rows, "雀魂账号尝试失败次数"),
+            "error_541": _counter_total(rows, "雀魂接口541错误次数"),
+            "attempts_per_remote_request": (
+                round(
+                    _counter_total(rows, "雀魂账号尝试次数")
+                    / sum(row.get("fetch_mode") == "雀魂下载" for row in rows),
+                    2,
+                )
+                if any(row.get("fetch_mode") == "雀魂下载" for row in rows)
+                else None
+            ),
         },
     }

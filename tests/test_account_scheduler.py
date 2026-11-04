@@ -148,6 +148,30 @@ class AccountSessionReuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.login_calls, 1)
         self.assertEqual(store.login_records, 1)
 
+    async def test_541_is_counted_and_failover_attempt_is_visible(self):
+        from unittest.mock import AsyncMock
+        from server.majsoul.client import MajsoulError
+
+        first = make_account(1)
+        second = make_account(2)
+        scheduler = AccountScheduler(FakeStore([first, second]), Path("."))
+        scheduler.reserve = AsyncMock(side_effect=[first, second, None])
+        scheduler._fetch_one = AsyncMock(
+            side_effect=[MajsoulError("fetchGameRecord returned 541", code=541), "record"]
+        )
+        stats = {}
+        token = performance.set(stats)
+        try:
+            result = await scheduler.fetch_record("260101-12345678-1234-1234-1234-123456789abc")
+        finally:
+            performance.reset(token)
+
+        self.assertEqual(result, "record")
+        self.assertEqual(stats.get("雀魂账号尝试次数"), 2)
+        self.assertEqual(stats.get("雀魂账号尝试失败次数"), 1)
+        self.assertEqual(stats.get("雀魂接口541错误次数"), 1)
+        self.assertEqual(scheduler._fetch_one.await_count, 2)
+
     async def test_session_metrics_distinguish_reusable_and_inactive_clients(self):
         scheduler = AccountScheduler(FakeStore([]), Path("."))
         scheduler.clients = {

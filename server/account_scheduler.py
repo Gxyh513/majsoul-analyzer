@@ -246,9 +246,13 @@ class AccountScheduler:
                     acc = await self.reserve(attempted)
                     if acc is None:
                         break
+                    increment("雀魂账号尝试次数")
                     try:
                         return await self._fetch_one(acc, game_uuid)
                     except Exception as exc:
+                        increment("雀魂账号尝试失败次数")
+                        if getattr(exc, "code", None) == 541:
+                            increment("雀魂接口541错误次数")
                         attempted.add(acc["id"])
                         errors.append(exc)
                         if getattr(exc, "code", None) == 1203:
