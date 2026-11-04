@@ -225,8 +225,17 @@ async def resolve_game_data(
     if stats is not None:
         stats["牌谱获取结果"] = "进行中"
     try:
-        with _measure("原始牌谱获取总耗时"):
-            stored = await get_or_download_record(game_uuid)
+        # The public-review fast path already verified and read immutable raw
+        # bytes. Reuse them on a cache miss rather than hitting disk a second time.
+        prefetched = stats.get("_prefetched_raw_digest") if isinstance(stats, dict) else None
+        if (isinstance(prefetched, tuple) and len(prefetched) == 3
+                and prefetched[0] == game_uuid and isinstance(prefetched[1], RawRecord)):
+            stored = prefetched[1]
+            stats["是否命中本地记录"] = True
+            stats["牌谱获取方式"] = "本地直接读取"
+        else:
+            with _measure("原始牌谱获取总耗时"):
+                stored = await get_or_download_record(game_uuid)
     except asyncio.CancelledError:
         if stats is not None:
             stats["牌谱获取结果"] = "已取消"

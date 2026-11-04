@@ -6,6 +6,8 @@ results and are kept separate from immutable raw protobuf records.
 """
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -54,6 +56,13 @@ def load(directory: Path, key: str, game_id: str, seat: int):
             data = reader.read(CACHE_ENTRY_LIMIT_BYTES + 1)
         if len(data) > CACHE_ENTRY_LIMIT_BYTES:
             return None
+        # The filename stays stable so old, uncompressed entries remain readable.
+        # Cap the inflated size before JSON parsing to avoid decompression bombs.
+        if data.startswith(b"\x1f\x8b"):
+            with gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb") as stream:
+                data = stream.read(CACHE_ENTRY_LIMIT_BYTES + 1)
+            if len(data) > CACHE_ENTRY_LIMIT_BYTES:
+                return None
         envelope = json.loads(data)
         # The stored fingerprint must match the requested key. Otherwise a
         # misplaced cache file for a different temperature or source could be
@@ -67,7 +76,7 @@ def load(directory: Path, key: str, game_id: str, seat: int):
                 or result["target_actor"] != seat):
             return None
         return result
-    except (OSError, ValueError, UnicodeError, TypeError, AttributeError):
+    except (OSError, EOFError, ValueError, UnicodeError, TypeError, AttributeError):
         return None
 
 
@@ -80,6 +89,8 @@ def save(directory: Path, key: str, result: dict) -> bool:
                          ensure_ascii=False, separators=(",", ":")).encode("utf8")
     if len(payload) > CACHE_ENTRY_LIMIT_BYTES:
         return False
+    compressed = gzip.compress(payload, compresslevel=3, mtime=0)
+    on_disk = compressed if len(compressed) < len(payload) else payload
     with _cache_lock:
         temporary = None
         try:
@@ -90,13 +101,13 @@ def save(directory: Path, key: str, result: dict) -> bool:
             _evict(directory)
             # Results are disposable; preserve free disk for permanent raw
             # records and SQLite rather than filling the volume with reviews.
-            if shutil.disk_usage(directory).free - len(payload) < LOW_DISK_WARNING_BYTES:
+            if shutil.disk_usage(directory).free - len(on_disk) < LOW_DISK_WARNING_BYTES:
                 return False
             if path.is_symlink():
                 return False
             with tempfile.NamedTemporaryFile(dir=directory, prefix=".review-", suffix=".tmp", delete=False) as writer:
                 temporary = Path(writer.name)
-                writer.write(payload)
+                writer.write(on_disk)
                 writer.flush()
                 os.fsync(writer.fileno())
             os.replace(temporary, path)

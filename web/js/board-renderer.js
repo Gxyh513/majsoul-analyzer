@@ -8,6 +8,10 @@ function updateBoardMarkup(element, html) {
   }
 }
 
+// Reused transport snapshots can share the same river array for many steps.
+// Cache its signature by identity; old expanded responses still work normally.
+const riverSignatureCache = new WeakMap();
+
 function renderBoard(kyoku, snap, activeDecision) {
   const hero = state.targetActor;
 
@@ -99,13 +103,13 @@ function renderBoard(kyoku, snap, activeDecision) {
 
   const roundScores = snap.scores || kyoku.init_scores || kyoku.steps?.[0]?.scores || [25000, 25000, 25000, 25000];
   const giP0 = $("giP0");
-  if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`;
+  if (giP0) updateBoardMarkup(giP0, `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`);
   const giP1 = $("giP1");
-  if (giP1) giP1.innerHTML = `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${roundScores[p1] ?? 25000}</span>`;
+  if (giP1) updateBoardMarkup(giP1, `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${roundScores[p1] ?? 25000}</span>`);
   const giP2 = $("giP2");
-  if (giP2) giP2.innerHTML = `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${roundScores[p2] ?? 25000}</span>`;
+  if (giP2) updateBoardMarkup(giP2, `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${roundScores[p2] ?? 25000}</span>`);
   const giP3 = $("giP3");
-  if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`;
+  if (giP3) updateBoardMarkup(giP3, `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`);
 
   // Rivers
   renderPlayerRiver("Bottom", hero, snap, isRonDiscard, targetActor);
@@ -163,8 +167,13 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
 
   // Include every tile and its flags: length plus the final tile is not unique
   // across rounds, seats or rewound replay states.
+  let riverSignature = riverSignatureCache.get(river);
+  if (riverSignature === undefined) {
+    riverSignature = JSON.stringify(river);
+    riverSignatureCache.set(river, riverSignature);
+  }
   const sig = JSON.stringify([state.gameId, state.kyokuIdx, state.targetActor, seat,
-    river, isLastDiscardActor, isRonTarget]);
+    riverSignature, isLastDiscardActor, isRonTarget]);
   if (container.dataset.riverSig === sig) {
     return;
   }

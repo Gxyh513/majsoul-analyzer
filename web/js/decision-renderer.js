@@ -341,8 +341,8 @@ function renderDecisionCard(dec, isExactStep, snap) {
   const heroAct = dec.actual || dec.candidates?.find((c) => c.is_actual);
   const aiAct = dec.expected || dec.candidates?.[0];
 
-  if (actualCell) actualCell.innerHTML = getKillerActionSpan(heroAct);
-  if (aiCell) aiCell.innerHTML = getKillerActionSpan(aiAct);
+  if (actualCell) updateBoardMarkup(actualCell, getKillerActionSpan(heroAct));
+  if (aiCell) updateBoardMarkup(aiCell, getKillerActionSpan(aiAct));
 
   if (tableBody) {
     const rowsHtml = (dec.candidates || []).map((cand) => {
@@ -354,6 +354,6 @@ function renderDecisionCard(dec, isExactStep, snap) {
         <td>${probVal}</td>
       </tr>`;
     }).join("");
-    tableBody.innerHTML = rowsHtml;
+    updateBoardMarkup(tableBody, rowsHtml);
   }
 }

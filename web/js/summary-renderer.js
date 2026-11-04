@@ -36,7 +36,7 @@ function renderSeatTabs() {
       const isTarget = seat === res.target_actor;
       const active = isTarget ? "active" : "";
       const label = isTarget ? `${wind}·自家` : `${wind}家`;
-      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" title="${label}视角">
+      return `<button class="kd-tab ${active}" data-seat="${seat}" role="tab" aria-selected="${isTarget}" title="${label}视角">
         <span class="kd-seat-label">${label}</span>
       </button>`;
     })

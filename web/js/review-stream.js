@@ -16,6 +16,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
   };
   const displayVisibility = (value) => ({ visible: "可见", hidden: "隐藏", prerender: "预渲染", unloaded: "已卸载" }[value] || "未知");
   const initialVisibility = visibility();
+  const detailedDiagnostics = isDetailedDiagnosticMode();
   const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
   const monitorStarted = performance.now();
   let monitorEnded = Infinity;
@@ -132,13 +133,13 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       longTaskCount++;
       longTaskMs += entry.duration;
       longestTaskMs = Math.max(longestTaskMs, entry.duration);
-      longTasks.push({ 开始时间_ms: roundMs(entry.startTime), 耗时_ms: roundMs(entry.duration), 可见状态: displayVisibility(visibility()) });
+      if (detailedDiagnostics) longTasks.push({ 开始时间_ms: roundMs(entry.startTime), 耗时_ms: roundMs(entry.duration), 可见状态: displayVisibility(visibility()) });
     }
   }
   function visibilityChanged() {
     const state = visibility();
     visibilityStates.add(state);
-    visibilityChanges.push({ 状态: displayVisibility(state), 时间_ms: roundMs(performance.now()) });
+    if (detailedDiagnostics) visibilityChanges.push({ 状态: displayVisibility(state), 时间_ms: roundMs(performance.now()) });
   }
   function frameSummary(item) {
     return item ? { 数据大小_KB: sizeKB(item.bytes), 首分块序号: item.firstChunk, 末分块序号: item.lastChunk,
@@ -643,7 +644,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       lastChunk = chunk;
       lastChunkAt = readFinished;
     }
-    readSamples.push({ 序号: readCount, 开始时间_ms: roundMs(readStarted),
+    if (detailedDiagnostics) readSamples.push({ 序号: readCount, 开始时间_ms: roundMs(readStarted),
       结束时间_ms: roundMs(readFinished), 等待耗时_ms: roundMs(wait), 数据大小_KB: sizeKB(size),
       状态: failed ? "读取失败" : (packet.done ? "流结束" : "数据分块"), 可见状态: displayVisibility(currentVisibility),
       错误信息: failed ? safeReadError(failure) : null });

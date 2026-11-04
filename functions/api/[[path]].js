@@ -134,7 +134,7 @@ function safeResponseHeaders(upstream, isStream) {
   return headers;
 }
 
-function monitorSseStream(body, requestId, started, wallOrigin) {
+function monitorSseStream(body, requestId, started, wallOrigin, debug = false) {
   const reader = body.getReader();
   const meter = createSseByteMeter();
   let chunkIndex = 0;
@@ -152,7 +152,7 @@ function monitorSseStream(body, requestId, started, wallOrigin) {
   }
 
   function flushSamples() {
-    if (!samples.length) return;
+    if (!debug || !samples.length) return;
     console.info(`[Paipu SSE Proxy] 请求ID=${requestId} 块明细=序号,接收ms,转发ms,字节 ${JSON.stringify(samples)}`);
     samples = [];
   }
@@ -176,8 +176,10 @@ function monitorSseStream(body, requestId, started, wallOrigin) {
         controller.enqueue(value);
         const forwardedAt = performance.now();
         meter.forwarded(chunkIndex, forwardedAt, events.finished);
-        samples.push([chunkIndex, +(arrivedAt - started).toFixed(1), +(forwardedAt - started).toFixed(1), value.byteLength]);
-        if (samples.length >= 128) flushSamples();
+        if (debug) {
+          samples.push([chunkIndex, +(arrivedAt - started).toFixed(1), +(forwardedAt - started).toFixed(1), value.byteLength]);
+          if (samples.length >= 128) flushSamples();
+        }
         for (const event of events.started) {
           if (event.kind === "100%") progress = event;
           const upstreamGap = progress && event.kind === "complete" ? event.firstAt - progress.firstAt : null;
@@ -373,7 +375,7 @@ export async function onRequest({ request, env }) {
     console.info(`[Paipu SSE Proxy] 请求ID=${serverRequestId || requestId} 压缩流直通，代理逐帧统计不可用`);
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   }
-  return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, serverRequestId || requestId, started, wallOrigin) : upstream.body, {
+  return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, serverRequestId || requestId, started, wallOrigin, debugProxy) : upstream.body, {
     status: upstream.status,
     headers: responseHeaders,
   });
