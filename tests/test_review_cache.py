@@ -32,6 +32,10 @@ class ReviewCacheEvictionTests(unittest.TestCase):
                 sum(path.stat().st_size for path in root.glob("*.json")),
                 review_cache.CACHE_SOFT_BUDGET_BYTES,
             )
+            self.assertLessEqual(
+                review_cache.CACHE_SOFT_BUDGET_BYTES + review_cache.CACHE_ENTRY_LIMIT_BYTES,
+                review_cache.CACHE_BUDGET_BYTES,
+            )
             metrics = review_cache.storage_metrics(root)
             self.assertEqual(metrics["budget_bytes"], review_cache.CACHE_BUDGET_BYTES)
             self.assertEqual(metrics["soft_budget_bytes"], review_cache.CACHE_SOFT_BUDGET_BYTES)
