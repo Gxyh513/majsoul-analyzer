@@ -16,6 +16,7 @@ import libriichi.state as lstate  # noqa: E402
 from .actions import next_player_action, event_to_label
 from .tiles import sort_key, deaka, tid
 from .review_labels import BAKAZE_CN, _hora_score_description
+from ..paipu_performance import measure as _measure
 
 
 INFERENCE_BATCH_SIZE = 128
@@ -148,7 +149,10 @@ def build_replay(
 
     for i, ev in enumerate(mjai_events):
         etype = ev["type"]
-        ps.update(json.dumps(ev))
+        with _measure("MJAI事件JSON序列化"):
+            event_json = json.dumps(ev)
+        with _measure("libriichi状态机更新"):
+            ps.update(event_json)
 
         if etype == "start_kyoku":
             bakaze = ev["bakaze"]
