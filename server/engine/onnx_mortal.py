@@ -10,9 +10,31 @@ import numpy as np
 
 from ..paipu_performance import increment as _increment, measure as _measure, review_inference as _review_inference
 from .model_policy import MODEL_REVISION, MODEL_SHA256, MODEL_SIZE, MODEL_STEPS, MODEL_VERSION
+from .runtime_config import ONNX_BATCH_SIZE, create_session_options
 
 OBS_SHAPE = (1012, 34)
 ACTION_SPACE = 46
+
+
+def load_verified_model_bytes(model_path: str | Path) -> bytes:
+    """Read the exact supported model once, for verification and ORT parsing."""
+    data = Path(model_path).read_bytes()
+    if len(data) != MODEL_SIZE:
+        raise ValueError(f"ONNX 模型大小不匹配: {len(data)}，期望 {MODEL_SIZE}")
+    if hashlib.sha256(data).hexdigest() != MODEL_SHA256:
+        raise ValueError("ONNX 模型 SHA-256 不匹配")
+    return data
+
+
+def _check_output(result, mask: np.ndarray) -> np.ndarray:
+    if not isinstance(result, (list, tuple)) or len(result) != 1:
+        raise RuntimeError("ONNX 模型输出数量不匹配")
+    q = result[0]
+    if not isinstance(q, np.ndarray) or q.dtype != np.float32 or q.shape != mask.shape:
+        raise RuntimeError("ONNX 模型输出必须为 float32 [batch, 46]")
+    if not np.isfinite(q[mask]).all() or not np.isneginf(q[~mask]).all():
+        raise RuntimeError("ONNX 模型输出无效: 合法动作必须有限且非法动作必须为 -inf")
+    return q
 
 
 def _check_signature(session) -> None:
@@ -65,13 +87,9 @@ class OnnxMortal:
         self.model_path = Path(model_path)
         # Verify and load the same bytes, avoiding replacement between verification
         # and ONNX Runtime's parser. External model data is not supported.
-        data = self.model_path.read_bytes()
+        data = load_verified_model_bytes(self.model_path)
         self.file_size = len(data)
-        if self.file_size != MODEL_SIZE:
-            raise ValueError(f"ONNX 模型大小不匹配: {self.file_size}，期望 {MODEL_SIZE}")
-        self.weight_sha256 = hashlib.sha256(data).hexdigest()
-        if self.weight_sha256 != MODEL_SHA256:
-            raise ValueError("ONNX 模型 SHA-256 不匹配")
+        self.weight_sha256 = MODEL_SHA256
 
         import onnxruntime as ort
 
@@ -80,7 +98,8 @@ class OnnxMortal:
             raise ValueError("providers 必须是非空的执行提供程序名称列表")
         if any(p not in ort.get_available_providers() for p in selected):
             raise ValueError(f"ONNX Runtime 执行提供程序不可用: {selected}")
-        self.session = ort.InferenceSession(data, providers=selected)
+        self.session = ort.InferenceSession(data, sess_options=create_session_options(),
+                                           providers=selected)
         _check_signature(self.session)
         self.version = MODEL_VERSION
         self.steps = MODEL_STEPS
@@ -90,7 +109,7 @@ class OnnxMortal:
         obs, mask = _real_state_sample()
         self.eval_batch([obs], [mask])
 
-    def eval_batch(self, obs_list, mask_list, chunk_size: int = 128) -> np.ndarray:
+    def eval_batch(self, obs_list, mask_list, chunk_size: int = ONNX_BATCH_SIZE) -> np.ndarray:
         """Evaluate observations and legal-action masks, preserving input order."""
         if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
             raise ValueError("chunk_size 必须是正整数")
@@ -145,12 +164,5 @@ class OnnxMortal:
                     result = self.session.run(["q"], {"obs": obs, "mask": mask})
             else:
                 result = self.session.run(["q"], {"obs": obs, "mask": mask})
-            if not isinstance(result, (list, tuple)) or len(result) != 1:
-                raise RuntimeError("ONNX 模型输出数量不匹配")
-            q = result[0]
-            if not isinstance(q, np.ndarray) or q.dtype != np.float32 or q.shape != mask.shape:
-                raise RuntimeError("ONNX 模型输出必须为 float32 [batch, 46]")
-            if not np.isfinite(q[mask]).all() or not np.isneginf(q[~mask]).all():
-                raise RuntimeError("ONNX 模型输出无效: 合法动作必须有限且非法动作必须为 -inf")
-            outputs.append(q)
+            outputs.append(_check_output(result, mask))
         return outputs[0] if len(outputs) == 1 else np.concatenate(outputs, axis=0)

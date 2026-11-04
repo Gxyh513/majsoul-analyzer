@@ -229,9 +229,15 @@ async function startAnalysisFromInput(rawInput, seat = null) {
   setLoading(true, "正在分析牌谱...", "正在使用 Mortal S42 ONNX 神经网络检讨每一手决策");
   const timings = {};
   try {
-    const result = await getReview(source, seat, (pct, msg) => {
-      if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
-    }, timings);
+    // Start replay downloads alongside status/stream preparation and analysis.
+    // Promise.all observes both failures, even if the other branch rejects first.
+    // Assets must be ready before any result is applied to the visible replay.
+    const [result] = await Promise.all([
+      getReview(source, seat, (pct, msg) => {
+        if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
+      }, timings),
+      loadReplayAssets(),
+    ]);
     if (version !== analysisViewVersion) return;
     currentReviewSource = source;
     applyPerspective(result, false);

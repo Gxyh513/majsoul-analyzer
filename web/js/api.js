@@ -167,31 +167,11 @@ function apiAuthHeaders() {
   return token ? { "X-Api-Token": token } : {};
 }
 
-// Delay loading the large SSE reader and diagnostics until an analysis starts.
-let streamClientLoader = null;
-
+// The stream reader loads independently of the ordered replay UI group.
 function loadReviewStreamClient() {
   if (typeof fetchReviewStreamImpl === "function") return Promise.resolve();
-  if (!streamClientLoader) {
-    streamClientLoader = new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.async = true;
-      script.src = "/js/review-stream.js?v=20261104-lazy-stream-1";
-      script.onload = () => {
-        if (typeof fetchReviewStreamImpl === "function") resolve();
-        else reject(new Error("分析模块加载异常"));
-      };
-      script.onerror = () => {
-        script.remove();
-        reject(new Error("分析模块加载失败，请检查网络后重试"));
-      };
-      document.head.appendChild(script);
-    }).catch((error) => {
-      streamClientLoader = null;
-      throw error;
-    });
-  }
-  return streamClientLoader;
+  return loadClientResource("/js/review-stream.js?v=20261104-lazy-stream-1", "script",
+    () => typeof fetchReviewStreamImpl === "function");
 }
 
 async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {

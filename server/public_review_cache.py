@@ -33,8 +33,11 @@ def _review_fingerprint(game_id: str, events: list[dict], meta: dict,
                         seat: int, engine: str, temperature: float) -> str:
     # Include source events and metadata, not just the public game UUID; uploaded
     # JSON with the same UUID must never reuse a different player's result.
-    packed = json.dumps([MODEL_SHA256, REVIEW_SCHEMA, game_id, events, meta, seat, engine, temperature],
-                        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    packed = json.dumps(
+        ["public-events-v2", _public_review_pipeline_identity(), MODEL_SHA256, REVIEW_SCHEMA,
+         game_id, events, meta, seat, engine, temperature],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    )
     return hashlib.sha256(packed.encode("utf8")).hexdigest()
 
 
@@ -49,7 +52,8 @@ def _public_review_pipeline_identity() -> str:
         "engine/reviewer.py", "engine/tiles.py", "engine/actions.py",
         "engine/review_replay.py", "engine/review_labels.py",
         "engine/review_scoring.py", "engine/model_manager.py",
-        "engine/onnx_mortal.py", "engine/model_policy.py",
+        "engine/onnx_mortal.py", "engine/model_policy.py", "engine/inference_batch.py",
+        "engine/runtime_config.py",
     ):
         digest.update(name.encode("ascii"))
         digest.update((ROOT_DIR / "server" / name).read_bytes())

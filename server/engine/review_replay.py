@@ -17,9 +17,20 @@ from .actions import next_player_action, event_to_label
 from .inference_batch import InferenceBatchBuffer
 from .tiles import sort_key, deaka, tid
 from .review_labels import BAKAZE_CN, _hora_score_description
+from .runtime_config import ONNX_BATCH_SIZE
+from ..paipu_performance import increment as _increment, measure as _measure, set_value as _set_value
 
 
-INFERENCE_BATCH_SIZE = 128
+INFERENCE_BATCH_SIZE = ONNX_BATCH_SIZE
+
+
+def _candidate_capabilities(cans) -> tuple[bool, bool, bool] | None:
+    # These cheap getters match mask entries 41/42, 43 and 44 in the pinned
+    # native encoder with at_kan_select=False. Older bindings use the full mask.
+    try:
+        return (bool(cans.can_pon or cans.can_kan), bool(cans.can_agari), bool(cans.can_ryukyoku))
+    except AttributeError:
+        return None
 
 
 class ReplayInferenceError(RuntimeError):
@@ -33,6 +44,15 @@ def build_replay(
 ):
     names = (meta or {}).get("names") or ["东家", "南家", "西家", "北家"]
     ps = lstate.PlayerState(target_actor)
+    _set_value("观测编码次数", 0)
+    _set_value("观测提前跳过次数", 0)
+    _set_value("观测编码后跳过次数", 0)
+    _set_value("观测编码耗时", 0.0)
+
+    def encode_observation(version: int):
+        _increment("观测编码次数")
+        with _measure("观测编码耗时"):
+            return ps.encode_obs(version, False)
 
     kyokus: list[dict[str, Any]] = []
     cur_kyoku: dict[str, Any] | None = None
@@ -261,11 +281,11 @@ def build_replay(
             # We do not add a separate visual board step for `reach`, except we
             # still check if target_actor has multiple tenpai discard choices.
             if r_seat == target_actor and ps.last_cans.can_act:
-                obs_4, mask_4 = ps.encode_obs(4, False)
-                if int(mask_4.sum()) > 1:
-                    actual_ev = next_player_action(mjai_events, target_actor, False, False, False, i + 1)
-                    if actual_ev is not None and actual_ev.get("type") == "dahai":
-                        obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
+                actual_ev = next_player_action(mjai_events, target_actor, False, False, False, i + 1)
+                if actual_ev is not None and actual_ev.get("type") == "dahai":
+                    obs_4, mask_4 = encode_observation(4)
+                    if int(mask_4.sum()) > 1:
+                        obs_m = obs_4 if obs_version == 4 else encode_observation(obs_version)[0]
                         # Separate the riichi declaration from its discard choice,
                         # so both decisions have an independently navigable step.
                         step_ref = len(cur_kyoku["steps"])
@@ -288,6 +308,10 @@ def build_replay(
                             }
                         )
                         queue_mortal_observation(obs_m, mask_4)
+                    else:
+                        _increment("观测编码后跳过次数")
+                else:
+                    _increment("观测提前跳过次数")
             continue
 
         # Update board state for normal events
@@ -414,15 +438,33 @@ def build_replay(
         if not cans.can_act:
             continue
 
-        obs_4, mask_4 = ps.encode_obs(4, False)
+        capabilities = _candidate_capabilities(cans)
+        actual_ev = None
+        if capabilities is not None:
+            # Accepted riichi permits only the drawn discard unless another
+            # action is available. Never skip a win, kan, abort or riichi choice.
+            if (getattr(ps, "self_riichi_accepted", False) is True and cans.can_discard
+                    and not any((*capabilities, getattr(cans, "can_chi", True),
+                                 getattr(cans, "can_riichi", True)))):
+                _increment("观测提前跳过次数")
+                continue
+            actual_ev = next_player_action(mjai_events, target_actor, *capabilities, i + 1)
+            if actual_ev is None:
+                _increment("观测提前跳过次数")
+                continue
+
+        obs_4, mask_4 = encode_observation(4)
         if int(mask_4.sum()) <= 1:
+            _increment("观测编码后跳过次数")
             continue
 
-        can_pon_or_kan = bool(mask_4[41] or mask_4[42])
-        can_agari = bool(mask_4[43])
-        can_ryukyoku = bool(mask_4[44])
-        actual_ev = next_player_action(mjai_events, target_actor, can_pon_or_kan, can_agari, can_ryukyoku, i + 1)
+        if capabilities is None:
+            actual_ev = next_player_action(
+                mjai_events, target_actor, bool(mask_4[41] or mask_4[42]),
+                bool(mask_4[43]), bool(mask_4[44]), i + 1,
+            )
         if actual_ev is None:
+            _increment("观测编码后跳过次数")
             continue
 
         actual_label = event_to_label(actual_ev)
@@ -437,7 +479,7 @@ def build_replay(
             else:
                 continue
 
-        obs_m = obs_4 if obs_version == 4 else ps.encode_obs(obs_version, False)[0]
+        obs_m = obs_4 if obs_version == 4 else encode_observation(obs_version)[0]
         if cans.can_discard:
             dtype = "discard_after_call" if etype in ("chi", "pon") else "self_turn"
         else:

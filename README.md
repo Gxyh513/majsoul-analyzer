@@ -151,6 +151,20 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 
+## ONNX CPU 参数
+
+线程和批次可以通过服务端环境变量配置，默认行为不变：
+
+| 环境变量 | 默认值 | 范围 | 含义 |
+| --- | ---: | ---: | --- |
+| `MAJSOUL_ONNX_INTRA_OP_THREADS` | 0 | 0–64 | 单个算子内部线程；0 使用 ONNX Runtime 自动值 |
+| `MAJSOUL_ONNX_INTER_OP_THREADS` | 0 | 0–64 | 算子之间线程；0 使用 ONNX Runtime 自动值 |
+| `MAJSOUL_ONNX_BATCH_SIZE` | 128 | 1–128 | 回放观测批次上限，不扩大原有默认内存预算 |
+
+参数在进程启动时读取，修改后需重启。无效或空值会明确报配置错误，不会默默改变配置。两个线程参数均为 0 时不创建自定义 SessionOptions；默认模型、权重完整性校验、预热及推理并发均不改变。
+
+没有一套线程配置适用于所有 ModelScope CPU。应先在隔离环境对照生产默认值与真实决策样本，确认 Q 值和动作一致，再决定是否更改环境变量；仓库不会自动运行性能基准或直接改变线上参数。可选基准见 [性能说明](docs/PERFORMANCE_AND_BACKUP.md)。
+
 ## 后端模块结构
 
 `server/app.py` 负责应用启动及路由装配，存储路径与全局雀魂会话由独立的 `runtime_state.py` 管理，以避免业务模块反向导入 FastAPI 应用：
@@ -161,13 +175,13 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
 
-为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库使用 Python `unittest` 回归测试，不依赖 Pytest；GitHub Actions 保留 Python 回归测试和 ModelScope 发布工作流。
+为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。测试目录及专用回归测试工作流已按维护要求移除；GitHub Actions 保留 ModelScope 发布工作流。
 
 ## 前端资源组织
 
-前端 JavaScript 由 `web/index.html` 按依赖顺序加载，`web/app.js` 负责初始化。CSS 文件现在由 HTML 中的多个 `<link rel="stylesheet">` 直接按序加载，避免单一 `styles.css` 的 `@import` 请求瀑布；旧的 `web/styles.css` 继续保留作兼容入口。全部 38 个牌面 SVG 均已移除 Inkscape/Sodipodi 编辑器元数据和注释，不修改 SVG 标准绘图节点；文件总体积从 708,336 字节降至 644,544 字节，减少 63,792 字节（约 9.0%）。
+首页仅预加载输入、引擎状态和加载/错误提示所需的脚本与样式，`web/app.js` 负责初始化。回放控制、牌桌、候选表和局分弹窗资源按需加载，与后端分析重叠，资源齐备后才显示回放。动态资源采用共享加载任务，失败后可重试；CSS 保持依赖顺序，不引入框架或改变牌桌布局。旧的 `web/styles.css` 继续保留作兼容入口。全部 38 个牌面 SVG 均已移除 Inkscape/Sodipodi 编辑器元数据和注释，不修改 SVG 标准绘图节点；文件总体积从 708,336 字节降至 644,544 字节，减少 63,792 字节（约 9.0%）。
 
-Python 回归测试位于 `tests/`，通过 `python -m unittest discover -s tests -p "test_*.py" -v` 执行；GitHub Actions 在 PR 和 main 更新时运行测试，并保留 ModelScope 部署工作流。
+仓库不再包含测试目录，也不会在 PR 或 main 更新时运行已删除的回归测试任务。ONNX 性能基准仍是独立的可选运维工具，不会自动执行。
 
 ## 致谢
 
@@ -185,7 +199,9 @@ Python 回归测试位于 `tests/`，通过 `python -m unittest discover -s test
 
 - SSE 流式分析的进度等待同时监听进度队列和任务完成通知，不再每 250 毫秒轮询；保留 10 秒心跳。大型 complete 事件按 256 KiB 分块发送。
 - SSE 分析解析器和诊断逻辑在首次发起分析时才加载，首页初始 API 脚本不再携带完整流式解析代码。
-- 回放中手牌和牌河 DOM 只在对应 HTML 变化时替换；牌面异步解码，11 个前端脚本保持执行顺序并使用 `defer`。
+- 回放中手牌和牌河 DOM 只在对应 HTML 变化时替换；牌面异步解码，回放模块首次使用时按依赖顺序加载。
 - 全部 38 个牌面 SVG 仅清理编辑器元数据与注释；原始绘图节点保持不变。
 - 雀魂抓谱优先选择最久未尝试的空闲账号；每小时账号检测最多并发 3 个会话。网关 routes 发现合并并发请求；限流冷却条目与网关失效记录过期后回收；指定客户端的登录和换线重试都使用该客户端。
+- 观测编码前先读取原生动作候选，跳过已确认无选择的立直后摸切及无可评后续动作；和牌、杠、流局与立直选择保持原有判定。新指标区分观测编码耗时、提前跳过次数和编码后跳过次数。
+- 公开 Protobuf 牌谱任务直接复用原始字节摘要，不再为每个座位先序列化整场 MJAI；内部/历史 JSON 的事件指纹移到线程执行，并绑定当前检讨流水线版本。无生产者版本的旧缓存不再升级复用，首次访问会安全重算，旧文件仍由既有过期维护回收。
 - 可以设置 `MAJSOUL_REVIEW_MAX_WAITERS`（1–32，默认 4）及 `MAJSOUL_REVIEW_QUEUE_TIMEOUT_SECONDS`（15–300 秒，默认 90）。默认 ONNX 推理并发仍为 1，避免未经负载评估增加内存压力。

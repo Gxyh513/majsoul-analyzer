@@ -42,25 +42,26 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
                             cache_public: bool = False) -> asyncio.Task:
     # A persistent cache is allowed only for URL-based paipu analysis, never
     # for demo or internal JSON conversion.
-    key = _review_fingerprint(game_id, mjai_events, meta, seat, engine, temperature)
-    disk_key = key
-    if cache_public:
-        # An actual API request captures this fingerprint from the same raw
-        # bytes it decoded. Other internal/test callers retain the original
-        # events-based cache key; no second raw file read or TOCTOU gap.
-        stats = _performance.get()
-        source_info = stats.get("_public_raw_source") if isinstance(stats, dict) else None
+    stats = _performance.get()
+    source_info = stats.get("_public_raw_source") if cache_public and isinstance(stats, dict) else None
+    with _measure("检讨指纹计算耗时"):
         if isinstance(source_info, tuple) and len(source_info) == 2 and source_info[0] == game_id:
-            disk_key = _public_raw_review_key(game_id, source_info[1], seat, engine, temperature)
+            # Use the verified immutable source digest for both in-flight sharing
+            # and persistence, without serializing the full events for each seat.
+            key = await asyncio.to_thread(
+                _public_raw_review_key, game_id, source_info[1], seat, engine, temperature,
+            )
+        else:
+            # Demo/private inputs and legacy records still bind every event and
+            # metadata field; keep the potentially large hash off the event loop.
+            key = await asyncio.to_thread(
+                _review_fingerprint, game_id, mjai_events, meta, seat, engine, temperature,
+            )
+    if cache_public:
         _increment("检讨结果缓存检查次数")
-        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, disk_key, game_id, seat)
-        if cached is None and disk_key != key:
-            # A review saved before the raw-key optimization can still be
-            # reused on the first revisit. Rewrite on demand under the new key
-            # so later requests skip conversion; normal eviction bounds space.
-            cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
-            if cached is not None:
-                await asyncio.to_thread(review_cache.save, REVIEWS_DIR, disk_key, cached)
+        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
+        # Unversioned legacy entries have an unknown producer pipeline. Do not
+        # rebuild their old full-event key or promote them into a new raw key.
         if cached is not None:
             _increment("检讨结果缓存命中次数")
             _set_performance_value("分析结果缓存", "命中")
@@ -99,7 +100,7 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             return await _start_review_job_owned(
                 game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                 engine=engine, temperature=temperature, progress_callback=emit_progress,
-                cache_key=disk_key if cache_public else None,
+                cache_key=key if cache_public else None,
             )
 
         started = asyncio.create_task(launch())

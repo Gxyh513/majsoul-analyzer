@@ -2,15 +2,12 @@
 // Initialization
 // ============================================================================
 window.addEventListener("DOMContentLoaded", async () => {
-  updateResponsiveZoom();
   document.documentElement.removeAttribute("data-theme");
   try {
     localStorage.removeItem("majsoul_theme_pref");
     localStorage.removeItem("majsoul_back_pref");
   } catch (_) {}
   applyHidePlayerId();
-  const initSpeedSel = $("playSpeedSelect");
-  if (initSpeedSel) initSpeedSel.value = String(state.playSpeed || "1");
   bindEvents();
 
   // Reloading an analysis page always returns to the landing screen. An old

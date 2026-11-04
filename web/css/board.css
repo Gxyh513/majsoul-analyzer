@@ -123,30 +123,6 @@
   gap: 12px;
 }
 
-.kd-back-btn {
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  color: #ffffff;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: all 0.18s ease;
-}
-
-.kd-back-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.kd-back-btn:active {
-  transform: scale(0.96);
-}
-
 .kd-kyoku-select {
   padding: 6px 12px;
   font-size: 13px;
@@ -383,36 +359,6 @@
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.kd-chip-btn {
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 500;
-  border-radius: 20px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #ffffff;
-  cursor: pointer;
-  transition: all 0.18s ease;
-}
-
-.kd-chip-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.kd-chip-btn:active {
-  transform: scale(0.96);
-}
-
-.kd-chip-btn.active {
-  background: rgba(48, 209, 88, 0.16);
-  border-color: rgba(48, 209, 88, 0.35);
-  color: #30d158;
 }
 
 .kd-match-badge {

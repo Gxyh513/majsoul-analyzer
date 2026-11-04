@@ -48,32 +48,6 @@
     display: none !important;
   }
 
-  /* Tier 1 Landing Screen on Mobile */
-  .kd-landing-card {
-    padding: 24px 16px !important;
-    margin: 16px auto !important;
-    width: calc(100% - 24px) !important;
-    max-width: 440px !important;
-    gap: 16px !important;
-  }
-  .kd-avatar-wrap {
-    width: 76px !important;
-    height: 76px !important;
-  }
-  .kd-landing-title {
-    font-size: 20px !important;
-  }
-  .kd-landing-input {
-    font-size: 16px !important; /* Prevents iOS Safari auto-zoom on focus */
-    padding: 12px 14px !important;
-    height: 46px !important;
-  }
-  .kd-landing-submit {
-    height: 46px !important;
-    padding: 12px !important;
-    font-size: 14px !important;
-  }
-
   /* Header Sticky & Touch Scrolling */
   .kd-header {
     position: sticky !important;
@@ -96,15 +70,6 @@
   .kd-header-left, .kd-header-right {
     flex-shrink: 0 !important;
     gap: 6px !important;
-  }
-  .kd-back-btn {
-    padding: 5px 8px !important;
-    font-size: 12px !important;
-  }
-  .kd-chip-btn {
-    padding: 4px 8px !important;
-    font-size: 11px !important;
-    white-space: nowrap !important;
   }
   .kd-tab {
     padding: 4px 7px !important;
@@ -281,11 +246,6 @@
 }
 
 @media (max-width: 380px) {
-  .kd-single-model-card {
-    flex-direction: column !important;
-    align-items: flex-start !important;
-    gap: 8px !important;
-  }
   .kd-cand-table col:nth-child(1) { width: 44px !important; }
   .kd-cand-table col:nth-child(2) { width: 42px !important; }
   .kd-cand-table col:nth-child(3) { width: 62px !important; }
@@ -410,38 +370,6 @@
 /* ==========================================================================
    Score Fluctuations SVG Chart & Import/Export Buttons (Module 3)
    ========================================================================== */
-.kd-landing-actions {
-  display: flex;
-  gap: 10px;
-  width: 100%;
-}
-.kd-landing-actions .kd-landing-submit {
-  flex: 1;
-}
-.kd-landing-import-btn {
-  padding: 13px 18px;
-  font-size: 14px;
-  font-weight: 600;
-  background: var(--color-bg-card, #2c2c2e);
-  color: var(--color-text-primary, #ffffff);
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
-  border-radius: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s cubic-bezier(0.25, 1, 0.5, 1);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.kd-landing-import-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.24);
-  transform: translateY(-1px);
-}
-.kd-landing-import-btn:active {
-  transform: translateY(0);
-}
-
 .round-score-chart-wrap {
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
