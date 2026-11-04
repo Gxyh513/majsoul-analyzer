@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -163,12 +164,23 @@ def storage_metrics(directory: Path) -> dict:
         entries = [p.stat().st_size for p in directory.glob("[0-9a-f]*.json")
                    if _KEY.fullmatch(p.stem) and not p.is_symlink()]
         capacity = shutil.disk_usage(directory if directory.is_dir() else directory.parent)
+        # Some FUSE-backed volumes report UINT64_MAX-like sentinel values.
+        # Treat impossible capacities as unknown instead of claiming vast free space.
+        capacity_valid = (
+            type(capacity.total) is int and type(capacity.free) is int
+            and 0 < capacity.total <= sys.maxsize
+            and 0 <= capacity.free <= capacity.total
+        )
+        free_bytes = capacity.free if capacity_valid else None
+        total_bytes = capacity.total if capacity_valid else None
         return {"entries": len(entries), "bytes": sum(entries),
-                "budget_bytes": CACHE_BUDGET_BYTES, "free_bytes": capacity.free,
-                "disk_total_bytes": capacity.total,
-                "low_disk_space": capacity.free < LOW_DISK_WARNING_BYTES,
+                "budget_bytes": CACHE_BUDGET_BYTES, "free_bytes": free_bytes,
+                "disk_total_bytes": total_bytes,
+                "low_disk_space": free_bytes < LOW_DISK_WARNING_BYTES if free_bytes is not None else None,
+                "capacity_status": "ok" if capacity_valid else "unknown",
                 "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}
     except OSError:
         return {"entries": 0, "bytes": 0, "budget_bytes": CACHE_BUDGET_BYTES,
                 "free_bytes": None, "disk_total_bytes": None,
-                "low_disk_space": None, "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}
+                "low_disk_space": None, "capacity_status": "unknown",
+                "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}
