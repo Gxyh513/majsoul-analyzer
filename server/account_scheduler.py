@@ -14,7 +14,7 @@ from .account_pool import _redact_error
 from .account_store import AccountStore
 from .logger import log_warning
 from .majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
-from .paipu_performance import measure, set_value
+from .paipu_performance import increment, measure, set_value
 
 
 def _public_account(acc: dict, busy: bool) -> dict:
@@ -99,7 +99,8 @@ class AccountScheduler:
                     return None
                 self.waiting += 1
                 try:
-                    await self.condition.wait()
+                    with measure("雀魂账号池排队等待"):
+                        await self.condition.wait()
                 finally:
                     self.waiting -= 1
 
@@ -133,6 +134,7 @@ class AccountScheduler:
             if client.current_account == acc["account"] and (
                 not acc["account_id"] or str(client.account_id) == str(acc["account_id"])
             ):
+                increment("雀魂会话复用次数")
                 return
         await client.close()
         set_value("雀魂连接结果", "进行中")
@@ -145,9 +147,11 @@ class AccountScheduler:
             set_value("雀魂连接结果", "成功")
         refreshed = False
         try:
+            increment("雀魂登录请求次数")
             with measure("雀魂登录", failure_count="雀魂登录失败次数"):
                 await client.login_token(acc["access_token"])
         except MajsoulTokenInvalid:
+            increment("雀魂登录请求次数")
             with measure("雀魂登录", failure_count="雀魂登录失败次数"):
                 await client.login_password(acc["account"], acc["password"])
             refreshed = True
@@ -156,6 +160,7 @@ class AccountScheduler:
             raise MajsoulError("Token 与账号身份不一致")
         client.current_account = acc["account"]
         await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
+        increment("雀魂登录成功次数")
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:
