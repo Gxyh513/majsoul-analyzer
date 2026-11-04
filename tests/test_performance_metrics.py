@@ -34,8 +34,11 @@ class PerformanceMetricsTests(unittest.TestCase):
                     "公开牌谱缓存命中次数": 1,
                     "雀魂登录请求次数": 1,
                     "雀魂登录成功次数": 1,
+                    "雀魂账号尝试次数": 2,
+                    "雀魂账号尝试失败次数": 1,
+                    "雀魂接口541错误次数": 1,
                 },
-                status={"是否命中本地记录": True},
+                status={"是否命中本地记录": True, "牌谱获取方式": "雀魂下载"},
             ),
             succeeded=True,
         )
@@ -64,6 +67,10 @@ class PerformanceMetricsTests(unittest.TestCase):
         self.assertEqual(result["account_sessions"]["login_attempts"], 1)
         self.assertEqual(result["account_sessions"]["login_successes"], 1)
         self.assertEqual(result["account_sessions"]["session_reuses"], 1)
+        self.assertEqual(result["account_sessions"]["account_attempts"], 2)
+        self.assertEqual(result["account_sessions"]["account_attempt_failures"], 1)
+        self.assertEqual(result["account_sessions"]["error_541"], 1)
+        self.assertEqual(result["account_sessions"]["attempts_per_remote_request"], 2.0)
         self.assertEqual(result["acquisition"]["local_record_hits"], 1)
         self.assertEqual(result["acquisition"]["local_record_misses"], 1)
 
