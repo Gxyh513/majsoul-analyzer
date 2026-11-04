@@ -856,3 +856,11 @@
   width: 70px !important;
   text-align: right !important;
 }
+
+/* Improve small-screen touch accuracy without changing Mahjong tile geometry. */
+@media (max-width: 768px) {
+  .controls > * { min-height: 42px !important; touch-action: manipulation; }
+  .kd-seat-tabs .kd-tab { min-height: 40px; touch-action: manipulation; }
+  .board-scrubber .kd-play-btn, .board-scrubber .kd-speed-select { min-height: 40px; }
+  .board-scrubber #stepSlider { min-height: 36px; touch-action: pan-x; }
+}

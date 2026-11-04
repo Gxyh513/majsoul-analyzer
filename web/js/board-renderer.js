@@ -335,9 +335,24 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     } else {
       let svgHtml = "";
       const renderedTiles = closedWrap.querySelectorAll(".tileDiv");
-      // Batch DOM measurements together to eliminate layout thrashing
+      // Measure all tiles only when their markup or scale changes. Changes to
+      // candidate probabilities reuse their existing coordinates.
       const svgRect = svgEl.getBoundingClientRect();
-      const tileRects = Array.from(renderedTiles).map((t) => t.getBoundingClientRect());
+      let tileCenters;
+      const geometry = svgEl.__tileGeometry;
+      if (geometry && geometry.markup === handHtml &&
+          geometry.width === svgRect.width && geometry.height === svgRect.height) {
+        tileCenters = geometry.centers;
+      } else {
+        tileCenters = Array.from(renderedTiles, (tile) => {
+          const rect = tile.getBoundingClientRect();
+          return rect.left + rect.width / 2 - svgRect.left;
+        });
+        if (svgRect.width > 0) {
+          svgEl.__tileGeometry = { markup: handHtml, width: svgRect.width,
+            height: svgRect.height, centers: tileCenters };
+        }
+      }
 
       const barAreaHeight = svgRect.height || 50;
       const barScale = barAreaHeight / 50;
@@ -355,9 +370,8 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
           seenPai.add(pai);
           const barInfo = tileBars[pai];
           const prob = barInfo ? barInfo.prob : 0;
-          if (prob > 0 && idx < tileRects.length) {
-            const tileRect = tileRects[idx];
-            const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
+          if (prob > 0 && idx < tileCenters.length) {
+            const centerX = tileCenters[idx];
             const height = Math.max(3 * barScale, (prob / 100) * barAreaHeight * 0.9);
             const y = barAreaHeight - height;
             svgHtml += `<rect x="${centerX - barWidth / 2}" y="${y}" width="${barWidth}" height="${height}" fill="#5ecb7d" rx="${2 * barScale}"></rect>`;

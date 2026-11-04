@@ -60,6 +60,34 @@ let currentReviewSource = null;
 const reviewCache = new Map();
 const pendingReviews = new Map();
 const REVIEW_CACHE_SOURCE_LIMIT = 2;
+const REVIEW_CACHE_ESTIMATED_BUDGET_BYTES = 32 * 1024 * 1024;
+
+// Approximate expanded JS object cost without stringifying several megabytes of
+// data just to measure it. The active result is never evicted by itself.
+function estimateReviewFootprint(result) {
+  let bytes = 64 * 1024;
+  for (const round of result?.kyokus || []) {
+    bytes += (round.steps?.length || 0) * 5000;
+    bytes += (round.decisions?.length || 0) * 2800;
+  }
+  return bytes;
+}
+
+function trimReviewCache() {
+  const totalBytes = () => [...reviewCache.values()].reduce((sum, entry) =>
+    sum + [...entry.sizes.values()].reduce((a, b) => a + b, 0), 0);
+  while (reviewCache.size > REVIEW_CACHE_SOURCE_LIMIT || totalBytes() > REVIEW_CACHE_ESTIMATED_BUDGET_BYTES) {
+    const sourceKey = reviewCache.keys().next().value;
+    if (sourceKey === undefined) break;
+    const entry = reviewCache.get(sourceKey);
+    if (reviewCache.size === 1 && entry.seats.size <= 1) break;
+    const oldestSeat = entry.seats.keys().next().value;
+    entry.seats.delete(oldestSeat);
+    entry.sizes.delete(oldestSeat);
+    if (entry.defaultSeat === oldestSeat) entry.defaultSeat = entry.seats.keys().next().value ?? null;
+    if (!entry.seats.size) reviewCache.delete(sourceKey);
+  }
+}
 const REVIEW_ENGINE = "auto";
 const REVIEW_TEMPERATURE = 0.1;
 
@@ -75,6 +103,9 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
   const cached = reviewCache.get(sourceKey);
   const cachedSeat = seat == null ? cached?.defaultSeat : seat;
   if (cachedSeat != null && cached?.seats.has(cachedSeat)) {
+    const reused = cached.seats.get(cachedSeat);
+    cached.seats.delete(cachedSeat);
+    cached.seats.set(cachedSeat, reused);
     reviewCache.delete(sourceKey);
     reviewCache.set(sourceKey, cached);
     onProgress(100, "已复用本页面的分析结果，正在加载回放...");
@@ -106,14 +137,14 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
       const result = await fetchReviewStream(requestBody, notify, url, pending.timings);
       requireTrustedReview(result);
       if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
-      const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map() };
+      const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map(), sizes: new Map() };
+      entry.seats.delete(result.target_actor);
       entry.seats.set(result.target_actor, result);
+      entry.sizes.set(result.target_actor, estimateReviewFootprint(result));
       if (seat == null) entry.defaultSeat = result.target_actor;
       reviewCache.delete(sourceKey);
       reviewCache.set(sourceKey, entry);
-      while (reviewCache.size > REVIEW_CACHE_SOURCE_LIMIT) {
-        reviewCache.delete(reviewCache.keys().next().value);
-      }
+      trimReviewCache();
       return result;
     }).finally(() => {
       requests.delete(seat);
@@ -242,6 +273,11 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     currentReviewSource = source;
     applyPerspective(result, false);
     showTier(2);
+    // The initial analysis completed while the replay was hidden, so recompute
+    // recommendation bar geometry after the board has entered layout.
+    requestAnimationFrame(() => {
+      if (version === analysisViewVersion && state.reviewData === result) setStep(state.stepIdx);
+    });
     // Review navigation stays in memory; refreshing must not reopen a paipu.
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);

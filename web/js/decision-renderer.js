@@ -317,9 +317,9 @@ function renderDecisionCard(dec, isExactStep, snap) {
   // Case 1: Round End (Hora or Ryuukyoku)
   if (isHora || isRyuukyoku) {
 
-    if (actualCell) actualCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
-    if (aiCell) aiCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
-    if (tableBody) tableBody.innerHTML = "";
+    if (actualCell) updateBoardMarkup(actualCell, '<span style="opacity:0;">&nbsp;</span>');
+    if (aiCell) updateBoardMarkup(aiCell, '<span style="opacity:0;">&nbsp;</span>');
+    if (tableBody) updateBoardMarkup(tableBody, "");
     renderThisRoundModalContent(snap, currentKyoku);
     return;
   }
@@ -331,9 +331,9 @@ function renderDecisionCard(dec, isExactStep, snap) {
   if (optInfo) optInfo.style.display = "flex";
 
   if (!dec || !isExactStep) {
-    if (actualCell) actualCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
-    if (aiCell) aiCell.innerHTML = '<span style="opacity:0;">&nbsp;</span>';
-    if (tableBody) tableBody.innerHTML = "";
+    if (actualCell) updateBoardMarkup(actualCell, '<span style="opacity:0;">&nbsp;</span>');
+    if (aiCell) updateBoardMarkup(aiCell, '<span style="opacity:0;">&nbsp;</span>');
+    if (tableBody) updateBoardMarkup(tableBody, "");
     return;
   }
 

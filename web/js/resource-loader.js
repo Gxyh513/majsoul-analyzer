@@ -51,13 +51,13 @@ function loadReplayAssets() {
       "/css/board.css?v=20261104-demand-replay-1",
       "/css/decision.css?v=20261104-css-parallel-1",
       "/css/modal.css?v=20261104-demand-replay-1",
-      "/css/responsive.css?v=20261104-demand-replay-1",
+      "/css/responsive.css?v=20261105-touch-opt-1",
     ];
     const scripts = [
-      ["/js/summary-renderer.js?v=20261101-refresh-home-1", () => typeof renderSummaryDashboard === "function"],
+      ["/js/summary-renderer.js?v=20261105-render-opt-1", () => typeof renderSummaryDashboard === "function"],
       ["/js/replay-controls.js?v=20261104-demand-replay-1", () => typeof bindReplayEvents === "function"],
-      ["/js/board-renderer.js?v=20261104-kan-layout-1", () => typeof renderBoard === "function"],
-      ["/js/decision-renderer.js?v=20261104-tile-svg-repair-1", () => typeof renderDecisionCard === "function"],
+      ["/js/board-renderer.js?v=20261105-render-opt-1", () => typeof renderBoard === "function"],
+      ["/js/decision-renderer.js?v=20261105-render-opt-1", () => typeof renderDecisionCard === "function"],
       ["/js/replay-navigation.js?v=20261101-refresh-home-1", () => typeof jumpNextDecision === "function"],
       ["/js/modal-manager.js?v=20261104-demand-replay-1", () => typeof openRoundScoresModal === "function"],
     ];

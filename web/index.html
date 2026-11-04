@@ -78,7 +78,7 @@
             <span class="kd-badge-match">模型一致率: --%</span>
           </div>
           <!-- 切换视角按钮放在左侧下方，竖着显示 -->
-          <div id="seatTabs" class="kd-seat-tabs"></div>
+          <div id="seatTabs" class="kd-seat-tabs" role="tablist" aria-label="玩家视角"></div>
         </div>
 
         <!-- Center Column: Board & Scrubber Bar -->
@@ -275,7 +275,7 @@
         <div id="loadingSub" class="kd-loading-sub">Mortal 神经网络正在检讨每一手决策</div>
         <div class="kd-progress-container">
           <div class="kd-progress-info">
-            <div id="analysisProgressText" class="kd-progress-text">正在连接检讨引擎...</div>
+            <div id="analysisProgressText" class="kd-progress-text" aria-live="polite">正在连接检讨引擎...</div>
             <div id="analysisProgressPct" class="kd-progress-pct">0%</div>
           </div>
           <div class="kd-progress-track">
@@ -301,9 +301,9 @@
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
   <script defer src="/js/replay-state.js?v=20261104-kan-speed-1"></script>
-  <script defer src="/js/resource-loader.js?v=20261104-demand-replay-1"></script>
+  <script defer src="/js/resource-loader.js?v=20261105-render-opt-1"></script>
   <script defer src="/js/api.js?v=20261105-compact-v2-1"></script>
-  <script defer src="/js/review.js?v=20261105-compact-v2-1"></script>
+  <script defer src="/js/review.js?v=20261105-cache-budget-1"></script>
   <script defer src="/js/events.js?v=20261104-demand-replay-1"></script>
   <script defer src="/app.js?v=20261104-demand-replay-1"></script>
 </body>
