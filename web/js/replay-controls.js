@@ -91,13 +91,14 @@ function stepDelta(delta) {
 }
 
 function getPlayIntervalMs() {
-  const speed = state.playSpeed || 1.0;
-  return Math.max(150, Math.round(800 / speed));
+  const speed = state.playSpeed || DEFAULT_PLAYBACK_SPEED;
+  // 10x is 80 ms per replay step; the previous 150 ms floor capped playback below 6x.
+  return Math.max(40, Math.round(800 / speed));
 }
 
 function setPlaySpeed(speed) {
   const num = parseFloat(speed);
-  if (isNaN(num) || num <= 0) return;
+  if (!PLAYBACK_SPEEDS.includes(num)) return;
   state.playSpeed = num;
   localStorage.setItem("majsoul_play_speed", String(num));
   const sel = $("playSpeedSelect");
