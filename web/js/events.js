@@ -40,7 +40,7 @@ function bindEvents() {
   // Playback Speed Selector
   const speedSel = $("playSpeedSelect");
   if (speedSel) {
-    speedSel.value = String(state.playSpeed || "1");
+    speedSel.value = String(state.playSpeed || DEFAULT_PLAYBACK_SPEED);
     speedSel.addEventListener("change", (e) => {
       setPlaySpeed(e.target.value);
     });

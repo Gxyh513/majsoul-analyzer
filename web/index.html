@@ -7,7 +7,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
   <link rel="stylesheet" href="/css/variables.css?v=20261104-css-parallel-1" />
   <link rel="stylesheet" href="/css/landing.css?v=20261104-css-parallel-1" />
-  <link rel="stylesheet" href="/css/board.css?v=20261104-css-parallel-1" />
+  <link rel="stylesheet" href="/css/board.css?v=20261104-kan-layout-1" />
   <link rel="stylesheet" href="/css/decision.css?v=20261104-css-parallel-1" />
   <link rel="stylesheet" href="/css/modal.css?v=20261104-css-parallel-1" />
   <link rel="stylesheet" href="/css/responsive.css?v=20261104-css-parallel-1" />
@@ -141,13 +141,10 @@
           <div class="board-scrubber">
             <button id="btnPlayPause" class="kd-play-btn" title="自动播放/暂停 (空格键)">播放</button>
             <select id="playSpeedSelect" class="kd-speed-select" title="调节播放速度">
-              <option value="0.5">0.5x</option>
-              <option value="0.75">0.75x</option>
-              <option value="1" selected>1.0x</option>
-              <option value="1.25">1.25x</option>
-              <option value="1.5">1.5x</option>
-              <option value="2">2.0x</option>
-              <option value="3">3.0x</option>
+              <option value="2" selected>2X</option>
+              <option value="3">3X</option>
+              <option value="5">5X</option>
+              <option value="10">10X</option>
             </select>
             <span id="stepCounterText" class="kd-step-counter"><b id="stepCurrentNum">0</b><span class="kd-step-slash"> / </span><span id="stepTotalNum">0</span></span>
             <input id="stepSlider" type="range" min="0" max="0" value="0" class="kd-slider" aria-label="回放进度" />
@@ -307,16 +304,16 @@
   <!-- Toast Notification Container -->
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
-  <script defer src="/js/replay-state.js?v=20261104-tile-svg-repair-1"></script>
+  <script defer src="/js/replay-state.js?v=20261104-kan-speed-1"></script>
   <script defer src="/js/api.js?v=20261104-lazy-stream-1"></script>
   <script defer src="/js/review.js?v=20261101-refresh-home-1"></script>
   <script defer src="/js/summary-renderer.js?v=20261101-refresh-home-1"></script>
-  <script defer src="/js/replay-controls.js?v=20261101-refresh-home-1"></script>
-  <script defer src="/js/board-renderer.js?v=20261104-tile-svg-repair-1"></script>
+  <script defer src="/js/replay-controls.js?v=20261104-kan-speed-1"></script>
+  <script defer src="/js/board-renderer.js?v=20261104-kan-layout-1"></script>
   <script defer src="/js/decision-renderer.js?v=20261104-tile-svg-repair-1"></script>
   <script defer src="/js/replay-navigation.js?v=20261101-refresh-home-1"></script>
   <script defer src="/js/modal-manager.js?v=20261101-refresh-home-1"></script>
-  <script defer src="/js/events.js?v=20261101-refresh-home-1"></script>
+  <script defer src="/js/events.js?v=20261104-kan-speed-1"></script>
   <script defer src="/app.js?v=20261101-refresh-home-1"></script>
 </body>
 </html>
