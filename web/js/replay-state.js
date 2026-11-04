@@ -3,6 +3,17 @@
  * 雀魂 AI 牌谱检讨系统前端控制器
  */
 
+const PLAYBACK_SPEEDS = Object.freeze([2, 3, 5, 10]);
+const DEFAULT_PLAYBACK_SPEED = 2;
+
+function loadPlaybackSpeed() {
+  const stored = Number.parseFloat(localStorage.getItem("majsoul_play_speed"));
+  const speed = PLAYBACK_SPEEDS.includes(stored) ? stored : DEFAULT_PLAYBACK_SPEED;
+  // Replace legacy values (0.5x–1.5x) so the selector and stored preference agree.
+  localStorage.setItem("majsoul_play_speed", String(speed));
+  return speed;
+}
+
 const state = window.state = {
   reviewData: null,
   gameId: "demo",
@@ -13,7 +24,7 @@ const state = window.state = {
   serverStatus: null,
   isPlaying: false,
   playTimer: null,
-  playSpeed: parseFloat(localStorage.getItem("majsoul_play_speed")) || 1.0,
+  playSpeed: loadPlaybackSpeed(),
 };
 
 const WIND_CN = ["东", "南", "西", "北"];
