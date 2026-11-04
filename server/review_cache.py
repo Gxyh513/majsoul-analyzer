@@ -31,6 +31,27 @@ _cache_lock = threading.RLock()
 _last_cleanup: dict[Path, float] = {}
 
 
+def _trusted_disk_usage(directory: Path):
+    """Return filesystem capacity only when its values are plausible integers.
+
+    Some FUSE-backed volumes expose UINT64_MAX-like sentinels. Treat those as
+    unknown so optional review-cache writes fail closed instead of consuming
+    space needed by permanent records and the account database.
+    """
+    try:
+        capacity = shutil.disk_usage(directory)
+    except OSError:
+        return None
+    if (
+        type(capacity.total) is not int
+        or type(capacity.free) is not int
+        or not 0 < capacity.total <= sys.maxsize
+        or not 0 <= capacity.free <= capacity.total
+    ):
+        return None
+    return capacity
+
+
 def _cache_path(directory: Path, key: str) -> Path:
     if not _KEY.fullmatch(key):
         raise ValueError("invalid cache key")
@@ -86,7 +107,8 @@ def save(directory: Path, key: str, result: dict) -> bool:
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             # Results are disposable; preserve free disk for permanent raw
             # records and SQLite rather than filling the volume with reviews.
-            if shutil.disk_usage(directory).free - len(payload) < LOW_DISK_WARNING_BYTES:
+            capacity = _trusted_disk_usage(directory)
+            if capacity is None or capacity.free - len(payload) < LOW_DISK_WARNING_BYTES:
                 return False
             if path.is_symlink():
                 return False
@@ -163,16 +185,10 @@ def storage_metrics(directory: Path) -> dict:
     try:
         entries = [p.stat().st_size for p in directory.glob("[0-9a-f]*.json")
                    if _KEY.fullmatch(p.stem) and not p.is_symlink()]
-        capacity = shutil.disk_usage(directory if directory.is_dir() else directory.parent)
-        # Some FUSE-backed volumes report UINT64_MAX-like sentinel values.
-        # Treat impossible capacities as unknown instead of claiming vast free space.
-        capacity_valid = (
-            type(capacity.total) is int and type(capacity.free) is int
-            and 0 < capacity.total <= sys.maxsize
-            and 0 <= capacity.free <= capacity.total
-        )
-        free_bytes = capacity.free if capacity_valid else None
-        total_bytes = capacity.total if capacity_valid else None
+        capacity = _trusted_disk_usage(directory if directory.is_dir() else directory.parent)
+        free_bytes = capacity.free if capacity is not None else None
+        total_bytes = capacity.total if capacity is not None else None
+        capacity_valid = capacity is not None
         return {"entries": len(entries), "bytes": sum(entries),
                 "budget_bytes": CACHE_BUDGET_BYTES, "free_bytes": free_bytes,
                 "disk_total_bytes": total_bytes,
