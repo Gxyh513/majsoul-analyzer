@@ -54,6 +54,38 @@ class AccountScheduler:
         self.waiting = 0
         self.periodic_task: asyncio.Task | None = None
 
+    @staticmethod
+    def _session_is_reusable(client: MajsoulClient | None, acc: dict | None = None) -> bool:
+        """Return whether a cached client still has a live, identity-matched session."""
+        if client is None or not client.logged_in:
+            return False
+        ws = client._ws
+        if ws is None or getattr(ws, "closed", False):
+            return False
+        reader = client._reader
+        reader_done = getattr(reader, "done", None)
+        if not callable(reader_done) or reader_done():
+            return False
+        if not client.current_account:
+            return False
+        if acc is not None:
+            if client.current_account != acc["account"]:
+                return False
+            expected_id = acc.get("account_id")
+            if expected_id and str(client.account_id) != str(expected_id):
+                return False
+        return True
+
+    def session_metrics(self) -> dict:
+        # dict.copy() takes a stable snapshot while async fetches may add clients.
+        clients = tuple(self.clients.copy().values())
+        reusable = sum(self._session_is_reusable(client) for client in clients)
+        return {
+            "cached_clients": len(clients),
+            "reusable_sessions": reusable,
+            "inactive_clients": len(clients) - reusable,
+        }
+
     def overview(self) -> dict:
         accounts = self.store.all()
         busy_snapshot = set(self.busy)
@@ -92,7 +124,15 @@ class AccountScheduler:
                         )
 
                     oldest_attempt = min(last_attempt(acc) for acc in idle)
-                    selected = random.choice([acc for acc in idle if last_attempt(acc) == oldest_attempt])
+                    oldest = [acc for acc in idle if last_attempt(acc) == oldest_attempt]
+                    # Preserve least-recently-used quota spreading. Only when
+                    # several accounts are equally old, prefer an already-live
+                    # session to avoid an unnecessary reconnect/login.
+                    reusable = [
+                        acc for acc in oldest
+                        if self._session_is_reusable(self.clients.get(acc["id"]), acc)
+                    ]
+                    selected = random.choice(reusable or oldest)
                     self.busy.add(selected["id"])
                     return selected
                 if not possible:
@@ -130,12 +170,9 @@ class AccountScheduler:
                 await client.close()
 
     async def _authenticate(self, acc: dict, client: MajsoulClient):
-        if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
-            if client.current_account == acc["account"] and (
-                not acc["account_id"] or str(client.account_id) == str(acc["account_id"])
-            ):
-                increment("雀魂会话复用次数")
-                return
+        if self._session_is_reusable(client, acc):
+            increment("雀魂会话复用次数")
+            return
         await client.close()
         set_value("雀魂连接结果", "进行中")
         try:

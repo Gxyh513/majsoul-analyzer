@@ -59,12 +59,18 @@ def _build_api_status(*, trusted: bool) -> dict[str, Any]:
         eng_status["load_error"] = "模型权重不可用，请查看服务端日志。"
     cur_dl = safe_download_state(model_download_state)
     eng_status["model_download"] = dict(cur_dl)
+    pool = admin_manager()
+    account_pool_count = pool.store.count() if pool else len(get_all_configured_accounts())
+    account_pool_sessions = pool.session_metrics() if pool else {
+        "cached_clients": 0, "reusable_sessions": 0, "inactive_clients": 0,
+    }
     return {
         "ok": True,
         "storage": review_cache.storage_metrics(REVIEWS_DIR),
         "majsoul": {
             "logged_in": ms_client.logged_in,
-            "account_pool_count": admin_manager().overview()["total"] if admin_manager() else len(get_all_configured_accounts()),
+            "account_pool_count": account_pool_count,
+            "account_pool_sessions": account_pool_sessions,
         },
         "engine": eng_status,
         "model_download": dict(cur_dl),
