@@ -27,7 +27,7 @@ import httpx
 import websockets
 
 from ..logger import log_debug, log_warning
-from ..paipu_performance import measure
+from ..paipu_performance import increment, measure
 from .proto import LiqiProto
 
 log = logging.getLogger(__name__)
@@ -195,6 +195,7 @@ class MajsoulClient(AuthMixin, RecordCodecMixin):
         for domain in domains:
             url = f"wss://{domain}/gateway"
             try:
+                increment("WebSocket连接尝试次数")
                 with measure("WebSocket连接", failure_count="WebSocket连接失败次数"):
                     self._ws = await websockets.connect(
                         url,
