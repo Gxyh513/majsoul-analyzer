@@ -21,7 +21,8 @@ from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA, valid_review_sourc
 
 CACHE_FORMAT_VERSION = 2
 CACHE_TTL_SECONDS = 24 * 3600
-CACHE_BUDGET_BYTES = 256 * 1024 * 1024
+CACHE_BUDGET_BYTES = 256 * 1024 * 1024  # Hard safety ceiling.
+CACHE_SOFT_BUDGET_BYTES = int(CACHE_BUDGET_BYTES * 0.85)
 CACHE_ENTRY_LIMIT_BYTES = 20 * 1024 * 1024
 LOW_DISK_WARNING_BYTES = 512 * 1024 * 1024
 # Lazy housekeeping: no permanent scheduler and no work while the service is idle.
@@ -71,7 +72,7 @@ def load(directory: Path, key: str, game_id: str, seat: int):
 
 
 def save(directory: Path, key: str, result: dict) -> bool:
-    """Atomically save one validated result; evict oldest entries to cap usage."""
+    """Atomically save one validated result while preserving cache headroom."""
     path = _cache_path(directory, key)
     if not valid_review_source(result, MODEL_SHA256):
         return False
@@ -84,6 +85,9 @@ def save(directory: Path, key: str, result: dict) -> bool:
         try:
             directory = Path(directory)
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Trim before writing so the largest allowed new entry still fits
+            # inside the 256 MiB hard ceiling (85% soft target + 20 MiB entry).
+            _evict(directory)
             # Results are disposable; preserve free disk for permanent raw
             # records and SQLite rather than filling the volume with reviews.
             if shutil.disk_usage(directory).free - len(payload) < LOW_DISK_WARNING_BYTES:
@@ -108,7 +112,7 @@ def save(directory: Path, key: str, result: dict) -> bool:
 
 
 def _maybe_cleanup(directory: Path) -> None:
-    """Prune expired public reviews on reads/status, at most hourly per directory.
+    """Prune expired and over-budget public reviews on reads/status, at most hourly per directory.
 
     Uses the same lock as writes. No daemon, timer, or raw-record deletion.
     """
@@ -131,6 +135,11 @@ def _maybe_cleanup(directory: Path) -> None:
 
 
 def _evict(directory: Path):
+    """Remove expired entries, then trim the cache to its soft budget.
+
+    CACHE_BUDGET_BYTES remains the absolute hard ceiling; the 85% soft target
+    leaves headroom for atomic replacement and short-lived concurrent writes.
+    """
     now = time.time()
     files = []
     total = 0
@@ -147,7 +156,7 @@ def _evict(directory: Path):
         except OSError:
             continue
     for _mtime, size, path in sorted(files):
-        if total <= CACHE_BUDGET_BYTES:
+        if total <= CACHE_SOFT_BUDGET_BYTES:
             break
         try:
             path.unlink(missing_ok=True)
@@ -174,13 +183,15 @@ def storage_metrics(directory: Path) -> dict:
         free_bytes = capacity.free if capacity_valid else None
         total_bytes = capacity.total if capacity_valid else None
         return {"entries": len(entries), "bytes": sum(entries),
-                "budget_bytes": CACHE_BUDGET_BYTES, "free_bytes": free_bytes,
+                "budget_bytes": CACHE_BUDGET_BYTES,
+                "soft_budget_bytes": CACHE_SOFT_BUDGET_BYTES, "free_bytes": free_bytes,
                 "disk_total_bytes": total_bytes,
                 "low_disk_space": free_bytes < LOW_DISK_WARNING_BYTES if free_bytes is not None else None,
                 "capacity_status": "ok" if capacity_valid else "unknown",
                 "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}
     except OSError:
         return {"entries": 0, "bytes": 0, "budget_bytes": CACHE_BUDGET_BYTES,
+                "soft_budget_bytes": CACHE_SOFT_BUDGET_BYTES,
                 "free_bytes": None, "disk_total_bytes": None,
                 "low_disk_space": None, "capacity_status": "unknown",
                 "warning_threshold_bytes": LOW_DISK_WARNING_BYTES}

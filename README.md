@@ -125,7 +125,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 | GET | `/api/records/local` | 列出后端本地牌谱 |
 | POST | `/api/login` | 配置雀魂账号登录 |
 
-公开牌谱首次分析需要解码原始记录、转换 MJAI 并运行 Mortal；对于已持久保存的 Protobuf 牌谱，后续相同原始字节、座位、模型及参数命中检讨缓存时，将直接读取已有结果，跳过重复的 Protobuf 解码、MJAI 转换和 ONNX 推理。缓存指纹还包含当前协议版本与转换/检讨代码摘要，代码更新后不会错误复用旧转换结果。历史 JSON 牌谱仍使用原有转换流程。检讨缓存独立保留 24 小时，最多占用 256 MiB；磁盘剩余空间不足时跳过写入，不影响完成本次 AI 检讨。缓存读取或可信状态检查至多每小时惰性清理过期文件，闲置时没有额外的后台清理任务。内置演示和内部私人 JSON 不持久化检讨结果。雀魂原始牌谱下载后会先持久化，保存失败时接口返回错误。
+公开牌谱首次分析需要解码原始记录、转换 MJAI 并运行 Mortal；对于已持久保存的 Protobuf 牌谱，后续相同原始字节、座位、模型及参数命中检讨缓存时，将直接读取已有结果，跳过重复的 Protobuf 解码、MJAI 转换和 ONNX 推理。缓存指纹还包含当前协议版本与转换/检讨代码摘要，代码更新后不会错误复用旧转换结果。历史 JSON 牌谱仍使用原有转换流程。检讨缓存独立保留 24 小时，软容量目标为 256 MiB 硬上限的 85%，并在写入或惰性清理时优先淘汰过期和最旧结果；磁盘剩余空间不足时跳过写入，不影响完成本次 AI 检讨。缓存读取或可信状态检查至多每小时惰性清理过期及超出软预算的文件，闲置时没有额外的后台清理任务。内置演示和内部私人 JSON 不持久化检讨结果。雀魂原始牌谱下载后会先持久化，保存失败时接口返回错误。
 
 ## 管理员账号池
 
@@ -147,7 +147,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 
 原始牌谱备份、磁盘空间告警、线上只读 P50/P95 性能采样以及可选 ONNX CPU 基准参见 [备份与基准说明](docs/PERFORMANCE_AND_BACKUP.md)。备份工具不会自动导出账号库、凭据或缓存的 AI 检讨结果。
 
-本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。完整的公开牌谱检讨结果缓存于持久化目录 `reviews/`（默认 `/mnt/workspace/majsoul-analyzer/reviews/`），保存 24 小时、总容量上限 256 MiB；内置演示及内部 JSON 输入不会写入。原始牌谱仍永久保存在 `records/`，不可与检讨缓存混淆。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
+本地配置应放在被 Git 和 Docker 忽略的 `data/config.local.json`；下载的原始牌谱及解码所需协议文件保存在后端存储目录中，请保护并备份持久卷。完整的公开牌谱检讨结果缓存于持久化目录 `reviews/`（默认 `/mnt/workspace/majsoul-analyzer/reviews/`），保存 24 小时、软容量目标为 256 MiB 硬上限的 85%；内置演示及内部 JSON 输入不会写入。原始牌谱仍永久保存在 `records/`，不可与检讨缓存混淆。路径及恢复注意事项见 [原始牌谱存储](RECORD_STORAGE.md)。API 令牌与雀魂账号凭据是不同的秘密，均不应提交或公开。
 
 **如果凭据曾进入 Git 历史，应立即在对应账号侧撤销或更换。**从当前文件删除凭据不会清除历史、远端副本或缓存；历史清理需另行规划，不应在未确认时强制改写仓库。
 
@@ -161,13 +161,13 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 - **雀魂客户端**：`majsoul/client.py` 负责网络会话；`majsoul/auth.py`、`majsoul/protocol_loader.py`、`majsoul/paipu_links.py`、`majsoul/record_codec.py` 分别负责认证、协议、链接和原始记录解码。
 - **账号与自动注册**：`account_store.py`、`account_scheduler.py`、`account_credentials.py`、`account_pool.py`、`register_repository.py`、`register_runner.py`、`register_ingest.py`、`auto_register_scheduler.py`。
 
-为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库不含 `tests/` 目录或 Pytest 配置。GitHub Actions 的自动构建与验证工作流已移除；只保留 ModelScope 发布工作流。仓库不运行自动化构建或回归检查。
+为兼容已有的入口，`app.py`、`reviewer.py`、`admin_accounts.py`、`account_register.py` 中仍保留部分名称的转发导入。仓库使用 Python `unittest` 回归测试，不依赖 Pytest；GitHub Actions 保留 Python 回归测试和 ModelScope 发布工作流。
 
 ## 前端资源组织
 
 前端 JavaScript 由 `web/index.html` 按依赖顺序加载，`web/app.js` 负责初始化。CSS 文件现在由 HTML 中的多个 `<link rel="stylesheet">` 直接按序加载，避免单一 `styles.css` 的 `@import` 请求瀑布；旧的 `web/styles.css` 继续保留作兼容入口。全部 38 个牌面 SVG 均已移除 Inkscape/Sodipodi 编辑器元数据和注释，不修改 SVG 标准绘图节点；文件总体积从 708,336 字节降至 644,544 字节，减少 63,792 字节（约 9.0%）。
 
-项目不保留测试文件，也不设置自动构建和验证工作流；GitHub Actions 仅保留 ModelScope 部署。
+Python 回归测试位于 `tests/`，通过 `python -m unittest discover -s tests -p "test_*.py" -v` 执行；GitHub Actions 在 PR 和 main 更新时运行测试，并保留 ModelScope 部署工作流。
 
 ## 致谢
 

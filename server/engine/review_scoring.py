@@ -36,14 +36,15 @@ def finalize_review(
             pct = 85.0 + ((d_idx + 1) / len(pending_decisions)) * 14.0
             progress_callback(pct, f"正在生成决策建议 ({d_idx + 1}/{len(pending_decisions)})...")
         mask = item["mask"]
-        legal_labels = np.nonzero(mask)[0].tolist()
+        legal_labels = np.flatnonzero(mask)
         q_full = mortal_q_batch[d_idx]
 
-        q_legal = np.array([float(q_full[l]) for l in legal_labels], dtype=np.float32)
+        q_legal = q_full[legal_labels]
         probs = softmax(q_legal, temperature=temperature)
 
         candidates = []
         for idx_in_legal, label in enumerate(legal_labels):
+            label = int(label)
             act_dict = label_to_action_dict(
                 label,
                 target_actor,
@@ -71,7 +72,9 @@ def finalize_review(
         for rank_i, c in enumerate(candidates):
             c["rank"] = rank_i + 1
 
-        actual_label = item.get("actual_label", event_to_label(item["actual_ev"]))
+        actual_label = item.get("actual_label")
+        if actual_label is None:
+            actual_label = event_to_label(item["actual_ev"])
         actual_cand = next((c for c in candidates if c["label"] == actual_label), candidates[0])
         best_cand = candidates[0]
 
