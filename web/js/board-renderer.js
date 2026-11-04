@@ -443,18 +443,26 @@ function renderCallsHtml(melds, seat, povSeat) {
   const orderedMelds = [...melds].reverse();
   let html = "";
 
-  for (let meldIdx = 0; meldIdx < orderedMelds.length; meldIdx++) {
-    const m = orderedMelds[meldIdx];
+  for (const m of orderedMelds) {
     const type = (m.type || "").toLowerCase();
     const pai = m.pai ?? m.tiles?.[0];
+    const groupClasses = ["meld-group", `meld-group--${type || "unknown"}`];
+    const tileMarkup = [];
 
     if (type === "ankan") {
-      // Standard Riichi Mahjong Ankan: [back, tile, tile, back]
-      const cTiles = m.consumed?.length >= 4 ? m.consumed : (m.tiles?.length >= 4 ? m.tiles : [pai, pai, pai, pai]);
+      // Keep all four slots in one group. The two outer tiles stay face-down.
+      const tiles = m.consumed?.length >= 4
+        ? m.consumed.slice(0, 4)
+        : (m.tiles?.length >= 4 ? m.tiles.slice(0, 4) : [pai, pai, pai, pai]);
+      groupClasses.push("meld-group--kan");
       for (let i = 0; i < 4; i++) {
-        const src = (i === 0 || i === 3) ? backSrc : tileAssetSrc(cTiles[i] || pai);
-        html += `<div class="tileDiv"><img decoding="async" src="${src}" class="tileImg"></div>`;
+        const faceDown = i === 0 || i === 3;
+        const src = faceDown ? backSrc : tileAssetSrc(tiles[i] || pai);
+        tileMarkup.push(
+          `<div class="tileDiv meld-tile meld-tile--ankan"><img decoding="async" src="${src}" class="tileImg"></div>`
+        );
       }
+      html += `<span class="${groupClasses.join(" ")}">${tileMarkup.join("")}</span>`;
       continue;
     }
 
@@ -469,45 +477,56 @@ function renderCallsHtml(melds, seat, povSeat) {
     }
 
     // Current records store only hand tiles in consumed; older caches may
-    // instead have tiles=[called,...consumed,added]. Do not duplicate the
-    // called or added tile when recovering from that older representation.
+    // instead have tiles=[called,...consumed,added]. Recover the same hand
+    // tiles without duplicating the called tile or the added kan tile.
     const handTileCount = type === "daiminkan" ? 3 : 2;
     const storedTiles = Array.isArray(m.tiles) ? m.tiles : [];
     let consumed = Array.isArray(m.consumed) ? m.consumed : [];
     if (consumed.length !== handTileCount && storedTiles.length >= handTileCount + 1) {
       const remaining = [...storedTiles];
-      const calledIndex = remaining.indexOf(pai);
-      if (calledIndex >= 0) remaining.splice(calledIndex, 1);
+      const calledIndexInStored = remaining.indexOf(pai);
+      if (calledIndexInStored >= 0) remaining.splice(calledIndexInStored, 1);
       if (type === "kakan" && remaining.length > handTileCount) remaining.pop();
       consumed = remaining.slice(0, handTileCount);
     } else {
       consumed = consumed.slice(0, handTileCount);
     }
+
     const allTiles = [...consumed];
-    // A four-tile open kan places the right-hand discard at the far end.
+    // For an open kan, keep the called discard at the edge matching its source.
     const calledIndex = type === "daiminkan" && fromIdxRel === 2 ? 3 : fromIdxRel;
     allTiles.splice(calledIndex, 0, pai);
+
+    let addedIndex = -1;
     if (type === "kakan") {
-      // Keep the actual added tile (including red five) in the stacked slot.
+      // Render the added tile as a real fourth slot in the same meld group.
+      // Avoid zero-sized float wrappers: they caused seat-dependent overlap/clipping.
       const added = m.added ?? (storedTiles.length >= 4 ? storedTiles[3] : pai);
-      allTiles.splice(calledIndex + 1, 0, added);
+      addedIndex = calledIndex + 1;
+      allTiles.splice(addedIndex, 0, added);
+    }
+
+    if (type === "daiminkan" || type === "kakan") {
+      groupClasses.push("meld-group--kan");
     }
 
     for (let i = 0; i < allTiles.length; i++) {
       const tile = allTiles[i];
-      const isFloated = type === "kakan" && i === calledIndex + 1;
-      const isRotated = i === calledIndex || isFloated;
-
-      const divClasses = ["tileDiv"];
-      if (isRotated) divClasses.push("has-rotate");
-      if (isFloated) divClasses.push("has-float");
+      const isCalled = i === calledIndex;
+      const isAdded = i === addedIndex;
+      const divClasses = ["tileDiv", "meld-tile"];
+      if (isCalled) divClasses.push("has-rotate", "meld-tile--called");
+      if (isAdded) divClasses.push("meld-tile--added");
 
       const imgClasses = ["tileImg"];
-      if (isRotated) imgClasses.push("rotate");
-      if (isFloated) imgClasses.push("float");
-
-      html += `<div class="${divClasses.join(" ")}"><img decoding="async" src="${tileAssetSrc(tile)}" class="${imgClasses.join(" ")}"></div>`;
+      if (isCalled) imgClasses.push("rotate");
+      const title = isAdded ? " title=\"加杠补入的牌\"" : "";
+      tileMarkup.push(
+        `<div class="${divClasses.join(" ")}"><img decoding="async" src="${tileAssetSrc(tile)}" class="${imgClasses.join(" ")}"${title}></div>`
+      );
     }
+
+    html += `<span class="${groupClasses.join(" ")}">${tileMarkup.join("")}</span>`;
   }
 
   return html;
