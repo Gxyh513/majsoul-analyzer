@@ -91,7 +91,10 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
         game_id, url_account_id = parse_paipu(paipu)
         stored = read_record(RECORDS_DIR, game_id, LEGACY_RECORDS_DIRS)
         if not isinstance(stored, RawRecord):
+            if stored is None:
+                _increment("本地牌谱未命中次数")
             return None  # Legacy JSON needs the existing conversion path.
+        _increment("本地牌谱命中次数")
         url_seat = parse_paipu_seat(paipu)
         requested_seat = target_actor if target_actor is not None else url_seat
         if requested_seat in range(4):
