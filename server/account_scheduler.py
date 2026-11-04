@@ -159,8 +159,8 @@ class AccountScheduler:
             await client.close()
             raise MajsoulError("Token 与账号身份不一致")
         client.current_account = acc["account"]
-        await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
         increment("雀魂登录成功次数")
+        await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:
