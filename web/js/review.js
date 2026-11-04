@@ -23,12 +23,18 @@ const REVIEW_SCHEMA = "mortal-onnx-2f7ad48-v1";
 const MODEL_REVISION = "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a";
 const MODEL_SHA256 = "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4";
 
+const MODEL_STATUS_MAX_AGE_MS = 5000;
+
+function isTrustedModelStatus(status) {
+  const engine = status?.engine;
+  return Boolean(engine?.has_mortal_weights === true && engine.active_engine === "mortal" &&
+    engine.model_revision === MODEL_REVISION && engine.weight_sha256 === MODEL_SHA256 &&
+    engine.review_schema === REVIEW_SCHEMA);
+}
+
 function isTrustedReview(result) {
-  const status = state.serverStatus?.engine;
   const engine = result?.engine;
-  return Boolean(status?.has_mortal_weights === true && status.active_engine === "mortal" &&
-    status.model_revision === MODEL_REVISION && status.weight_sha256 === MODEL_SHA256 &&
-    status.review_schema === REVIEW_SCHEMA && engine?.type === "mortal" &&
+  return Boolean(isTrustedModelStatus(state.serverStatus) && engine?.type === "mortal" &&
     engine.id === "mortal-s42-onnx" && engine.weight_file === "model.onnx" &&
     engine.version === 4 && engine.steps === null && engine.revision === MODEL_REVISION &&
     engine.q_source === "neural_network" && engine.review_schema === REVIEW_SCHEMA &&
@@ -36,12 +42,10 @@ function isTrustedReview(result) {
 }
 
 async function requireModelStatus() {
-  await refreshServerStatus();
-  if (state.serverStatus?.engine?.has_mortal_weights !== true ||
-      state.serverStatus.engine.active_engine !== "mortal" ||
-      state.serverStatus.engine.weight_sha256 !== MODEL_SHA256 ||
-      state.serverStatus.engine.model_revision !== MODEL_REVISION ||
-      state.serverStatus.engine.review_schema !== REVIEW_SCHEMA) {
+  const status = await refreshServerStatus({
+    maxAgeMs: isTrustedModelStatus(state.serverStatus) ? MODEL_STATUS_MAX_AGE_MS : 0,
+  });
+  if (!isTrustedModelStatus(status)) {
     throw new Error("无法验证 Mortal S42 ONNX，请检查模型状态和后端版本。");
   }
 }
@@ -92,7 +96,9 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
     };
     pending.promise = Promise.resolve().then(async () => {
       notify(0, "正在验证 Mortal S42 ONNX 模型...");
-      await requireModelStatus();
+      // Loading the stream reader does not need to wait for model attestation.
+      // Both must still succeed before the analysis request is sent.
+      await Promise.all([requireModelStatus(), loadReviewStreamClient()]);
       if (url !== buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
         throw new Error("后端地址已发生变化，请重新分析。");
       }

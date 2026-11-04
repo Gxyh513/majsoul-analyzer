@@ -304,7 +304,12 @@ def build_replay(
         elif etype == "dahai":
             seat = int(ev["actor"])
             pai = ev["pai"]
-            remove_from_hand(seat, pai)
+            if ev.get("tsumogiri") is True and drawn_tile[seat] is not None and drawn_tile[seat] == pai:
+                # An exact tsumogiri leaves the closed hand unchanged. Keep its
+                # version and immutable sorted snapshots instead of fold/remove.
+                drawn_tile[seat] = None
+            else:
+                remove_from_hand(seat, pai)
             is_r = pending_riichi_Discard == seat
             if is_r:
                 pending_riichi_Discard = None

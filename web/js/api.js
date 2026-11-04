@@ -312,16 +312,54 @@ function isBackendOnline() {
   return Boolean(state.serverStatus && (state.serverStatus.ok || state.serverStatus.engine));
 }
 
-async function refreshServerStatus() {
+// Keep one recent status snapshot, scoped to its backend. Manual refreshes
+// remain uncached; simultaneous callers share an in-flight request.
+let serverStatusCache = null;
+let serverStatusRequest = null;
+
+async function refreshServerStatus({ maxAgeMs = 0 } = {}) {
+  let url;
   try {
-    const st = await apiFetch("/api/status");
-    state.serverStatus = { ok: true, ...st };
-    updateTopbarStatus(state.serverStatus);
+    url = buildApiUrl(getBackendUrl(), "/api/status");
   } catch (err) {
     console.warn("Backend offline or unreachable:", err);
+    serverStatusRequest = null;
+    serverStatusCache = null;
     state.serverStatus = { ok: false, offline: true };
     updateTopbarStatus(state.serverStatus);
+    return state.serverStatus;
   }
+  if (serverStatusRequest?.url === url) return serverStatusRequest.promise;
+  if (maxAgeMs > 0 && serverStatusCache?.url === url &&
+      serverStatusCache.status === state.serverStatus &&
+      serverStatusCache.status.ok === true &&
+      performance.now() - serverStatusCache.checkedAt < maxAgeMs) {
+    return serverStatusCache.status;
+  }
+
+  const request = { url, promise: null };
+  serverStatusRequest = request;
+  request.promise = (async () => {
+    let status;
+    try {
+      status = { ok: true, ...await apiFetch(url) };
+    } catch (err) {
+      console.warn("Backend offline or unreachable:", err);
+      status = { ok: false, offline: true };
+    }
+    // A slower response from a previously selected backend must not replace
+    // the status requested more recently for another backend.
+    if (serverStatusRequest === request) {
+      state.serverStatus = status;
+      serverStatusCache = status.ok === true
+        ? { url, status, checkedAt: performance.now() } : null;
+      updateTopbarStatus(status);
+    }
+    return status;
+  })().finally(() => {
+    if (serverStatusRequest === request) serverStatusRequest = null;
+  });
+  return request.promise;
 }
 
 function updateEngineStatusDisplay() {
