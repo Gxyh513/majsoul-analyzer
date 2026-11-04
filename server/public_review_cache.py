@@ -10,7 +10,7 @@ from typing import Any
 from . import review_cache
 from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA
 from .majsoul.client import LOCAL_PROTOCOL_SHA256, MajsoulError, parse_paipu, parse_paipu_seat
-from .paipu_performance import performance as _performance, set_value as _set_performance_value
+from .paipu_performance import increment as _increment, performance as _performance, set_value as _set_performance_value
 from .record_store import RawRecord, RecordStorageError, read_record
 from .runtime_state import ROOT_DIR, REVIEWS_DIR, RECORDS_DIR, LEGACY_RECORDS_DIRS
 from .game_data import select_game_seat
@@ -123,12 +123,17 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
 
 async def _try_fast_public_review(paipu: str | None, target_actor: int | None,
                                   engine: str, temperature: float) -> dict | None:
+    _increment("公开牌谱缓存检查次数")
     cached = await asyncio.to_thread(_load_fast_public_review, paipu, target_actor, engine, temperature)
     if cached is not None:
+        _increment("公开牌谱缓存命中次数")
         _set_performance_value("mode", "公开牌谱缓存快速命中")
         _set_performance_value("牌谱获取方式", "本地直接读取")
         _set_performance_value("牌谱获取结果", "成功")
         _set_performance_value("分析结果缓存", "原始牌谱快速命中")
+        _set_performance_value("是否命中本地记录", True)
+    else:
+        _increment("公开牌谱缓存未命中次数")
     return cached
 
 
