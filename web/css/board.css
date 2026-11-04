@@ -1545,7 +1545,8 @@ img.tileImg.tileImgHighlight {
   flex: 0 0 auto !important;
   gap: 0 !important;
   overflow: visible !important;
-  align-items: flex-end !important;
+  align-items: flex-start !important;
+  align-self: flex-start !important;
 }
 
 .hand-calls-p0 .meld-group { flex-direction: row !important; }
