@@ -55,7 +55,7 @@ function loadReplayAssets() {
     ];
     const scripts = [
       ["/js/summary-renderer.js?v=20261105-render-opt-1", () => typeof renderSummaryDashboard === "function"],
-      ["/js/replay-controls.js?v=20261104-demand-replay-1", () => typeof bindReplayEvents === "function"],
+      ["/js/replay-controls.js?v=20261105-abort-1", () => typeof bindReplayEvents === "function"],
       ["/js/board-renderer.js?v=20261105-render-opt-1", () => typeof renderBoard === "function"],
       ["/js/decision-renderer.js?v=20261105-render-opt-1", () => typeof renderDecisionCard === "function"],
       ["/js/replay-navigation.js?v=20261101-refresh-home-1", () => typeof jumpNextDecision === "function"],
