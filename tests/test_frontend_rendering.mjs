@@ -105,9 +105,9 @@ test("legacy playback speeds normalize to 2x and 10x has an 80ms interval", () =
   };
   const context = {
     localStorage,
+    document: { getElementById: () => null },
     setInterval: () => 1,
     clearInterval: () => {},
-    $: () => null,
   };
   context.window = context;
   vm.createContext(context);
