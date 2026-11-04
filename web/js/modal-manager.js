@@ -1,34 +1,4 @@
-// ============================================================================
-// Modals: Round Scores & Engine Switcher
-// ============================================================================
-function openModal(id) {
-  const el = $(id);
-  if (!el) return;
-  el.classList.remove("hidden");
-  const bd = $(id + "Backdrop");
-  if (bd) bd.classList.remove("hidden");
-  el.querySelector("input, textarea, select, button")?.focus();
-}
-
-function closeModal(id) {
-  const el = $(id);
-  if (el?.tagName === "DIALOG") {
-    if (el.open) {
-      if (typeof el.close === "function") el.close();
-      else el.removeAttribute("open");
-    }
-  } else if (el) {
-    el.classList.add("hidden");
-  }
-  const bd = $(id + "Backdrop");
-  if (bd) bd.classList.add("hidden");
-}
-
-function closeAllModals() {
-  document.querySelectorAll(".modal").forEach((modal) => closeModal(modal.id));
-  document.querySelectorAll(".modal-backdrop").forEach((backdrop) => backdrop.classList.add("hidden"));
-}
-
+// Round-score rendering is loaded with the replay UI.
 function getRoundDeltas(k) {
   return [0, 1, 2, 3].map((seat) => {
     const start = roundScoreNumber(k.init_scores?.[seat]);
