@@ -14,6 +14,7 @@ except ModuleNotFoundError as exc:
     if exc.name not in {"libriichi", "libriichi.state"}:
         raise
     libriichi_package = ModuleType("libriichi")
+    libriichi_package.__path__ = []
     libriichi_state = ModuleType("libriichi.state")
     libriichi_state.PlayerState = None
     libriichi_package.state = libriichi_state
