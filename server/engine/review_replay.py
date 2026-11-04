@@ -14,6 +14,7 @@ if str(_ENGINE_DIR) not in sys.path:
 import libriichi.state as lstate  # noqa: E402
 
 from .actions import next_player_action, event_to_label
+from .inference_batch import InferenceBatchBuffer
 from .tiles import sort_key, deaka, tid
 from .review_labels import BAKAZE_CN, _hora_score_description
 
@@ -31,11 +32,6 @@ def build_replay(
     progress_callback: Callable[[float, str], None] | None,
 ):
     names = (meta or {}).get("names") or ["东家", "南家", "西家", "北家"]
-    for ev in mjai_events:
-        if ev.get("type") == "start_game" and ev.get("names"):
-            names = list(ev["names"])
-            break
-
     ps = lstate.PlayerState(target_actor)
 
     kyokus: list[dict[str, Any]] = []
@@ -63,41 +59,49 @@ def build_replay(
     # Keep only one bounded observation batch in memory. Q outputs are much
     # smaller, so completed batches can be released immediately.
     pending_decisions: list[dict[str, Any]] = []
-    mortal_obs_batch: list[np.ndarray] = []
-    mortal_mask_batch: list[np.ndarray] = []
+    # Estimate a useful batch capacity from event count. Allocate lazily on the
+    # first decision and reuse the same contiguous buffers for subsequent batches.
+    batch_capacity = min(INFERENCE_BATCH_SIZE, max(1, len(mjai_events) // 3))
+    mortal_batch = InferenceBatchBuffer(batch_capacity) if mortal is not None else None
     mortal_q_chunks: list[np.ndarray] = []
 
     def flush_mortal_batch():
-        if mortal is None or not mortal_obs_batch:
+        if mortal_batch is None or mortal_batch.count == 0:
             return
         try:
+            obs_batch, mask_batch = mortal_batch.view()
             q_batch = mortal.eval_batch(
-                mortal_obs_batch, mortal_mask_batch, chunk_size=INFERENCE_BATCH_SIZE
+                obs_batch, mask_batch, chunk_size=INFERENCE_BATCH_SIZE
             )
-            if q_batch is None or len(q_batch) != len(mortal_obs_batch):
+            if q_batch is None or len(q_batch) != mortal_batch.count:
                 raise RuntimeError("ONNX 分批输出与当前观测数量不匹配")
         except Exception as exc:
             raise ReplayInferenceError(f"Mortal S42 ONNX 第 {len(mortal_q_chunks) + 1} 批推理失败") from exc
 
         mortal_q_chunks.append(q_batch)
-        mortal_obs_batch.clear()
-        mortal_mask_batch.clear()
+        mortal_batch.clear()
+
+    def queue_mortal_observation(obs: np.ndarray, mask: np.ndarray):
+        if mortal_batch is not None and mortal_batch.append(obs, mask):
+            flush_mortal_batch()
     # Reuse immutable-by-convention snapshot lists within one review. The
     # serialized replay JSON stays identical: no wire/schema change.
     sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
-    cached_melds: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
-    cached_rivers: list[tuple[tuple[int, ...], list[dict]] | None] = [None] * 4
+    cached_melds: list[tuple[int, list[dict]] | None] = [None] * 4
+    cached_rivers: list[tuple[int, list[dict]] | None] = [None] * 4
+    meld_versions = [0] * 4
+    river_versions = [0] * 4
 
-    def frozen_snapshot_lists(source: list[list[dict]], cache: list) -> list[list[dict]]:
+    def frozen_snapshot_lists(source: list[list[dict]], versions: list[int],
+                              cache: list) -> list[list[dict]]:
         snapshots = []
         for seat, items in enumerate(source):
-            # Meld/river entries are replaced on change, not modified in place.
-            # Existing snapshots already share their dicts; only the outer lists
-            # are now shared when their entries have not changed.
-            identity = tuple(id(item) for item in items)
+            # Mutations increment a per-seat version, avoiding an O(n) tuple of
+            # object identities for every board snapshot.
+            version = versions[seat]
             saved = cache[seat]
-            if saved is None or saved[0] != identity:
-                saved = (identity, list(items))
+            if saved is None or saved[0] != version:
+                saved = (version, list(items))
                 cache[seat] = saved
             snapshots.append(saved[1])
         return snapshots
@@ -118,8 +122,8 @@ def build_replay(
             "hands": snapshot_hands,
             "drawn": list(drawn_tile),
             # Entries are replaced rather than mutated when calls or kans change them.
-            "melds": frozen_snapshot_lists(melds, cached_melds),
-            "rivers": frozen_snapshot_lists(rivers, cached_rivers),
+            "melds": frozen_snapshot_lists(melds, meld_versions, cached_melds),
+            "rivers": frozen_snapshot_lists(rivers, river_versions, cached_rivers),
             "riichi": list(riichi_declared),
             "scores": list(scores),
             "dora_markers": list(dora_markers),
@@ -141,14 +145,16 @@ def build_replay(
             hands[seat].remove(tile)
         else:
             base = deaka(tile)
-            for x in list(hands[seat]):
-                if deaka(x) == base:
-                    hands[seat].remove(x)
+            for idx, existing in enumerate(hands[seat]):
+                if deaka(existing) == base:
+                    del hands[seat][idx]
                     break
 
     for i, ev in enumerate(mjai_events):
         etype = ev["type"]
-        ps.update(json.dumps(ev))
+        if etype == "start_game" and ev.get("names"):
+            names = list(ev["names"])
+        ps.update(json.dumps(ev, separators=(",", ":")))
 
         if etype == "start_kyoku":
             bakaze = ev["bakaze"]
@@ -161,6 +167,8 @@ def build_replay(
             drawn_tile = [None, None, None, None]
             melds = [[], [], [], []]
             rivers = [[], [], [], []]
+            meld_versions = [version + 1 for version in meld_versions]
+            river_versions = [version + 1 for version in river_versions]
             riichi_declared = [False, False, False, False]
             dora_markers = [ev["dora_marker"]]
             tiles_left = 70
@@ -253,11 +261,7 @@ def build_replay(
                                 "kakan_cands": ps.kakan_candidates(),
                             }
                         )
-                        if mortal is not None:
-                            mortal_obs_batch.append(obs_m)
-                            mortal_mask_batch.append(mask_4)
-                            if len(mortal_obs_batch) >= INFERENCE_BATCH_SIZE:
-                                flush_mortal_batch()
+                        queue_mortal_observation(obs_m, mask_4)
             continue
 
         # Update board state for normal events
@@ -287,6 +291,7 @@ def build_replay(
                     "step": len(cur_kyoku["steps"]),
                 }
             )
+            river_versions[seat] += 1
             last_actor = seat
             last_tile = pai
 
@@ -304,7 +309,9 @@ def build_replay(
                     **rivers[target][-1], "called": True,
                     "call_actor": seat, "call_type": etype,
                 }
+                river_versions[target] += 1
             melds[seat].append({"type": etype, "pai": pai, "consumed": consumed, "from": target, "tiles": [pai] + consumed})
+            meld_versions[seat] += 1
             if seat == target_actor and etype in ("chi", "pon"):
                 junme += 1
             last_actor = seat
@@ -315,6 +322,7 @@ def build_replay(
             for c in consumed:
                 remove_from_hand(seat, c)
             melds[seat].append({"type": "ankan", "pai": consumed[0], "consumed": consumed, "from": seat, "tiles": consumed})
+            meld_versions[seat] += 1
             last_actor = seat
             last_tile = consumed[0]
 
@@ -326,6 +334,7 @@ def build_replay(
             for meld_idx, m in enumerate(melds[seat]):
                 if m["type"] == "pon" and deaka(m["pai"]) == base:
                     melds[seat][meld_idx] = {**m, "type": "kakan", "added": pai, "tiles": [*m["tiles"], pai]}
+                    meld_versions[seat] += 1
                     break
             last_actor = seat
             last_tile = pai
@@ -421,11 +430,7 @@ def build_replay(
                 "kakan_cands": ps.kakan_candidates(),
             }
         )
-        if mortal is not None:
-            mortal_obs_batch.append(obs_m)
-            mortal_mask_batch.append(mask_4)
-            if len(mortal_obs_batch) >= INFERENCE_BATCH_SIZE:
-                flush_mortal_batch()
+        queue_mortal_observation(obs_m, mask_4)
 
     if cur_kyoku is not None:
         cur_kyoku["end_scores"] = list(scores)
