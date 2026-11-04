@@ -439,10 +439,12 @@ def build_replay(
 
     if mortal is not None:
         flush_mortal_batch()
-        mortal_q_batch = (
-            np.concatenate(mortal_q_chunks, axis=0)
-            if mortal_q_chunks else np.empty((0, 46), dtype=np.float32)
-        )
+        if not mortal_q_chunks:
+            mortal_q_batch = np.empty((0, 46), dtype=np.float32)
+        elif len(mortal_q_chunks) == 1:
+            mortal_q_batch = mortal_q_chunks[0]
+        else:
+            mortal_q_batch = np.concatenate(mortal_q_chunks, axis=0)
     else:
         mortal_q_batch = None
 
