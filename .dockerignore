@@ -1,6 +1,7 @@
 .git
 __pycache__
 *.pyc
+*.pyd
 backups
 .wrangler
 data/config.local.json

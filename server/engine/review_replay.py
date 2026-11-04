@@ -18,6 +18,13 @@ from .tiles import sort_key, deaka, tid
 from .review_labels import BAKAZE_CN, _hora_score_description
 
 
+INFERENCE_BATCH_SIZE = 128
+
+
+class ReplayInferenceError(RuntimeError):
+    """An ONNX batch failed while replay observations were being collected."""
+
+
 def build_replay(
     mjai_events: list[dict], target_actor: int, obs_version: int,
     mortal: Any, meta: dict | None,
@@ -53,10 +60,28 @@ def build_replay(
     last_actor = 0
     last_tile: str | None = None
 
-    # Batch buffers for Mortal neural network evaluation
+    # Keep only one bounded observation batch in memory. Q outputs are much
+    # smaller, so completed batches can be released immediately.
     pending_decisions: list[dict[str, Any]] = []
     mortal_obs_batch: list[np.ndarray] = []
     mortal_mask_batch: list[np.ndarray] = []
+    mortal_q_chunks: list[np.ndarray] = []
+
+    def flush_mortal_batch():
+        if mortal is None or not mortal_obs_batch:
+            return
+        try:
+            q_batch = mortal.eval_batch(
+                mortal_obs_batch, mortal_mask_batch, chunk_size=INFERENCE_BATCH_SIZE
+            )
+            if q_batch is None or len(q_batch) != len(mortal_obs_batch):
+                raise RuntimeError("ONNX 分批输出与当前观测数量不匹配")
+        except Exception as exc:
+            raise ReplayInferenceError(f"Mortal S42 ONNX 第 {len(mortal_q_chunks) + 1} 批推理失败") from exc
+
+        mortal_q_chunks.append(q_batch)
+        mortal_obs_batch.clear()
+        mortal_mask_batch.clear()
     # Reuse immutable-by-convention snapshot lists within one review. The
     # serialized replay JSON stays identical: no wire/schema change.
     sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
@@ -231,6 +256,8 @@ def build_replay(
                         if mortal is not None:
                             mortal_obs_batch.append(obs_m)
                             mortal_mask_batch.append(mask_4)
+                            if len(mortal_obs_batch) >= INFERENCE_BATCH_SIZE:
+                                flush_mortal_batch()
             continue
 
         # Update board state for normal events
@@ -397,11 +424,21 @@ def build_replay(
         if mortal is not None:
             mortal_obs_batch.append(obs_m)
             mortal_mask_batch.append(mask_4)
+            if len(mortal_obs_batch) >= INFERENCE_BATCH_SIZE:
+                flush_mortal_batch()
 
     if cur_kyoku is not None:
         cur_kyoku["end_scores"] = list(scores)
         cur_kyoku["score_deltas"] = [cur_kyoku["end_scores"][s] - cur_kyoku["init_scores"][s] for s in range(4)]
         kyokus.append(cur_kyoku)
 
+    if mortal is not None:
+        flush_mortal_batch()
+        mortal_q_batch = (
+            np.concatenate(mortal_q_chunks, axis=0)
+            if mortal_q_chunks else np.empty((0, 46), dtype=np.float32)
+        )
+    else:
+        mortal_q_batch = None
 
-    return kyokus, pending_decisions, mortal_obs_batch, mortal_mask_batch, names
+    return kyokus, pending_decisions, mortal_q_batch, names
