@@ -75,7 +75,8 @@ class AccountScheduler:
     async def reserve(self, attempted: set[int]):
         async with self.condition:
             while True:
-                accounts = await asyncio.to_thread(self.store.all)
+                with measure("账号池数据库读取"):
+                    accounts = await asyncio.to_thread(self.store.all)
                 now = time.time()
                 possible = [
                     acc for acc in accounts if acc["id"] not in attempted and acc["enabled"]
@@ -108,7 +109,8 @@ class AccountScheduler:
         # Keep the slot reserved until the obsolete client closes, but never
         # strand it if close() fails or the request is cancelled.
         try:
-            row = await asyncio.to_thread(self.store.get, account_pk)
+            with measure("账号池数据库读取"):
+                row = await asyncio.to_thread(self.store.get, account_pk)
             if row is None or not row["enabled"] or account_pk in self.invalidated:
                 self.invalidated.discard(account_pk)
                 client = self.clients.pop(account_pk, None)
@@ -160,7 +162,8 @@ class AccountScheduler:
             raise MajsoulError("Token 与账号身份不一致")
         client.current_account = acc["account"]
         increment("雀魂登录成功次数")
-        await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
+        with measure("账号池数据库写入"):
+            await asyncio.to_thread(self.store.record_login, acc["id"], client, refreshed=refreshed)
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:
@@ -182,8 +185,9 @@ class AccountScheduler:
                 await client.close()
                 await self._authenticate(acc, client)
                 record = await client.fetch_record(game_uuid)
-            await asyncio.to_thread(self.store.record_result, acc["id"], success=True,
-                                    elapsed_ms=(time.monotonic() - start) * 1000)
+            with measure("账号池数据库写入"):
+                await asyncio.to_thread(self.store.record_result, acc["id"], success=True,
+                                        elapsed_ms=(time.monotonic() - start) * 1000)
             return record
         except Exception as exc:
             code = getattr(exc, "code", None)
@@ -191,10 +195,11 @@ class AccountScheduler:
             safe_error = "网络失败" if self._network_failure(exc) else _redact_error(
                 exc, acc.get("password"), acc.get("access_token"), getattr(client, "access_token", None)
             )
-            await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
-                                    elapsed_ms=(time.monotonic() - start) * 1000,
-                                    error=safe_error,
-                                    code=code, auth_failed=is_auth)
+            with measure("账号池数据库写入"):
+                await asyncio.to_thread(self.store.record_result, acc["id"], success=False,
+                                        elapsed_ms=(time.monotonic() - start) * 1000,
+                                        error=safe_error,
+                                        code=code, auth_failed=is_auth)
             if self._network_failure(exc) or is_auth:
                 await client.close()
             raise
