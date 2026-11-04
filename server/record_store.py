@@ -16,7 +16,7 @@ import weakref
 import zlib
 from typing import Awaitable, Callable
 
-from .paipu_performance import measure, set_value
+from .paipu_performance import increment, measure, set_value
 
 
 _MAGIC = b"MSRAW\x01"
@@ -215,9 +215,11 @@ async def get_or_download_record(
     _record_uuid(game_uuid)
     existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
     if existing is not None:
+        increment("本地牌谱命中次数")
         set_value("是否命中本地记录", True)
         set_value("牌谱获取方式", "本地直接读取")
         return existing
+    increment("本地牌谱未命中次数")
     set_value("是否命中本地记录", False)
     key = (asyncio.get_running_loop(), str(Path(records_dir).resolve()), game_uuid)
     flight = _flights.get(key)
@@ -228,16 +230,19 @@ async def get_or_download_record(
             async with lock:
                 existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
                 if existing is not None:
+                    increment("本地牌谱命中次数")
                     set_value("是否命中本地记录", True)
                     set_value("牌谱获取方式", "进程内锁后读取本地")
                     return existing
                 async with _process_lock(records_dir, game_uuid):
                     existing = await asyncio.to_thread(read_record, records_dir, game_uuid, legacy_dirs)
                     if existing is not None:
+                        increment("本地牌谱命中次数")
                         set_value("是否命中本地记录", True)
                         set_value("牌谱获取方式", "文件锁后读取本地")
                         return existing
                     set_value("牌谱获取方式", "雀魂下载")
+                    increment("雀魂实际下载次数")
                     with measure("雀魂抓取"):
                         record = await download(game_uuid)
                     if not isinstance(record, RawRecord):
@@ -265,6 +270,7 @@ async def get_or_download_record(
         flight.add_done_callback(discard)
         return await asyncio.shield(flight)
     set_value("牌谱获取方式", "等待并发任务")
+    increment("牌谱并发下载复用次数")
     with measure("并发任务等待"):
         return await asyncio.shield(flight)
 

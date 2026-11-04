@@ -13,7 +13,7 @@ from .logger import log_error, log_warning
 from .runtime_state import REVIEWS_DIR
 from .public_review_cache import _review_fingerprint, _public_raw_review_key, _public_review_result
 from .error_context import _safe_error_context
-from .paipu_performance import performance as _performance, measure as _measure, set_value as _set_performance_value
+from .paipu_performance import increment as _increment, performance as _performance, measure as _measure, set_value as _set_performance_value
 from .model_download import engine_mgr
 from .engine.reviewer import review_game, ModelInferenceError
 from .engine.model_policy import normalize_model_id, valid_review_source
@@ -52,6 +52,7 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
         source_info = stats.get("_public_raw_source") if isinstance(stats, dict) else None
         if isinstance(source_info, tuple) and len(source_info) == 2 and source_info[0] == game_id:
             disk_key = _public_raw_review_key(game_id, source_info[1], seat, engine, temperature)
+        _increment("检讨结果缓存检查次数")
         cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, disk_key, game_id, seat)
         if cached is None and disk_key != key:
             # A review saved before the raw-key optimization can still be
@@ -61,10 +62,12 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             if cached is not None:
                 await asyncio.to_thread(review_cache.save, REVIEWS_DIR, disk_key, cached)
         if cached is not None:
+            _increment("检讨结果缓存命中次数")
             _set_performance_value("分析结果缓存", "命中")
             if progress_callback is not None:
                 progress_callback(99.0, "已复用服务器缓存的牌谱检讨结果")
             return asyncio.create_task(asyncio.sleep(0, result=cached))
+        _increment("检讨结果缓存未命中次数")
         _set_performance_value("分析结果缓存", "未命中")
     entry = _review_inflight.get(key)
     if entry is not None:

@@ -21,7 +21,7 @@ from fastapi import HTTPException
 
 from server.logger import log_debug, log_info, log_warning
 from server.majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
-from server.paipu_performance import get_value, measure, set_value
+from server.paipu_performance import get_value, increment, measure, set_value
 from .runtime_state import ms_client, _ms_client_lock
 
 log = logging.getLogger(__name__)
@@ -67,6 +67,7 @@ async def login_with_account_spec(
     logged_in = False
     if token:
         try:
+            increment("雀魂登录请求次数")
             with measure("雀魂登录", failure_count="雀魂登录失败次数"):
                 await client.login_token(token)
             client.current_account = account
@@ -82,6 +83,7 @@ async def login_with_account_spec(
     if not logged_in:
         if account and password:
             try:
+                increment("雀魂登录请求次数")
                 with measure("雀魂登录", failure_count="雀魂登录失败次数"):
                     await client.login_password(account, password)
                 client.current_account = account
@@ -96,6 +98,8 @@ async def login_with_account_spec(
             await client.close()
             raise MajsoulError(f"账号 {masked} 缺少有效密码或 Token")
 
+    increment("雀魂登录成功次数")
+
 
 async def ensure_ms_logged_in(client: MajsoulClient | None = None):
     """Ensure client is logged in with an available account."""
@@ -103,6 +107,7 @@ async def ensure_ms_logged_in(client: MajsoulClient | None = None):
         client = ms_client
 
     if client.logged_in and client._ws is not None and not getattr(client._ws, "closed", False):
+        increment("雀魂会话复用次数")
         return
 
     get_accounts_fn = get_all_configured_accounts
@@ -213,6 +218,7 @@ async def _fetch_record_with_failover_inner(
             if account is not None:
                 session = client._ws
                 try:
+                    increment("雀魂会话复用次数")
                     return await client.fetch_record(game_uuid)
                 except Exception as error:
                     failure = error

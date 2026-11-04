@@ -82,9 +82,10 @@ def review_game(
     try:
         token = _review_inference.set(True)
         try:
-            kyokus, pending_decisions, mortal_q_batch, names = build_replay(
-                mjai_events, target_actor, obs_version, mortal, meta, progress_callback,
-            )
+            with _measure("回放构建耗时"):
+                kyokus, pending_decisions, mortal_q_batch, names = build_replay(
+                    mjai_events, target_actor, obs_version, mortal, meta, progress_callback,
+                )
         finally:
             _review_inference.reset(token)
     except ReplayInferenceError as exc:
