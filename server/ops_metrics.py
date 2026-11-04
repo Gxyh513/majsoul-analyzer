@@ -149,6 +149,7 @@ def memory_usage() -> dict:
         "process_cpu_cores_percent": cpu_cores_pct,
         "process_cpu_machine_percent": cpu_machine_pct,
         "cpu_sample_window_ms": cpu_window_ms,
+        "cpu_sample_scope": "自上一次可信 /api/status 采样以来；首次采样为null",
     }
 
 
@@ -199,12 +200,16 @@ def summary():
         "stage_ms": stage_ms,
         "acquisition": {
             "remote_downloads": sum(row.get("fetch_mode") == "雀魂下载" for row in rows),
+            "remote_download_attempts": _counter_total(rows, "雀魂实际下载次数"),
             "local_reads": sum(row.get("fetch_mode") in (
                 "本地直接读取", "进程内锁后读取本地", "文件锁后读取本地"
             ) for row in rows),
-            "concurrent_download_waits": sum(row.get("fetch_mode") == "等待并发任务" for row in rows),
             "local_record_hits": local_hits,
             "local_record_misses": local_misses,
+            "local_record_read_operations": _counter_total(rows, "本地牌谱命中次数"),
+            "local_record_miss_checks": _counter_total(rows, "本地牌谱未命中次数"),
+            "concurrent_download_waits": sum(row.get("fetch_mode") == "等待并发任务" for row in rows),
+            "concurrent_download_reuses": _counter_total(rows, "牌谱并发下载复用次数"),
         },
         "cache": {
             "public_review": {
