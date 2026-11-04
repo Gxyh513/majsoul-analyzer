@@ -46,7 +46,7 @@ class FakeClient:
         self.connect_calls += 1
         self._ws = FakeWebSocket()
         self._reader = FakeReader()
-        
+
     async def login_token(self, token: str):
         self.login_calls += 1
         self.logged_in = True
