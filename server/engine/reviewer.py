@@ -24,7 +24,7 @@ import libriichi.state as lstate  # noqa: E402
 from ..paipu_performance import add_elapsed as _add_elapsed, increment as _increment, measure as _measure  # noqa: E402
 from ..logger import log_debug
 from ..paipu_performance import review_inference as _review_inference, set_value as _set_performance_value  # noqa: E402
-from .onnx_mortal import OnnxMortal  # noqa: E402
+from .onnx_mortal import ACTION_SPACE, OnnxMortal  # noqa: E402
 from .model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, REVIEW_SCHEMA, normalize_model_id  # noqa: E402
 from .tiles import (  # noqa: E402
     action_idx_of_tile,
@@ -97,10 +97,15 @@ def review_game(
         if progress_callback:
             progress_callback(84.5, f"已完成 Mortal S42 ONNX 分批推理（{len(pending_decisions)} 处待评决策）...")
         try:
-            if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
-                raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
-            if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):
-                raise RuntimeError("Mortal S42 ONNX 合法动作输出无效")
+            with _measure("ONNX结果校验耗时"):
+                if (not isinstance(mortal_q_batch, np.ndarray)
+                        or mortal_q_batch.shape != (len(pending_decisions), ACTION_SPACE)
+                        or mortal_q_batch.dtype != np.float32):
+                    raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
+                if pending_decisions:
+                    legal_masks = np.stack([item["mask"] for item in pending_decisions])
+                    if not np.isfinite(mortal_q_batch[legal_masks]).all():
+                        raise RuntimeError("Mortal S42 ONNX 合法动作输出无效")
         except Exception as exc:
             engine_mgr.invalidate(mortal, exc)
             raise ModelInferenceError(f"Mortal S42 ONNX 推理失败，已终止分析: {exc}") from exc

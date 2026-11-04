@@ -102,26 +102,29 @@ class OnnxMortal:
             raise ValueError("mask 必须为 bool [batch, 46]")
         if len(obs_list) != len(mask_list):
             raise ValueError("obs 与 mask 的批次大小不一致")
-        if isinstance(obs_list, np.ndarray):
-            for obs in obs_list:
-                if not np.isfinite(obs).all():
+        with _measure("ONNX输入校验耗时"):
+            if isinstance(obs_list, np.ndarray):
+                # The production replay path supplies one contiguous batch.
+                # Validate it in one NumPy pass instead of dispatching one
+                # finite-value scan per decision from Python.
+                if not np.isfinite(obs_list).all():
                     raise ValueError("obs 必须全部为有限值")
-        else:
-            for obs in obs_list:
-                if not isinstance(obs, np.ndarray) or obs.shape != OBS_SHAPE or obs.dtype != np.float32:
-                    raise ValueError("每个 obs 必须为 float32 [1012, 34]")
-                if not np.isfinite(obs).all():
-                    raise ValueError("obs 必须全部为有限值")
+            else:
+                for obs in obs_list:
+                    if not isinstance(obs, np.ndarray) or obs.shape != OBS_SHAPE or obs.dtype != np.float32:
+                        raise ValueError("每个 obs 必须为 float32 [1012, 34]")
+                    if not np.isfinite(obs).all():
+                        raise ValueError("obs 必须全部为有限值")
 
-        if isinstance(mask_list, np.ndarray):
-            if len(mask_list) and not mask_list.any(axis=1).all():
-                raise ValueError("每个 mask 必须至少包含一个合法动作")
-        else:
-            for mask in mask_list:
-                if not isinstance(mask, np.ndarray) or mask.shape != (ACTION_SPACE,) or mask.dtype != np.bool_:
-                    raise ValueError("每个 mask 必须为 bool [46]")
-                if not mask.any():
+            if isinstance(mask_list, np.ndarray):
+                if len(mask_list) and not mask_list.any(axis=1).all():
                     raise ValueError("每个 mask 必须至少包含一个合法动作")
+            else:
+                for mask in mask_list:
+                    if not isinstance(mask, np.ndarray) or mask.shape != (ACTION_SPACE,) or mask.dtype != np.bool_:
+                        raise ValueError("每个 mask 必须为 bool [46]")
+                    if not mask.any():
+                        raise ValueError("每个 mask 必须至少包含一个合法动作")
         if len(obs_list) == 0:
             return np.empty((0, ACTION_SPACE), dtype=np.float32)
         outputs = []
@@ -129,12 +132,13 @@ class OnnxMortal:
             end = min(start + chunk_size, len(obs_list))
             obs_part = obs_list[start:end]
             mask_part = mask_list[start:end]
-            obs = np.ascontiguousarray(
-                obs_part if isinstance(obs_part, np.ndarray) else np.stack(obs_part)
-            )
-            mask = np.ascontiguousarray(
-                mask_part if isinstance(mask_part, np.ndarray) else np.stack(mask_part)
-            )
+            with _measure("ONNX输入整理耗时"):
+                obs = np.ascontiguousarray(
+                    obs_part if isinstance(obs_part, np.ndarray) else np.stack(obs_part)
+                )
+                mask = np.ascontiguousarray(
+                    mask_part if isinstance(mask_part, np.ndarray) else np.stack(mask_part)
+                )
             if _review_inference.get():
                 _increment("ONNX推理调用次数")
                 with _measure("ONNX实际推理耗时"):

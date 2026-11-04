@@ -53,6 +53,12 @@ class OnnxBatchTests(unittest.TestCase):
         self.assertEqual(result.shape, (3, ACTION_SPACE))
         self.assertEqual(self.model.session.batch_sizes, [3])
 
+    def test_non_finite_batched_observation_is_rejected_before_inference(self):
+        self.obs[1, 0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, "有限值"):
+            self.model.eval_batch(self.obs, self.mask)
+        self.assertEqual(self.model.session.batch_sizes, [])
+
 
 if __name__ == "__main__":
     unittest.main()
