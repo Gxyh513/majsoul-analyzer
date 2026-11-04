@@ -66,10 +66,8 @@ def build_replay(
     mortal_obs_batch: list[np.ndarray] = []
     mortal_mask_batch: list[np.ndarray] = []
     mortal_q_chunks: list[np.ndarray] = []
-    evaluated_decisions = 0
 
     def flush_mortal_batch():
-        nonlocal evaluated_decisions
         if mortal is None or not mortal_obs_batch:
             return
         try:
@@ -81,7 +79,6 @@ def build_replay(
         except Exception as exc:
             raise ReplayInferenceError(f"Mortal S42 ONNX 第 {len(mortal_q_chunks) + 1} 批推理失败") from exc
 
-        evaluated_decisions += len(q_batch)
         mortal_q_chunks.append(q_batch)
         mortal_obs_batch.clear()
         mortal_mask_batch.clear()
