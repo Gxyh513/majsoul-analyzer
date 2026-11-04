@@ -1,9 +1,24 @@
 """Regression tests for allocation-aware replay snapshots."""
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+# The native libriichi extension is not part of the lightweight unit-test
+# environment. Replay behavior under test only needs a replaceable PlayerState.
+try:
+    import libriichi.state  # noqa: F401
+except ModuleNotFoundError as exc:
+    if exc.name not in {"libriichi", "libriichi.state"}:
+        raise
+    libriichi_package = ModuleType("libriichi")
+    libriichi_state = ModuleType("libriichi.state")
+    libriichi_state.PlayerState = None
+    libriichi_package.state = libriichi_state
+    sys.modules["libriichi"] = libriichi_package
+    sys.modules["libriichi.state"] = libriichi_state
 
 from server.engine import review_replay
 
