@@ -112,28 +112,36 @@ def read_record(records_dir: Path, game_uuid: str, legacy_dirs: tuple[Path, ...]
 def save_record(records_dir: Path, game_uuid: str, record: RawRecord) -> None:
     with measure("原始牌谱保存"):
         _record_uuid(game_uuid)
-        data = _encode(record)
+        with measure("原始牌谱编码"):
+            data = _encode(record)
         records_dir = Path(records_dir)
-        records_dir.mkdir(parents=True, exist_ok=True)
+        with measure("原始牌谱目录创建"):
+            records_dir.mkdir(parents=True, exist_ok=True)
         path = records_dir / f"{game_uuid}.pb"
         temp_path = None
         try:
-            with tempfile.NamedTemporaryFile(mode="wb", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as file:
-                temp_path = Path(file.name)
-                file.write(data)
-                file.flush()
-                os.fsync(file.fileno())
-            legacy = records_dir / f"{game_uuid}.json"
-            if path.exists() or path.is_symlink() or legacy.exists() or legacy.is_symlink():
-                raise RecordStorageError("原始牌谱已存在，拒绝覆盖。")
-            os.replace(temp_path, path)
+            with measure("原始牌谱临时文件写入"):
+                with tempfile.NamedTemporaryFile(mode="wb", dir=records_dir, prefix=".record-", suffix=".tmp", delete=False) as file:
+                    temp_path = Path(file.name)
+                    file.write(data)
+                    file.flush()
+                    with measure("原始牌谱文件同步"):
+                        os.fsync(file.fileno())
+            with measure("原始牌谱目标检查"):
+                legacy = records_dir / f"{game_uuid}.json"
+                if path.exists() or path.is_symlink() or legacy.exists() or legacy.is_symlink():
+                    raise RecordStorageError("原始牌谱已存在，拒绝覆盖。")
+            with measure("原始牌谱原子替换"):
+                os.replace(temp_path, path)
             if os.name != "nt":
-                directory_fd = os.open(records_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            cleanup_stale_locks(records_dir)
+                with measure("原始牌谱目录同步"):
+                    directory_fd = os.open(records_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            with measure("原始牌谱锁清理"):
+                cleanup_stale_locks(records_dir)
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
