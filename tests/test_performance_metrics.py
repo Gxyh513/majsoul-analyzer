@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from server import ops_metrics, review_cache
+from server import ops_metrics, paipu_performance, review_cache
 
 
 class PerformanceMetricsTests(unittest.TestCase):
@@ -87,6 +89,42 @@ class PerformanceMetricsTests(unittest.TestCase):
         self.assertIn("process_cpu_cores_percent", metrics)
         self.assertIn("process_cpu_machine_percent", metrics)
         self.assertIn("cpu_sample_scope", metrics)
+
+    def test_cache_write_fails_closed_when_filesystem_capacity_is_unknown(self):
+        sentinel = 18446744073692774400
+        usage = shutil._ntuple_diskusage(sentinel, 0, sentinel)
+        key = "a" * 64
+        result = {"game_id": "test-game", "target_actor": 0}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(review_cache, "valid_review_source", return_value=True):
+                with patch.object(review_cache.shutil, "disk_usage", return_value=usage):
+                    self.assertFalse(review_cache.save(Path(directory), key, result))
+            self.assertFalse((Path(directory) / f"{key}.json").exists())
+
+    def test_cache_write_is_allowed_when_filesystem_capacity_is_trustworthy(self):
+        gib = 1024 ** 3
+        usage = shutil._ntuple_diskusage(4 * gib, gib, 3 * gib)
+        key = "b" * 64
+        result = {"game_id": "test-game", "target_actor": 0}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(review_cache, "valid_review_source", return_value=True):
+                with patch.object(review_cache.shutil, "disk_usage", return_value=usage):
+                    self.assertTrue(review_cache.save(Path(directory), key, result))
+            self.assertTrue((Path(directory) / f"{key}.json").is_file())
+
+    def test_new_storage_and_replay_stages_are_included_in_reports(self):
+        stats = {
+            "原始牌谱文件同步": 12.5,
+            "MJAI事件JSON序列化": 3.25,
+            "账号池数据库读取": 1.5,
+            "_active_stages": {},
+        }
+        report = paipu_performance.build_report(stats, time.perf_counter() - 1.0)
+        timings = report["耗时_ms"]
+        self.assertEqual(timings["原始牌谱文件同步"], 12.5)
+        self.assertEqual(timings["MJAI事件JSON序列化"], 3.25)
+        self.assertEqual(timings["账号池数据库读取"], 1.5)
+        self.assertIn("原始牌谱文件同步", report["计时口径"])
 
     def test_uint64_filesystem_capacity_sentinel_is_unknown(self):
         sentinel = 18446744073692774400
