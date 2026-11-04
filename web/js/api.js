@@ -170,13 +170,14 @@ function apiAuthHeaders() {
 // The stream reader loads independently of the ordered replay UI group.
 function loadReviewStreamClient() {
   if (typeof fetchReviewStreamImpl === "function") return Promise.resolve();
-  return loadClientResource("/js/review-stream.js?v=20261105-compact-v2-1", "script",
+  return loadClientResource("/js/review-stream.js?v=20261105-cancel-v2-1", "script",
     () => typeof fetchReviewStreamImpl === "function");
 }
 
-async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
+async function fetchReviewStream(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}, signal = null) {
   await loadReviewStreamClient();
-  return fetchReviewStreamImpl(postBody, onProgress, url, timings);
+  if (signal?.aborted) throw new DOMException("分析请求已取消", "AbortError");
+  return fetchReviewStreamImpl(postBody, onProgress, url, timings, signal);
 }
 
 const DEFAULT_MODELSCOPE_BACKEND = "https://gxyh513-majsoul-analyzer.ms.show";

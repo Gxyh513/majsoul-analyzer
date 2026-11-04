@@ -28,7 +28,7 @@ function hydrateReviewTransport(result) {
   return result;
 }
 
-async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
+async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}, signal = null) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
   const clientRequestId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
@@ -431,6 +431,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     } catch (_) {}
     resp = await fetch(url, {
       method: "POST",
+      signal,
       credentials: isPagesProxyMode() ? "omit" : "same-origin",
       redirect: "error",
       headers: {
