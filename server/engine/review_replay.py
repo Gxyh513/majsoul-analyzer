@@ -61,7 +61,7 @@ def build_replay(
     pending_decisions: list[dict[str, Any]] = []
     # Estimate a useful batch capacity from event count. Allocate lazily on the
     # first decision and reuse the same contiguous buffers for subsequent batches.
-    batch_capacity = min(INFERENCE_BATCH_SIZE, max(1, len(mjai_events) // 3))
+    batch_capacity = min(INFERENCE_BATCH_SIZE, max(1, len(mjai_events) // 5))
     mortal_batch = InferenceBatchBuffer(batch_capacity) if mortal is not None else None
     mortal_q_chunks: list[np.ndarray] = []
 
