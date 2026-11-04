@@ -56,8 +56,14 @@ function applyHidePlayerId() {
   document.body.classList.add("hide-player-ids");
 }
 
+const TILE_ASSET_VERSION = "20261104-svg-repair-1";
+
+function tileAssetSrc(pai) {
+  return `/tiles/${encodeURIComponent(pai)}.svg?v=${TILE_ASSET_VERSION}`;
+}
+
 function getTileBackSrc() {
-  return "/tiles/back-navy.svg?v=canglan";
+  return `/tiles/back-navy.svg?v=${TILE_ASSET_VERSION}`;
 }
 
 function escapeHtml(s) {

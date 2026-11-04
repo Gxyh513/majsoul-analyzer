@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from fastapi import HTTPException
 
-from .majsoul.client import MajsoulError, parse_paipu, parse_paipu_seat
+from .majsoul.client import LOCAL_PROTOCOL_SHA256, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
 from .record_store import CorruptRecordError, RawRecord, RecordStorageError
 from .runtime_state import DEMO_PATH, RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client
@@ -20,10 +22,120 @@ from .account_pool import fetch_record_with_failover
 from .paipu_performance import measure as _measure, performance as _performance
 
 
+# Parsed MJAI is shared across seat-specific reviews. The cache is process-local,
+# content-addressed, LRU-bounded, and invalidated by the local protocol identity.
+_PREPROCESS_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_PREPROCESS_CACHE_MAX_ITEMS = 8
+_PREPROCESS_MAX_ACTIVE = 2
+_PREPROCESS_MAX_WAITERS = 4
+_PREPROCESS_QUEUE_TIMEOUT_SECONDS = 90.0
+_preprocess_cache: OrderedDict[str, tuple[list[dict], dict, int, int]] = OrderedDict()
+_preprocess_cache_bytes = 0
+_preprocess_cache_lock = threading.RLock()
+_preprocess_inflight: dict[str, asyncio.Task] = {}
+_preprocess_semaphore = asyncio.Semaphore(_PREPROCESS_MAX_ACTIVE)
+_preprocess_waiters = 0
 
-async def _record_mjai_size(events: list[dict]) -> None:
+
+def _decode_convert_raw_record(stored: RawRecord, game_uuid: str, cache_key: str):
+    global _preprocess_cache_bytes
+
+    with _preprocess_cache_lock:
+        cached = _preprocess_cache.get(cache_key)
+        if cached is not None:
+            _preprocess_cache.move_to_end(cache_key)
+            return cached[:3]
+
+    with _measure("Protobuf解码"):
+        record = ms_client.decode_record(stored, game_uuid)
+    with _measure("MJAI转换"):
+        events, meta = to_mjai(record), game_meta(record)
+    with _measure("MJAI数据大小计算"):
+        events_size = len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
+        meta_size = len(json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
+
+    # Python dict/list/string overhead exceeds compact JSON size. Charge a
+    # conservative 3x estimate plus the immutable raw bytes to bound RSS.
+    estimated_bytes = len(stored.response) + len(stored.detail) + 3 * (events_size + meta_size)
+    if estimated_bytes <= _PREPROCESS_CACHE_MAX_BYTES:
+        with _preprocess_cache_lock:
+            while _preprocess_cache and (
+                len(_preprocess_cache) >= _PREPROCESS_CACHE_MAX_ITEMS
+                or _preprocess_cache_bytes + estimated_bytes > _PREPROCESS_CACHE_MAX_BYTES
+            ):
+                _, evicted = _preprocess_cache.popitem(last=False)
+                _preprocess_cache_bytes -= evicted[3]
+            _preprocess_cache[cache_key] = (events, meta, events_size, estimated_bytes)
+            _preprocess_cache_bytes += estimated_bytes
+
+    # The review pipeline treats MJAI events and metadata as read-only inputs.
+    return events, meta, events_size
+
+
+async def _prepare_raw_record_owner(stored: RawRecord, game_uuid: str, cache_key: str):
+    global _preprocess_waiters
+    acquired = False
+    if _preprocess_semaphore.locked():
+        if _preprocess_waiters >= _PREPROCESS_MAX_WAITERS:
+            raise HTTPException(status_code=429, detail="牌谱预处理队列已满，请稍后重试。")
+        _preprocess_waiters += 1
+        try:
+            with _measure("牌谱预处理排队等待"):
+                try:
+                    await asyncio.wait_for(
+                        _preprocess_semaphore.acquire(),
+                        timeout=_PREPROCESS_QUEUE_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    raise HTTPException(status_code=503, detail="牌谱预处理等待超时，请稍后重试。") from exc
+            acquired = True
+        finally:
+            _preprocess_waiters -= 1
+    else:
+        with _measure("牌谱预处理排队等待"):
+            await _preprocess_semaphore.acquire()
+        acquired = True
+
+    try:
+        with _measure("牌谱预处理"):
+            return await asyncio.to_thread(_decode_convert_raw_record, stored, game_uuid, cache_key)
+    finally:
+        if acquired:
+            _preprocess_semaphore.release()
+
+
+async def _prepare_raw_record(stored: RawRecord, game_uuid: str, source_digest: str):
+    cache_key = f"{LOCAL_PROTOCOL_SHA256}:{game_uuid}:{source_digest}"
+    with _preprocess_cache_lock:
+        cached = _preprocess_cache.get(cache_key)
+        if cached is not None:
+            _preprocess_cache.move_to_end(cache_key)
+            return cached[:3]
+
+    task = _preprocess_inflight.get(cache_key)
+    if task is None:
+        task = asyncio.create_task(_prepare_raw_record_owner(stored, game_uuid, cache_key))
+        _preprocess_inflight[cache_key] = task
+
+        def forget_finished(done: asyncio.Task):
+            if _preprocess_inflight.get(cache_key) is done:
+                _preprocess_inflight.pop(cache_key, None)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(forget_finished)
+
+    # A seat switch or concurrent request shares one decode/conversion task.
+    return await asyncio.shield(task)
+
+
+
+async def _record_mjai_size(events: list[dict], size_bytes: int | None = None) -> None:
     stats = _performance.get()
     if stats is not None:
+        if type(size_bytes) is int and size_bytes >= 0:
+            stats["MJAI数据大小"] = size_bytes
+            return
         try:
             stats["MJAI数据大小"] = await asyncio.to_thread(
                 lambda: len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
@@ -131,35 +243,36 @@ async def resolve_game_data(
         if stats is not None:
             stats["牌谱获取结果"] = "成功"
     try:
+        mjai_size = None
         if isinstance(stored, RawRecord):
             stats = _performance.get()
             if stats is not None:
                 stats["原始数据大小"] = len(stored.response) + len(stored.detail)
-                # Keep the exact reviewed source identity in request-local memory.
-                # Do not re-read the record after conversion (it could change).
-                prefetched = stats.pop("_prefetched_raw_digest", None)
-                if (
-                    isinstance(prefetched, tuple)
-                    and len(prefetched) == 3
-                    and prefetched[0] == game_uuid
-                    and prefetched[1] == stored
-                ):
-                    digest = prefetched[2]
-                else:
-                    from .public_review_cache import _public_raw_source_digest
-                    digest = await asyncio.to_thread(_public_raw_source_digest, stored)
+            # Reuse the exact digest computed by the public-review fast path when
+            # available; otherwise hash the immutable bytes once for this cache key.
+            prefetched = stats.pop("_prefetched_raw_digest", None) if isinstance(stats, dict) else None
+            if (
+                isinstance(prefetched, tuple)
+                and len(prefetched) == 3
+                and prefetched[0] == game_uuid
+                and prefetched[1] == stored
+            ):
+                digest = prefetched[2]
+            else:
+                from .public_review_cache import _public_raw_source_digest
+                digest = await asyncio.to_thread(_public_raw_source_digest, stored)
+            if isinstance(stats, dict):
                 stats["_public_raw_source"] = (game_uuid, digest)
-            with _measure("Protobuf解码"):
-                record = await asyncio.to_thread(ms_client.decode_record, stored, game_uuid)
+            events, meta, mjai_size = await _prepare_raw_record(stored, game_uuid, digest)
         else:
             record = stored
-        with _measure("MJAI转换"):
-            events, meta = await asyncio.to_thread(lambda: (to_mjai(record), game_meta(record)))
+            with _measure("MJAI转换"):
+                events, meta = await asyncio.to_thread(lambda: (to_mjai(record), game_meta(record)))
     except (CorruptRecordError, MajsoulError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (ConvertError, ValueError, TypeError, KeyError, IndexError) as exc:
         raise HTTPException(status_code=400, detail="原始牌谱无法转换，请检查牌谱或协议版本。") from exc
-    await _record_mjai_size(events)
+    await _record_mjai_size(events, mjai_size)
     url_seat = parse_paipu_seat(raw_input)
     seat = target_actor if target_actor is not None else url_seat
     return game_uuid, events, meta, select_game_seat(meta, seat, url_acc_id if url_seat is None else None)

@@ -111,7 +111,7 @@ function getKillerActionSpan(item) {
       tiles = act.consumed;
     }
     const tilesImgHtml = tiles.map((t) => {
-      return `<img src="/tiles/${encodeURIComponent(t)}.svg" class="tileImg" alt="${escapeHtml(t)}">`;
+      return `<img src="${tileAssetSrc(t)}" class="tileImg" alt="${escapeHtml(t)}">`;
     }).join("");
     tilesHtml = `<span class="killer-act-tiles">${tilesImgHtml}</span>`;
   }

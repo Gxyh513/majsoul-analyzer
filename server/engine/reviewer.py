@@ -57,7 +57,7 @@ from .model_manager import EngineManager
 # ---------------------------------------------------------------------------
 from .actions import softmax, event_to_label, next_player_action, label_to_action_dict, format_action_cn
 from .review_scoring import finalize_review
-from .review_replay import build_replay
+from .review_replay import ReplayInferenceError, build_replay
 
 
 # ---------------------------------------------------------------------------
@@ -79,20 +79,23 @@ def review_game(
     mortal, resolved_id, resolved_pth = engine_mgr.get_mortal(force_engine)
     obs_version = mortal.version
 
-    kyokus, pending_decisions, mortal_obs_batch, mortal_mask_batch, names = build_replay(
-        mjai_events, target_actor, obs_version, mortal, meta, progress_callback,
-    )
+    try:
+        token = _review_inference.set(True)
+        try:
+            kyokus, pending_decisions, mortal_q_batch, names = build_replay(
+                mjai_events, target_actor, obs_version, mortal, meta, progress_callback,
+            )
+        finally:
+            _review_inference.reset(token)
+    except ReplayInferenceError as exc:
+        cause = exc.__cause__ or exc
+        engine_mgr.invalidate(mortal, cause)
+        raise ModelInferenceError(f"Mortal S42 ONNX 推理失败，已终止分析: {cause}") from exc
 
-    # Run Mortal neural network batch inference if mortal is active
     if mortal is not None:
         if progress_callback:
-            progress_callback(82.0, f"正在运行 Mortal S42 ONNX 神经网络批量推理 ({len(pending_decisions)} 处待评决策)...")
+            progress_callback(84.5, f"已完成 Mortal S42 ONNX 分批推理（{len(pending_decisions)} 处待评决策）...")
         try:
-            token = _review_inference.set(True)
-            try:
-                mortal_q_batch = mortal.eval_batch(mortal_obs_batch, mortal_mask_batch)
-            finally:
-                _review_inference.reset(token)
             if mortal_q_batch is None or len(mortal_q_batch) != len(pending_decisions):
                 raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
             if any(not np.isfinite(mortal_q_batch[i][item["mask"]]).all() for i, item in enumerate(pending_decisions)):
