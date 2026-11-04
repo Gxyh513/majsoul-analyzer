@@ -91,7 +91,7 @@ function trimReviewCache() {
     const oldestSeat = entry.seats.keys().next().value;
     entry.seats.delete(oldestSeat);
     entry.sizes.delete(oldestSeat);
-    if (entry.defaultSeat === oldestSeat) entry.defaultSeat = entry.seats.keys().next().value ?? null;
+    if (entry.defaultSeat === oldestSeat) entry.defaultSeat = null;
     if (!entry.seats.size) reviewCache.delete(sourceKey);
   }
 }

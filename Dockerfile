@@ -49,6 +49,9 @@ COPY . .
 RUN mkdir -p /app/server/engine
 COPY --from=builder /build/vendor/Mortal/target/release/libriichi.so /app/server/engine/libriichi.so
 
+# Stamp versioned static resource URLs from actual content at image build time.
+RUN python scripts/stamp_web_assets.py
+
 # Ensure data directories exist
 RUN mkdir -p data/models data/records data/cache
 
