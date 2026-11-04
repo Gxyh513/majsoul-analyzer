@@ -84,16 +84,33 @@ def build_replay(
     def queue_mortal_observation(obs: np.ndarray, mask: np.ndarray):
         if mortal_batch is not None and mortal_batch.append(obs, mask):
             flush_mortal_batch()
-    # Reuse immutable-by-convention snapshot lists within one review. The
-    # serialized replay JSON stays identical: no wire/schema change.
+    # Snapshot containers are immutable after publication. Reuse them while
+    # their source state is unchanged; JSON output remains byte-for-byte
+    # equivalent while long replays allocate far fewer short-lived lists.
     sorted_hands: list[tuple[tuple[str, ...], list[str]] | None] = [None] * 4
+    cached_hands_snapshot_key: tuple[tuple[str, ...], ...] | None = None
+    cached_hands_snapshot: list[list[str]] | None = None
     cached_melds: list[tuple[int, list[dict]] | None] = [None] * 4
     cached_rivers: list[tuple[int, list[dict]] | None] = [None] * 4
+    collection_snapshots: dict[str, tuple[tuple[int, ...], list[list[dict]]]] = {}
+    state_list_snapshots: dict[str, tuple[tuple[Any, ...], list[Any]]] = {}
     meld_versions = [0] * 4
     river_versions = [0] * 4
 
-    def frozen_snapshot_lists(source: list[list[dict]], versions: list[int],
-                              cache: list) -> list[list[dict]]:
+    def frozen_state_list(name: str, source: list[Any]) -> list[Any]:
+        state = tuple(source)
+        saved = state_list_snapshots.get(name)
+        if saved is None or saved[0] != state:
+            saved = (state, list(source))
+            state_list_snapshots[name] = saved
+        return saved[1]
+
+    def frozen_snapshot_lists(name: str, source: list[list[dict]],
+                              versions: list[int], cache: list) -> list[list[dict]]:
+        version_key = tuple(versions)
+        saved_outer = collection_snapshots.get(name)
+        if saved_outer is not None and saved_outer[0] == version_key:
+            return saved_outer[1]
         snapshots = []
         for seat, items in enumerate(source):
             # Mutations increment a per-seat version, avoiding an O(n) tuple of
@@ -104,29 +121,33 @@ def build_replay(
                 saved = (version, list(items))
                 cache[seat] = saved
             snapshots.append(saved[1])
+        collection_snapshots[name] = (version_key, snapshots)
         return snapshots
 
     def snapshot_board(ev: dict, event_idx: int) -> dict[str, Any]:
-        snapshot_hands = []
+        nonlocal cached_hands_snapshot_key, cached_hands_snapshot
         for seat, hand in enumerate(hands):
             hand_state = tuple(hand)
             cached = sorted_hands[seat]
             if cached is None or cached[0] != hand_state:
                 cached = (hand_state, sorted(hand, key=sort_key))
                 sorted_hands[seat] = cached
-            snapshot_hands.append(cached[1])
+        hand_key = tuple(cached[0] for cached in sorted_hands)
+        if cached_hands_snapshot_key != hand_key:
+            cached_hands_snapshot_key = hand_key
+            cached_hands_snapshot = [cached[1] for cached in sorted_hands]
         return {
             "event": ev,
             # The same MJAI event keeps its identity across seat-specific snapshots.
             "event_idx": event_idx,
-            "hands": snapshot_hands,
-            "drawn": list(drawn_tile),
+            "hands": cached_hands_snapshot,
+            "drawn": frozen_state_list("drawn", drawn_tile),
             # Entries are replaced rather than mutated when calls or kans change them.
-            "melds": frozen_snapshot_lists(melds, meld_versions, cached_melds),
-            "rivers": frozen_snapshot_lists(rivers, river_versions, cached_rivers),
-            "riichi": list(riichi_declared),
-            "scores": list(scores),
-            "dora_markers": list(dora_markers),
+            "melds": frozen_snapshot_lists("melds", melds, meld_versions, cached_melds),
+            "rivers": frozen_snapshot_lists("rivers", rivers, river_versions, cached_rivers),
+            "riichi": frozen_state_list("riichi", riichi_declared),
+            "scores": frozen_state_list("scores", scores),
+            "dora_markers": frozen_state_list("dora_markers", dora_markers),
             "kyotaku": kyotaku,
             "honba": honba,
             "tiles_left": tiles_left,
@@ -214,7 +235,7 @@ def build_replay(
         if etype == "dora":
             dora_markers.append(ev["dora_marker"])
             if cur_kyoku["steps"]:
-                cur_kyoku["steps"][-1]["dora_markers"] = list(dora_markers)
+                cur_kyoku["steps"][-1]["dora_markers"] = frozen_state_list("dora_markers", dora_markers)
             continue
 
         if etype == "reach_accepted":
@@ -224,7 +245,7 @@ def build_replay(
             cur_kyoku["end_scores"] = list(scores)
             cur_kyoku["score_deltas"][r_seat] -= 1000
             if cur_kyoku["steps"]:
-                cur_kyoku["steps"][-1]["scores"] = list(scores)
+                cur_kyoku["steps"][-1]["scores"] = frozen_state_list("scores", scores)
                 cur_kyoku["steps"][-1]["kyotaku"] = kyotaku
             continue
 
