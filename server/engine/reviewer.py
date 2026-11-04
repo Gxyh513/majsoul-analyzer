@@ -24,7 +24,7 @@ import libriichi.state as lstate  # noqa: E402
 from ..paipu_performance import add_elapsed as _add_elapsed, increment as _increment, measure as _measure  # noqa: E402
 from ..logger import log_debug
 from ..paipu_performance import review_inference as _review_inference, set_value as _set_performance_value  # noqa: E402
-from .onnx_mortal import OnnxMortal  # noqa: E402
+from .onnx_mortal import ACTION_SPACE, OnnxMortal  # noqa: E402
 from .model_policy import MODEL_FILE, MODEL_ID, MODEL_REVISION, REVIEW_SCHEMA, normalize_model_id  # noqa: E402
 from .tiles import (  # noqa: E402
     action_idx_of_tile,
@@ -99,7 +99,7 @@ def review_game(
         try:
             with _measure("ONNX结果校验耗时"):
                 if (not isinstance(mortal_q_batch, np.ndarray)
-                        or mortal_q_batch.shape != (len(pending_decisions), 46)
+                        or mortal_q_batch.shape != (len(pending_decisions), ACTION_SPACE)
                         or mortal_q_batch.dtype != np.float32):
                     raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
                 if pending_decisions:
