@@ -264,12 +264,13 @@ export async function onRequest({ request, env }) {
     if (adminKey) headers.set("X-Admin-Key", adminKey);
   }
   let requestId = "";
+  let debugProxy = false;
   if (route.stream) {
     const supplied = request.headers.get("X-Request-ID") || "";
     requestId = /^[0-9a-f]{32}$/.test(supplied) ? supplied : crypto.randomUUID().replaceAll("-", "");
     headers.set("X-Request-ID", requestId);
     const clientEncoding = request.cf?.clientAcceptEncoding ?? request.headers.get("Accept-Encoding");
-    const debugProxy = request.headers.get("X-Paipu-Proxy-Debug") === "1";
+    debugProxy = request.headers.get("X-Paipu-Proxy-Debug") === "1";
     headers.set("Accept-Encoding", !debugProxy && acceptsGzip(clientEncoding) ? "gzip" : "identity");
   }
 
@@ -369,10 +370,10 @@ export async function onRequest({ request, env }) {
   }
   const isSse = route.stream && upstream.ok && /^text\/event-stream\b/i.test(upstream.headers.get("content-type") || "");
   const encoding = (upstream.headers.get("content-encoding") || "identity").trim().toLowerCase();
-  if (isSse && encoding !== "identity") {
-    // Reading a compressed Workers fetch body may transparently decode it.
-    // Keep the original stream unread so Content-Encoding remains accurate.
-    console.info(`[Paipu SSE Proxy] 请求ID=${serverRequestId || requestId} 压缩流直通，代理逐帧统计不可用`);
+  if (isSse && (encoding !== "identity" || !debugProxy)) {
+    // Normal requests bypass the diagnostic byte meter entirely. Compressed
+    // streams also remain unread to preserve their original Content-Encoding.
+    if (debugProxy) console.info(`[Paipu SSE Proxy] 请求ID=${serverRequestId || requestId} 压缩流直通，代理逐帧统计不可用`);
     return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
   }
   return new Response(isSse && upstream.body ? monitorSseStream(upstream.body, serverRequestId || requestId, started, wallOrigin, debugProxy) : upstream.body, {
