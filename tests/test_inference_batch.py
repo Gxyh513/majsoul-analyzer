@@ -28,7 +28,7 @@ class InferenceBatchBufferTests(unittest.TestCase):
 
         batch.clear()
         self.assertEqual(batch.count, 0)
-        self.assertTrue(batch.append(obs_b, mask_b))
+        self.assertFalse(batch.append(obs_b, mask_b))
         self.assertEqual(
             batch._observations.__array_interface__["data"][0],
             observation_pointer,
