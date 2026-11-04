@@ -72,7 +72,7 @@ def load(directory: Path, key: str, game_id: str, seat: int):
 
 
 def save(directory: Path, key: str, result: dict) -> bool:
-    """Atomically save one validated result; evict oldest entries to cap usage."""
+    """Atomically save one validated result while preserving cache headroom."""
     path = _cache_path(directory, key)
     if not valid_review_source(result, MODEL_SHA256):
         return False
@@ -85,6 +85,9 @@ def save(directory: Path, key: str, result: dict) -> bool:
         try:
             directory = Path(directory)
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Trim before writing so the largest allowed new entry still fits
+            # inside the 256 MiB hard ceiling (85% soft target + 20 MiB entry).
+            _evict(directory)
             # Results are disposable; preserve free disk for permanent raw
             # records and SQLite rather than filling the volume with reviews.
             if shutil.disk_usage(directory).free - len(payload) < LOW_DISK_WARNING_BYTES:
@@ -109,7 +112,7 @@ def save(directory: Path, key: str, result: dict) -> bool:
 
 
 def _maybe_cleanup(directory: Path) -> None:
-    """Prune expired public reviews on reads/status, at most hourly per directory.
+    """Prune expired and over-budget public reviews on reads/status, at most hourly per directory.
 
     Uses the same lock as writes. No daemon, timer, or raw-record deletion.
     """
