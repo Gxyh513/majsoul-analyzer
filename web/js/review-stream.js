@@ -1,5 +1,34 @@
 /* Loaded on the first analysis request to keep the initial page smaller. */
-async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}) {
+/* V2 only deduplicates replay snapshots on the wire. Restoring references
+ * keeps the normal rendering API intact and shares immutable arrays in memory.
+ * Legacy JSON results need no conversion. */
+function hydrateReviewTransport(result) {
+  if (result?.transport_version !== 2) return result;
+  const fields = ["hands", "drawn", "melds", "rivers", "riichi", "scores", "dora_markers"];
+  if (!Array.isArray(result.kyokus)) throw new Error("invalid compact review");
+  for (const kyoku of result.kyokus) {
+    const tables = kyoku.snapshot_tables;
+    if (!tables || typeof tables !== "object" || !Array.isArray(kyoku.steps)) {
+      throw new Error("missing snapshot tables");
+    }
+    for (const field of fields) {
+      const table = tables[field];
+      if (!Array.isArray(table)) throw new Error("invalid snapshot table");
+      for (const step of kyoku.steps) {
+        const index = step[field];
+        if (!Number.isSafeInteger(index) || index < 0 || index >= table.length) {
+          throw new Error("invalid snapshot index");
+        }
+        step[field] = table[index];
+      }
+    }
+    delete kyoku.snapshot_tables;
+  }
+  delete result.transport_version;
+  return result;
+}
+
+async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}, signal = null) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
   const clientRequestId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
@@ -16,6 +45,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
   };
   const displayVisibility = (value) => ({ visible: "可见", hidden: "隐藏", prerender: "预渲染", unloaded: "已卸载" }[value] || "未知");
   const initialVisibility = visibility();
+  const detailedDiagnostics = isDetailedDiagnosticMode();
   const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
   const monitorStarted = performance.now();
   let monitorEnded = Infinity;
@@ -132,13 +162,13 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       longTaskCount++;
       longTaskMs += entry.duration;
       longestTaskMs = Math.max(longestTaskMs, entry.duration);
-      longTasks.push({ 开始时间_ms: roundMs(entry.startTime), 耗时_ms: roundMs(entry.duration), 可见状态: displayVisibility(visibility()) });
+      if (detailedDiagnostics) longTasks.push({ 开始时间_ms: roundMs(entry.startTime), 耗时_ms: roundMs(entry.duration), 可见状态: displayVisibility(visibility()) });
     }
   }
   function visibilityChanged() {
     const state = visibility();
     visibilityStates.add(state);
-    visibilityChanges.push({ 状态: displayVisibility(state), 时间_ms: roundMs(performance.now()) });
+    if (detailedDiagnostics) visibilityChanges.push({ 状态: displayVisibility(state), 时间_ms: roundMs(performance.now()) });
   }
   function frameSummary(item) {
     return item ? { 数据大小_KB: sizeKB(item.bytes), 首分块序号: item.firstChunk, 末分块序号: item.lastChunk,
@@ -401,6 +431,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     } catch (_) {}
     resp = await fetch(url, {
       method: "POST",
+      signal,
       credentials: isPagesProxyMode() ? "omit" : "same-origin",
       redirect: "error",
       headers: {
@@ -643,7 +674,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       lastChunk = chunk;
       lastChunkAt = readFinished;
     }
-    readSamples.push({ 序号: readCount, 开始时间_ms: roundMs(readStarted),
+    if (detailedDiagnostics) readSamples.push({ 序号: readCount, 开始时间_ms: roundMs(readStarted),
       结束时间_ms: roundMs(readFinished), 等待耗时_ms: roundMs(wait), 数据大小_KB: sizeKB(size),
       状态: failed ? "读取失败" : (packet.done ? "流结束" : "数据分块"), 可见状态: displayVisibility(currentVisibility),
       错误信息: failed ? safeReadError(failure) : null });
@@ -725,9 +756,14 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     if (!completionEvent) {
       throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
     }
-    const result = completionEvent.result;
+    let result = completionEvent.result;
     if (!result) {
       throw receiveError("分析结果未完整接收，服务器可能仍在处理，立即重试可能导致重复推理。");
+    }
+    try {
+      result = hydrateReviewTransport(result);
+    } catch (_) {
+      throw receiveError("分析结果的回放数据无法还原，请重新分析。");
     }
     timings.sse.completeParsedAt = performance.now();
     onProgress(100, "分析完成，正在加载回放...");

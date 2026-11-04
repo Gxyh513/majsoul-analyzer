@@ -19,6 +19,7 @@ from .paipu_performance import measure as _measure, set_value as _set_performanc
 from .analysis_logging import _log_performance
 from .error_context import _safe_error_context
 from .public_review_cache import _public_review_result, _try_fast_public_review
+from .review_transport import compact_review_snapshots
 from .analysis_service import _wait_for_model_download
 from .game_data import resolve_game_data
 from .model_download import engine_mgr
@@ -52,11 +53,14 @@ class _ClosingStreamingResponse(StreamingResponse):
             await self.background()
 
 
-def _complete_review_event(result: dict[str, Any]) -> str:
+def _complete_review_event(result: dict[str, Any], transport_version: int = 1) -> str:
     raw_prefix = 'data: {"type": "complete", "result": '
     with _measure("结果返回"):
         with _measure("完成结果序列化耗时"):
-            result_json = json.dumps(_public_review_result(result), ensure_ascii=False)
+            public_result = _public_review_result(result)
+            if transport_version == 2:
+                public_result = compact_review_snapshots(public_result)
+            result_json = json.dumps(public_result, ensure_ascii=False)
             result_bytes = result_json.encode("utf8")
         _set_performance_value("原始complete事件字节数", len(raw_prefix) + len(result_bytes) + len("}\n\n"))
         _set_performance_value("原始检讨JSON字节数", len(result_bytes))
@@ -70,6 +74,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
     request_id = request_id or uuid.uuid4().hex
     if req.content is not None:
         raise HTTPException(status_code=400, detail="已停止支持 JSON 上传，请使用雀魂牌谱链接。")
+    if type(req.transport_version) is not int or req.transport_version not in (1, 2):
+        raise HTTPException(status_code=400, detail="不支持的回放传输版本。")
     try:
         normalize_model_id(req.engine)
     except ValueError as exc:
@@ -117,7 +123,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 if request_started is not None:
                     stats["ASGI请求至100%事件生成"] = (completed_at - request_started) * 1000
                 yield f"data: {json.dumps({'type': 'progress', 'percent': 100, 'message': '已复用公开牌谱缓存'}, ensure_ascii=False)}\n\n"
-                event = await asyncio.to_thread(_complete_review_event, cached)
+                event = await asyncio.to_thread(_complete_review_event, cached, req.transport_version)
                 completion_at = time.perf_counter()
                 stats["complete事件生成时间"] = (completion_at - stats["_started"]) * 1000
                 if request_started is not None:
@@ -227,7 +233,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                 if request_started is not None:
                     stats["ASGI请求至100%事件生成"] = (progress_generated - request_started) * 1000
                 yield progress_event
-                complete_event = await asyncio.to_thread(_complete_review_event, res)
+                complete_event = await asyncio.to_thread(_complete_review_event, res, req.transport_version)
                 complete_generated = time.perf_counter()
                 stats["complete事件生成时间"] = (complete_generated - stats["_started"]) * 1000
                 if request_started is not None:

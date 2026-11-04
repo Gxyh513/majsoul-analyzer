@@ -27,6 +27,8 @@ class AnalyzeStreamReq(BaseModel):
     temperature: float = 0.1
     title: str | None = None
     accept_compression: str | None = None
+    # Compact transport is opt-in; third-party clients retain the original shape.
+    transport_version: int = 1
 
 
 class AnalyzeDemoReq(BaseModel):

@@ -53,7 +53,7 @@ Rating 使用每个有效决策的 Q 值差距：单手相对分为 `max(0, 1 - 
 
 雀魂协议从随项目提供的 `data/cache/liqi-0.11.252.w.json` 本地加载并校验；程序不会自动检测版本或下载协议。需要升级时，手动更新协议文件以及 `server/majsoul/client.py` 中的固定协议版本、规范化 SHA-256 和客户端版本配置。规范化摘要对解析后的对象执行 `json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf8")` 再计算 SHA-256。协议不可用时服务会记录明确错误，演示和 MJAI 输入仍可使用。可用 WebSocket 线路仍通过 `clientgate/routes` 获取，并在进程内短暂复用。
 
-支持 gzip 的客户端通过 HTTP 流式压缩接收 SSE；每个事件及时刷新，完整结果不使用 Base64。浏览器控制台默认静默，不打印自定义 SSE 和页面性能日志。Cloudflare 代理默认对压缩流原样直通，因此不采集代理侧逐帧计时；需要这些计时时，可在浏览器控制台设置 `window.__PAIPU_DEBUG_PROXY__ = true` 后重新发起分析，临时改用未压缩流并保留原有代理诊断。设为 `false` 可恢复压缩。
+支持 gzip 的客户端通过 HTTP 流式压缩接收 SSE；每个事件及时刷新，完整结果不使用 Base64。浏览器通过 `transport_version=2` 明确请求共享回放快照传输，客户端在解析后还原为旧版结构；未请求 V2 的 SSE 调用者仍收到原来的完整 JSON。磁盘检讨缓存改为优先写入 gzip 压缩的 JSON，继续读取历史非压缩缓存，并限制最大解压结果大小。浏览器控制台默认静默，不打印自定义 SSE 和页面性能日志。Cloudflare 代理默认对压缩流原样直通，因此不采集代理侧逐帧计时；需要这些计时时，可在浏览器控制台设置 `window.__PAIPU_DEBUG_PROXY__ = true` 后重新发起分析，临时改用未压缩流并保留原有代理诊断。设为 `false` 可恢复压缩。
 
 ## 使用与快捷键
 
@@ -112,7 +112,7 @@ docker run -p 7860:7860 --name majsoul-analyzer -v majsoul-records:/mnt/workspac
 - Pages 前端通过同源 Pages Function 访问 ModelScope 后端；普通访客不需要手动输入 API 令牌。Function 固定代理到 `https://gxyh513-majsoul-analyzer.ms.show`，并在服务端注入 `X-Api-Token`。同源代理仅开放状态和分析接口；账号登录/登出、服务器本地牌谱、共享引擎配置与模型下载不会开放给匿名访问者。
 - 在 Cloudflare Pages 项目的 **Preview 和 Production** 环境分别设置 Secret `MAJSOUL_API_TOKEN`，并在 ModelScope 后端设置相同的新随机值。不要把令牌写入 `wrangler.toml`、源码、URL、浏览器存储或日志；请在已登录的设置页面中输入，不要粘贴到聊天。
 - 公开分析接口只支持牌谱链接；不接收 JSON 文件上传。后端已设置有限推理排队（最多 4 个等待任务），不设置每 IP 请求限流。
-- Pages 静态输出目录为 `web/`，Pages Function 位于仓库根目录的 `functions/`。部署后应检查正式域名的 `/api/status` 版本，并完成一次分析验证。
+- Pages 静态输出目录为 `web/`，Pages Function 位于仓库根目录的 `functions/`。建议在 Cloudflare Pages 项目设置中将构建命令配置为 `python3 scripts/stamp_web_assets.py`（无需额外 Python 依赖），以便部署时按文件内容更新所有 JS/CSS URL 的版本参数；Docker 镜像在构建时会执行同一脚本。HTML 本身使用 `no-cache`，JS/CSS 版本 URL 可继续使用长期缓存。部署后应检查正式域名的 `/api/status` 版本，并完成一次分析验证。
 
 ## API
 

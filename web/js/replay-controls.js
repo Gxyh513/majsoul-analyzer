@@ -220,6 +220,8 @@ function bindReplayEvents() {
   // Tier 2 Back to Home
   $("btnBackToHome")?.addEventListener("click", () => {
     ++analysisViewVersion;
+    if (activeViewController) activeViewController.abort();
+    activeViewController = null;
     setLoading(false);
     if (state.isPlaying) togglePlay(false);
     showTier(1);

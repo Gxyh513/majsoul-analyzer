@@ -8,6 +8,10 @@ function updateBoardMarkup(element, html) {
   }
 }
 
+// Reused transport snapshots can share the same river array for many steps.
+// Cache its signature by identity; old expanded responses still work normally.
+const riverSignatureCache = new WeakMap();
+
 function renderBoard(kyoku, snap, activeDecision) {
   const hero = state.targetActor;
 
@@ -99,13 +103,13 @@ function renderBoard(kyoku, snap, activeDecision) {
 
   const roundScores = snap.scores || kyoku.init_scores || kyoku.steps?.[0]?.scores || [25000, 25000, 25000, 25000];
   const giP0 = $("giP0");
-  if (giP0) giP0.innerHTML = `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`;
+  if (giP0) updateBoardMarkup(giP0, `<span class="gi-wind">${handWind(hero, kyoku)}</span><span class="gi-score">${roundScores[hero] ?? 25000}</span>`);
   const giP1 = $("giP1");
-  if (giP1) giP1.innerHTML = `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${roundScores[p1] ?? 25000}</span>`;
+  if (giP1) updateBoardMarkup(giP1, `<span class="gi-wind">${handWind(p1, kyoku)}</span><span class="gi-score">${roundScores[p1] ?? 25000}</span>`);
   const giP2 = $("giP2");
-  if (giP2) giP2.innerHTML = `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${roundScores[p2] ?? 25000}</span>`;
+  if (giP2) updateBoardMarkup(giP2, `<span class="gi-wind">${handWind(p2, kyoku)}</span><span class="gi-score">${roundScores[p2] ?? 25000}</span>`);
   const giP3 = $("giP3");
-  if (giP3) giP3.innerHTML = `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`;
+  if (giP3) updateBoardMarkup(giP3, `<span class="gi-wind">${handWind(p3, kyoku)}</span><span class="gi-score">${roundScores[p3] ?? 25000}</span>`);
 
   // Rivers
   renderPlayerRiver("Bottom", hero, snap, isRonDiscard, targetActor);
@@ -163,8 +167,13 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
 
   // Include every tile and its flags: length plus the final tile is not unique
   // across rounds, seats or rewound replay states.
+  let riverSignature = riverSignatureCache.get(river);
+  if (riverSignature === undefined) {
+    riverSignature = JSON.stringify(river);
+    riverSignatureCache.set(river, riverSignature);
+  }
   const sig = JSON.stringify([state.gameId, state.kyokuIdx, state.targetActor, seat,
-    river, isLastDiscardActor, isRonTarget]);
+    riverSignature, isLastDiscardActor, isRonTarget]);
   if (container.dataset.riverSig === sig) {
     return;
   }
@@ -326,9 +335,24 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     } else {
       let svgHtml = "";
       const renderedTiles = closedWrap.querySelectorAll(".tileDiv");
-      // Batch DOM measurements together to eliminate layout thrashing
+      // Measure all tiles only when their markup or scale changes. Changes to
+      // candidate probabilities reuse their existing coordinates.
       const svgRect = svgEl.getBoundingClientRect();
-      const tileRects = Array.from(renderedTiles).map((t) => t.getBoundingClientRect());
+      let tileCenters;
+      const geometry = svgEl.__tileGeometry;
+      if (geometry && geometry.markup === handHtml &&
+          geometry.width === svgRect.width && geometry.height === svgRect.height) {
+        tileCenters = geometry.centers;
+      } else {
+        tileCenters = Array.from(renderedTiles, (tile) => {
+          const rect = tile.getBoundingClientRect();
+          return rect.left + rect.width / 2 - svgRect.left;
+        });
+        if (svgRect.width > 0) {
+          svgEl.__tileGeometry = { markup: handHtml, width: svgRect.width,
+            height: svgRect.height, centers: tileCenters };
+        }
+      }
 
       const barAreaHeight = svgRect.height || 50;
       const barScale = barAreaHeight / 50;
@@ -346,9 +370,8 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
           seenPai.add(pai);
           const barInfo = tileBars[pai];
           const prob = barInfo ? barInfo.prob : 0;
-          if (prob > 0 && idx < tileRects.length) {
-            const tileRect = tileRects[idx];
-            const centerX = (tileRect.left + tileRect.width / 2) - svgRect.left;
+          if (prob > 0 && idx < tileCenters.length) {
+            const centerX = tileCenters[idx];
             const height = Math.max(3 * barScale, (prob / 100) * barAreaHeight * 0.9);
             const y = barAreaHeight - height;
             svgHtml += `<rect x="${centerX - barWidth / 2}" y="${y}" width="${barWidth}" height="${height}" fill="#5ecb7d" rx="${2 * barScale}"></rect>`;

@@ -57,9 +57,44 @@ function requireTrustedReview(result) {
 // Only the latest request may update the visible review or its progress.
 let analysisViewVersion = 0;
 let currentReviewSource = null;
+let activeViewController = null;
+
+function beginViewRequest() {
+  if (activeViewController) activeViewController.abort();
+  activeViewController = new AbortController();
+  return activeViewController;
+}
 const reviewCache = new Map();
 const pendingReviews = new Map();
 const REVIEW_CACHE_SOURCE_LIMIT = 2;
+const REVIEW_CACHE_ESTIMATED_BUDGET_BYTES = 32 * 1024 * 1024;
+
+// Approximate expanded JS object cost without stringifying several megabytes of
+// data just to measure it. The active result is never evicted by itself.
+function estimateReviewFootprint(result) {
+  let bytes = 64 * 1024;
+  for (const round of result?.kyokus || []) {
+    bytes += (round.steps?.length || 0) * 5000;
+    bytes += (round.decisions?.length || 0) * 2800;
+  }
+  return bytes;
+}
+
+function trimReviewCache() {
+  const totalBytes = () => [...reviewCache.values()].reduce((sum, entry) =>
+    sum + [...entry.sizes.values()].reduce((a, b) => a + b, 0), 0);
+  while (reviewCache.size > REVIEW_CACHE_SOURCE_LIMIT || totalBytes() > REVIEW_CACHE_ESTIMATED_BUDGET_BYTES) {
+    const sourceKey = reviewCache.keys().next().value;
+    if (sourceKey === undefined) break;
+    const entry = reviewCache.get(sourceKey);
+    if (reviewCache.size === 1 && entry.seats.size <= 1) break;
+    const oldestSeat = entry.seats.keys().next().value;
+    entry.seats.delete(oldestSeat);
+    entry.sizes.delete(oldestSeat);
+    if (entry.defaultSeat === oldestSeat) entry.defaultSeat = null;
+    if (!entry.seats.size) reviewCache.delete(sourceKey);
+  }
+}
 const REVIEW_ENGINE = "auto";
 const REVIEW_TEMPERATURE = 0.1;
 
@@ -68,13 +103,16 @@ function matchesReview(result, seat) {
     (seat == null || result.target_actor === seat);
 }
 
-async function getReview(source, seat, onProgress = () => {}, timings = null) {
+async function getReview(source, seat, onProgress = () => {}, timings = null, signal = null) {
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
-  const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE };
+  const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE, transport_version: 2 };
   const sourceKey = JSON.stringify([url, source.kind, body, "mortal-s42-onnx", MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA]);
   const cached = reviewCache.get(sourceKey);
   const cachedSeat = seat == null ? cached?.defaultSeat : seat;
   if (cachedSeat != null && cached?.seats.has(cachedSeat)) {
+    const reused = cached.seats.get(cachedSeat);
+    cached.seats.delete(cachedSeat);
+    cached.seats.set(cachedSeat, reused);
     reviewCache.delete(sourceKey);
     reviewCache.set(sourceKey, cached);
     onProgress(100, "已复用本页面的分析结果，正在加载回放...");
@@ -88,7 +126,7 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
   }
   let pending = requests.get(seat);
   if (!pending) {
-    pending = { listeners: new Set(), progress: null, promise: null, timings: {} };
+    pending = { listeners: new Set(), progress: null, promise: null, timings: {}, controller: new AbortController(), settled: false };
     requests.set(seat, pending);
     const notify = (percent, message) => {
       pending.progress = [percent, message];
@@ -102,28 +140,36 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
       if (url !== buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
         throw new Error("后端地址已发生变化，请重新分析。");
       }
+      if (pending.controller.signal.aborted) throw new Error("分析请求已取消");
       const requestBody = seat == null ? body : { ...body, target_actor: seat };
-      const result = await fetchReviewStream(requestBody, notify, url, pending.timings);
+      const result = await fetchReviewStream(requestBody, notify, url, pending.timings, pending.controller.signal);
       requireTrustedReview(result);
       if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
-      const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map() };
+      const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map(), sizes: new Map() };
+      entry.seats.delete(result.target_actor);
       entry.seats.set(result.target_actor, result);
+      entry.sizes.set(result.target_actor, estimateReviewFootprint(result));
       if (seat == null) entry.defaultSeat = result.target_actor;
       reviewCache.delete(sourceKey);
       reviewCache.set(sourceKey, entry);
-      while (reviewCache.size > REVIEW_CACHE_SOURCE_LIMIT) {
-        reviewCache.delete(reviewCache.keys().next().value);
-      }
+      trimReviewCache();
       return result;
     }).finally(() => {
-      requests.delete(seat);
-      if (!requests.size) pendingReviews.delete(sourceKey);
+      pending.settled = true;
+      if (requests.get(seat) === pending) requests.delete(seat);
+      if (!requests.size && pendingReviews.get(sourceKey) === requests) pendingReviews.delete(sourceKey);
     });
   }
   pending.listeners.add(onProgress);
+  let onAbort = null;
+  const aborted = signal ? new Promise((_, reject) => {
+    onAbort = () => reject(new DOMException("分析请求已取消", "AbortError"));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }) : null;
   if (pending.progress) onProgress(...pending.progress);
   try {
-    const result = await pending.promise;
+    const result = await (aborted ? Promise.race([pending.promise, aborted]) : pending.promise);
     if (timings) {
       timings.completeReceivedAt = pending.timings.completeReceivedAt;
       timings.progress100ReceivedAt = pending.timings.progress100ReceivedAt;
@@ -136,7 +182,14 @@ async function getReview(source, seat, onProgress = () => {}, timings = null) {
     }
     return result;
   } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     pending.listeners.delete(onProgress);
+    if (!pending.listeners.size && !pending.settled) {
+      // An already-running inference keeps ownership of its server-side permit.
+      pending.controller.abort();
+      if (requests.get(seat) === pending) requests.delete(seat);
+      if (!requests.size && pendingReviews.get(sourceKey) === requests) pendingReviews.delete(sourceKey);
+    }
   }
 }
 
@@ -224,6 +277,7 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     return;
   }
   const source = { kind: "paipu", input, identity: parsePaipuUuid(input) };
+  const viewController = beginViewRequest();
   const version = ++analysisViewVersion;
   updateEngineStatusDisplay();
   setLoading(true, "正在分析牌谱...", "正在使用 Mortal S42 ONNX 神经网络检讨每一手决策");
@@ -235,13 +289,18 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     const [result] = await Promise.all([
       getReview(source, seat, (pct, msg) => {
         if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
-      }, timings),
+      }, timings, viewController.signal),
       loadReplayAssets(),
     ]);
     if (version !== analysisViewVersion) return;
     currentReviewSource = source;
     applyPerspective(result, false);
     showTier(2);
+    // The initial analysis completed while the replay was hidden, so recompute
+    // recommendation bar geometry after the board has entered layout.
+    requestAnimationFrame(() => {
+      if (version === analysisViewVersion && state.reviewData === result) setStep(state.stepIdx);
+    });
     // Review navigation stays in memory; refreshing must not reopen a paipu.
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
     setLoading(false);
@@ -260,13 +319,14 @@ async function switchSeatPerspective(newSeat) {
     setLoading(false);
     return;
   }
+  const viewController = beginViewRequest();
   const seatName = getPlayerDisplayName(newSeat);
   setPerspectiveLoading(`正在分析 ${seatName} 的 AI 检讨`);
   const timings = {};
   try {
     const result = await getReview(source, newSeat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
-    }, timings);
+    }, timings, viewController.signal);
     if (version !== analysisViewVersion || currentReviewSource !== source) return;
     applyPerspective(result, true);
     setLoading(false);
