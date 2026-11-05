@@ -592,6 +592,28 @@
 }
 
 
+.kd-cancel-analysis-btn {
+  min-width: 96px;
+  min-height: 44px;
+  margin-top: 16px;
+  touch-action: manipulation;
+  /* Perspective loading lets board input through; only this button captures it. */
+  pointer-events: auto;
+}
+
+.kd-cancel-analysis-btn:focus-visible {
+  outline: 2px solid #0a84ff;
+  outline-offset: 3px;
+}
+
+.kd-cancel-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(235, 235, 245, 0.6);
+  overflow-wrap: anywhere;
+}
+
 /* Landing-only responsive rules must also work before replay assets load. */
 @media (max-width: 768px) {
   /* Tier 1 Landing Screen on Mobile */

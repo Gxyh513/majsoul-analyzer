@@ -14,6 +14,7 @@ from .account_pool import _redact_error
 from .account_store import AccountStore
 from .logger import log_warning
 from .majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
+from .majsoul.errors import MajsoulDetailError
 from .paipu_performance import increment, measure, set_value
 
 
@@ -201,6 +202,8 @@ class AccountScheduler:
 
     @staticmethod
     def _network_failure(error: Exception) -> bool:
+        if isinstance(error, MajsoulDetailError):
+            return False
         return isinstance(error, (TimeoutError, ConnectionError, OSError, httpx.TimeoutException,
                                   httpx.NetworkError, ConnectionClosed)) or any(
             word in str(error).lower() for word in ("timeout", "timed out", "连接", "网络", "超时")
@@ -251,6 +254,9 @@ class AccountScheduler:
                         return await self._fetch_one(acc, game_uuid)
                     except Exception as exc:
                         increment("雀魂账号尝试失败次数")
+                        if isinstance(exc, MajsoulDetailError):
+                            set_value("最近雀魂失败类型", "牌谱正文获取失败")
+                            raise HTTPException(status_code=503, detail=str(exc)) from exc
                         if getattr(exc, "code", None) == 541:
                             increment("雀魂接口541错误次数")
                         attempted.add(acc["id"])

@@ -79,11 +79,11 @@ def _build_route_request_connection(route_id: str) -> bytes:
     return b"\x10\x01\x1a" + bytes([len(rid)]) + rid + b"\x20" + ts + b"\x32\x03Web"
 
 
-from .errors import MajsoulError, MajsoulTokenInvalid
+from .errors import MajsoulDetailContentError, MajsoulDetailFetchError, MajsoulError, MajsoulTokenInvalid
 from .paipu_links import decode_log_id, decode_account_id, parse_paipu, parse_paipu_seat
 
 
-from .record_codec import RecordCodecMixin, _to_dict
+from .record_codec import RecordCodecMixin, _decode_record_detail, _to_dict
 
 
 class MajsoulClient(AuthMixin, RecordCodecMixin):
@@ -329,6 +329,35 @@ class MajsoulClient(AuthMixin, RecordCodecMixin):
 
     # ---------------------------------------------------------------- auth
     # ---------------------------------------------------------------- records
+    async def _fetch_record_detail(self, url: str) -> bytes:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + RECORD_HTTP_TIMEOUT_SECONDS
+        try:
+            # Both attempts, redirects and client cleanup share the original
+            # body budget. Reserve part of it for one same-URL retry.
+            async with asyncio.timeout_at(deadline):
+                async with httpx.AsyncClient(follow_redirects=True) as c:
+                    for attempt in range(2):
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError
+                        timeout = remaining / (2 - attempt)
+                        try:
+                            async with asyncio.timeout(timeout):
+                                r = await c.get(url, headers={"User-Agent": UA}, timeout=timeout)
+                                r.raise_for_status()
+                                return r.content
+                        except httpx.HTTPStatusError as exc:
+                            if attempt or (exc.response.status_code < 500 and exc.response.status_code not in (408, 429)):
+                                raise
+                        except (TimeoutError, httpx.RequestError):
+                            if attempt:
+                                raise
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            raise MajsoulDetailFetchError("雀魂牌谱正文下载超时，请稍后重试。") from exc
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            raise MajsoulDetailFetchError("雀魂牌谱正文下载失败，请稍后重试。") from exc
+
     async def fetch_record(self, game_uuid: str):
         from server.record_store import RawRecord
 
@@ -336,15 +365,17 @@ class MajsoulClient(AuthMixin, RecordCodecMixin):
             res, payload = await self.call("fetchGameRecord", game_uuid=game_uuid,
                                            client_version_string=self.client_version_string,
                                            timeout=RECORD_RPC_TIMEOUT_SECONDS, return_payload=True)
+        if not self.protocol_version or self.proto is None or res.head.uuid != game_uuid:
+            raise MajsoulDetailContentError("雀魂返回的牌谱数据无效或 UUID 不匹配，请稍后重试。")
         detail = b""
         if not res.data and res.data_url:
             with measure("外部数据下载", failure_count="外部数据下载失败次数"):
-                async with httpx.AsyncClient(follow_redirects=True) as c:
-                    r = await c.get(res.data_url, headers={"User-Agent": UA}, timeout=RECORD_HTTP_TIMEOUT_SECONDS)
-                    r.raise_for_status()
-                    detail = r.content
-        if not self.protocol_version or res.head.uuid != game_uuid or not (res.data or detail):
-            raise MajsoulError("雀魂返回的牌谱数据无效或 UUID 不匹配")
+                detail = await self._fetch_record_detail(res.data_url)
+        try:
+            with measure("Protobuf实际解码"):
+                _decode_record_detail(self.proto, res.data or detail)
+        except Exception as exc:
+            raise MajsoulDetailContentError("雀魂返回的牌谱正文无效，请稍后重试。") from exc
         return RawRecord(self.protocol_version, payload, detail)
 
     async def fetch_recent_records(self, count: int = 15) -> list[dict]:

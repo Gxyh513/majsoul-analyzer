@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import struct
 import tempfile
+import threading
 import time
 import weakref
 import zlib
@@ -24,8 +25,21 @@ _HEADER = struct.Struct(">HQQI")
 _UUID = re.compile(r"\d{6}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 _LOCK_STALE_SECONDS = 300.0
+
+
+def _bounded_setting(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(value, maximum))
+
+
+RECORD_MAX_DOWNLOADS = _bounded_setting("MAJSOUL_RECORD_MAX_DOWNLOADS", 8, 1, 32)
 _locks: weakref.WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str, str], asyncio.Lock] = weakref.WeakValueDictionary()
 _flights: dict[tuple[asyncio.AbstractEventLoop, str, str], asyncio.Task] = {}
+_download_admission_lock = threading.Lock()
+_active_downloads = 0
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,25 @@ class RecordStorageError(Exception):
 
 class CorruptRecordError(RecordStorageError):
     pass
+
+
+class RecordDownloadBusyError(RecordStorageError):
+    pass
+
+
+def _admit_download() -> None:
+    global _active_downloads
+    # Admission is process-wide, including owners pending on another loop.
+    with _download_admission_lock:
+        if _active_downloads >= RECORD_MAX_DOWNLOADS:
+            raise RecordDownloadBusyError("原始牌谱下载任务已满，请稍后重试。")
+        _active_downloads += 1
+
+
+def _release_download() -> None:
+    global _active_downloads
+    with _download_admission_lock:
+        _active_downloads -= 1
 
 
 def _record_uuid(game_uuid: str) -> None:
@@ -258,14 +291,28 @@ async def get_or_download_record(
                         raise RecordStorageError("牌谱下载成功，但原始牌谱保存失败。") from exc
                     return record
 
-        flight = asyncio.create_task(download_once())
+        # Do not create a task or touch file locks when capacity is exhausted.
+        # Cache hits and same-loop flight joins never consume another slot.
+        _admit_download()
+        download_coro = download_once()
+        try:
+            flight = asyncio.create_task(download_coro)
+        except BaseException:
+            download_coro.close()
+            _release_download()
+            raise
         _flights[key] = flight
 
         def discard(done: asyncio.Task) -> None:
-            if _flights.get(key) is done:
-                _flights.pop(key, None)
-            if not done.cancelled():
-                done.exception()
+            try:
+                if _flights.get(key) is done:
+                    _flights.pop(key, None)
+                if not done.cancelled():
+                    done.exception()
+            finally:
+                # The task lifetime owns admission, even if cancelled before
+                # the coroutine starts (where an internal finally cannot run).
+                _release_download()
 
         flight.add_done_callback(discard)
         return await asyncio.shield(flight)

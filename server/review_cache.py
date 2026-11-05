@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 
 from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA, valid_review_source
 from .review_transport import compact_review_snapshots, expand_review_snapshots, validate_compact_review
@@ -87,7 +88,7 @@ def load(directory: Path, key: str, game_id: str, seat: int, *, compact: bool = 
         if "transport_version" in result:
             return None
         return compact_review_snapshots(result) if compact else result
-    except (OSError, EOFError, ValueError, UnicodeError, TypeError, AttributeError, KeyError, IndexError):
+    except (OSError, EOFError, zlib.error, ValueError, UnicodeError, TypeError, AttributeError, KeyError, IndexError):
         return None
 
 
@@ -138,12 +139,14 @@ def save(directory: Path, key: str, result: dict) -> bool:
 def _maybe_cleanup(directory: Path) -> None:
     """Prune expired and over-budget public reviews on reads/status, at most hourly per directory.
 
-    Uses the same lock as writes. No daemon, timer, or raw-record deletion.
+    Uses the same lock as writes without waiting for it. No daemon, timer, or raw-record deletion.
     """
     directory = Path(directory)
     if directory.is_symlink() or not directory.is_dir():
         return
-    with _cache_lock:
+    if not _cache_lock.acquire(blocking=False):
+        return
+    try:
         now = time.monotonic()
         last = _last_cleanup.get(directory)
         if last is not None and now - last < CACHE_HOUSEKEEPING_SECONDS:
@@ -156,6 +159,8 @@ def _maybe_cleanup(directory: Path) -> None:
         # Keep memory bounded even if callers use many temporary directories.
         if len(_last_cleanup) > 32:
             _last_cleanup.pop(next(iter(_last_cleanup)))
+    finally:
+        _cache_lock.release()
 
 
 def _evict(directory: Path):

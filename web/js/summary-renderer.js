@@ -49,6 +49,7 @@ function renderSeatTabs() {
 function selectKyoku(kIdx, jumpToFirstDecision = false) {
   const res = state.reviewData;
   if (!res || !res.kyokus[kIdx]) return;
+  cancelScheduledStep();
   state.kyokuIdx = kIdx;
   renderSeatTabs();
 
