@@ -51,11 +51,11 @@ function loadReplayAssets() {
       "/css/board.css?v=52152ce7aa15",
       "/css/decision.css?v=ac60719195ba",
       "/css/modal.css?v=9acfaeb269ab",
-      "/css/responsive.css?v=7d04f5c2e73c",
+      "/css/responsive.css?v=69e14387eec9",
     ];
     const scripts = [
-      ["/js/summary-renderer.js?v=91f7e4703197", () => typeof renderSummaryDashboard === "function"],
-      ["/js/replay-controls.js?v=9906cf8d0837", () => typeof bindReplayEvents === "function"],
+      ["/js/summary-renderer.js?v=db3c621b8db5", () => typeof renderSummaryDashboard === "function"],
+      ["/js/replay-controls.js?v=8894756472e5", () => typeof bindReplayEvents === "function"],
       ["/js/board-renderer.js?v=38ef001a511d", () => typeof renderBoard === "function"],
       ["/js/decision-renderer.js?v=e08c0aa27669", () => typeof renderDecisionCard === "function"],
       ["/js/replay-navigation.js?v=73a5c7d89c27", () => typeof jumpNextDecision === "function"],

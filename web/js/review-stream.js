@@ -30,6 +30,51 @@ function hydrateReviewTransport(result) {
 
 async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(getBackendUrl(), "/api/analyze/stream"), timings = {}, signal = null) {
   const receiveError = (message) => Object.assign(new Error(message), { receiveError: true });
+  const requestController = new AbortController();
+  let interruption = null;
+  let headerTimer = null;
+  let idleTimer = null;
+  let reader;
+
+  function interruptRequest(error) {
+    if (requestController.signal.aborted) return;
+    interruption = error;
+    requestController.abort();
+  }
+  function externalAbort() {
+    interruptRequest(new DOMException("分析请求已取消", "AbortError"));
+  }
+  function deadlineError(phase, message) {
+    return Object.assign(receiveError(message), { name: "TimeoutError", timeoutPhase: phase });
+  }
+  function checkInterruption() {
+    if (interruption) throw interruption;
+  }
+  function resetBodyDeadline() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => interruptRequest(deadlineError("body",
+      "连续 60 秒未收到分析数据，已停止等待。服务器可能仍在处理，不会自动重试。")), 60000);
+  }
+  function clearAnalysisDeadlines() {
+    clearTimeout(headerTimer);
+    clearTimeout(idleTimer);
+    headerTimer = null;
+    idleTimer = null;
+  }
+  function releaseRequest() {
+    clearAnalysisDeadlines();
+    signal?.removeEventListener("abort", externalAbort);
+    requestController.abort();
+  }
+  async function readResponseChunk() {
+    checkInterruption();
+    const packet = await reader.read();
+    checkInterruption();
+    // Heartbeats and partial SSE frames count as activity, empty reads do not.
+    if (!delivered && !packet.done && packet.value?.byteLength > 0) resetBodyDeadline();
+    return packet;
+  }
+
   const clientRequestId = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID().replaceAll("-", "")
     : Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
@@ -185,6 +230,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     timings.diagnostics = { longTaskCount, longTaskMs, longestTaskMs, completeReadWaitMs, completeBetweenReadsMs,
       visibilityStates: [...visibilityStates] };
     const tailStates = { not_started: "未开始", fetch_error: "请求失败", http_error: "HTTP错误", no_body: "响应体缺失",
+      header_timeout: "响应头超时", body_timeout: "数据空闲超时", cancelled: "已取消等待",
       reader_error: "读取器不可用", timeout: "超时", read_error: "读取失败", diagnostic_error: "诊断失败",
       eof: "流结束", business_error: "业务失败", pending: "待读取" };
     const requestStatus = delivered ? "成功" : (tailStates[tailStatus] || "失败");
@@ -355,6 +401,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
   function finishStreamDiagnostics() {
     if (streamFinished) return;
     streamFinished = true;
+    releaseRequest();
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", visibilityChanged);
     reportDiagnostics();
   }
@@ -429,9 +476,14 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
         if (sensitiveUrlKey.test(key) && value) sensitiveValues.push(value);
       }
     } catch (_) {}
+    if (signal?.aborted) externalAbort();
+    else signal?.addEventListener("abort", externalAbort, { once: true });
+    checkInterruption();
+    headerTimer = setTimeout(() => interruptRequest(deadlineError("header",
+      "等待分析响应超过 30 秒，已停止等待。服务器可能已开始处理，不会自动重试。")), 30000);
     resp = await fetch(url, {
       method: "POST",
-      signal,
+      signal: requestController.signal,
       credentials: isPagesProxyMode() ? "omit" : "same-origin",
       redirect: "error",
       headers: {
@@ -444,11 +496,18 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       },
       body: JSON.stringify(requestBody),
     });
-  } catch (_) {
+    checkInterruption();
+    clearTimeout(headerTimer);
+    headerTimer = null;
+    resetBodyDeadline();
+  } catch (err) {
     errorCount++;
-    tailStatus = "fetch_error";
+    tailStatus = interruption?.timeoutPhase === "header" ? "header_timeout" :
+      (interruption?.name === "AbortError" || err?.name === "AbortError" ? "cancelled" : "fetch_error");
     stopMonitoring();
     finishStreamDiagnostics();
+    if (interruption) throw interruption;
+    if (err?.name === "AbortError") throw err;
     throw new Error("无法确认分析请求是否送达，服务器可能已开始处理。立即重试可能导致重复推理。");
   }
 
@@ -458,7 +517,31 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     timings.serverRequestId = serverRequestId;
   }
   if (!resp.ok) {
-    const errText = await resp.text().catch(() => "");
+    let errText = "";
+    try {
+      if (resp.body) {
+        reader = resp.body.getReader();
+        const errorDecoder = new TextDecoder("utf-8");
+        while (true) {
+          const { done, value } = await readResponseChunk();
+          if (done) break;
+          errText += errorDecoder.decode(value, { stream: true });
+        }
+        errText += errorDecoder.decode();
+      }
+    } catch (err) {
+      if (interruption || err?.name === "AbortError") {
+        errorCount++;
+        tailStatus = interruption?.timeoutPhase === "body" ? "body_timeout" : "cancelled";
+        stopMonitoring();
+        finishStreamDiagnostics();
+        throw interruption || err;
+      }
+      errText = "";
+    } finally {
+      cancelReader();
+      releaseReader();
+    }
     const detail = `HTTP ${resp.status}: ${errText || resp.statusText}`;
     errorCount++;
     tailStatus = "http_error";
@@ -477,7 +560,6 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     throw receiveError("无法读取分析响应，服务器可能仍在处理，立即重试可能导致重复推理。");
   }
 
-  let reader;
   try {
     reader = resp.body.getReader();
   } catch (_) {
@@ -643,7 +725,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
   async function measuredRead() {
     if (!detailedDiagnostics) {
       try {
-        const packet = await reader.read();
+        const packet = await readResponseChunk();
         if (!packet.done) {
           chunkCount++;
           totalBytes += packet.value.byteLength;
@@ -663,7 +745,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     let failure;
     let failed = false;
     try {
-      packet = await reader.read();
+      packet = await readResponseChunk();
     } catch (error) {
       failed = true;
       failure = error;
@@ -788,10 +870,13 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     return result;
   } catch (err) {
     if (!readFailed) errorCount++;
-    tailStatus = "business_error";
-    if (err?.serverReported || err?.receiveError) throw err;
+    tailStatus = interruption?.timeoutPhase === "body" ? "body_timeout" :
+      (interruption?.name === "AbortError" || err?.name === "AbortError" ? "cancelled" : "business_error");
+    if (interruption) throw interruption;
+    if (err?.name === "AbortError" || err?.serverReported || err?.receiveError) throw err;
     throw receiveError("分析连接中断，服务器可能仍在处理，立即重试可能导致重复推理。");
   } finally {
+    clearAnalysisDeadlines();
     stopMonitoring();
     if (delivered && (!ended || tailText)) {
       tailStatus = "pending";

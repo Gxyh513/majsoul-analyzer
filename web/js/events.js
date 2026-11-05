@@ -21,6 +21,8 @@ function bindEvents() {
     }
   });
 
+  $("btnCancelAnalysis")?.addEventListener("click", () => cancelAnalysisWait());
+
   // Dedicated Error Box actions
   $("btnRetryAnalysis")?.addEventListener("click", () => {
     if (currentAnalysisRetryCb) {
@@ -61,9 +63,15 @@ function bindEvents() {
     bd.addEventListener("click", closeAllModals);
   });
 
-  // Escape also closes the engine dialog before replay modules are loaded.
+  // Waiting can be cancelled even before the replay modules finish loading.
   window.addEventListener("keydown", (e) => {
-    if (!e.defaultPrevented && e.key === "Escape") closeAllModals();
+    if (e.defaultPrevented || e.key !== "Escape") return;
+    if (activeViewController) {
+      e.preventDefault();
+      cancelAnalysisWait();
+    } else {
+      closeAllModals();
+    }
   });
 }
 

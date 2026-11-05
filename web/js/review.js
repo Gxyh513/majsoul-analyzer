@@ -5,6 +5,7 @@ function showTier(tierNum) {
   const t1 = $("tier1Screen");
   const t2 = $("tier2Screen");
   if (tierNum === 1) {
+    if (typeof cancelScheduledStep === "function") cancelScheduledStep();
     if (state.isPlaying) togglePlay(false);
     t1.classList.remove("hidden");
     t2.classList.add("hidden");
@@ -65,6 +66,24 @@ function beginViewRequest() {
   activeViewController = new AbortController();
   return activeViewController;
 }
+
+function finishViewRequest(controller) {
+  if (activeViewController === controller) activeViewController = null;
+  // Also detach the subscriber if replay asset loading failed first.
+  controller.abort();
+}
+
+function cancelAnalysisWait(notify = true) {
+  const controller = activeViewController;
+  ++analysisViewVersion;
+  activeViewController = null;
+  controller?.abort();
+  setLoading(false);
+  if (controller && notify) {
+    showToast("已取消等待。服务器已开始的推理可能仍会完成，不会自动重试。", "info");
+  }
+}
+
 const reviewCache = new Map();
 const pendingReviews = new Map();
 const REVIEW_CACHE_SOURCE_LIMIT = 2;
@@ -105,6 +124,7 @@ function matchesReview(result, seat) {
 }
 
 async function getReview(source, seat, onProgress = () => {}, timings = null, signal = null) {
+  if (signal?.aborted) throw new DOMException("分析请求已取消", "AbortError");
   const url = buildApiUrl(getBackendUrl(), "/api/analyze/stream");
   const body = { paipu: source.identity, engine: REVIEW_ENGINE, temperature: REVIEW_TEMPERATURE, transport_version: 2 };
   const sourceKey = JSON.stringify([url, source.kind, body, "mortal-s42-onnx", MODEL_REVISION, MODEL_SHA256, REVIEW_SCHEMA]);
@@ -141,9 +161,10 @@ async function getReview(source, seat, onProgress = () => {}, timings = null, si
       if (url !== buildApiUrl(getBackendUrl(), "/api/analyze/stream")) {
         throw new Error("后端地址已发生变化，请重新分析。");
       }
-      if (pending.controller.signal.aborted) throw new Error("分析请求已取消");
+      if (pending.controller.signal.aborted) throw new DOMException("分析请求已取消", "AbortError");
       const requestBody = seat == null ? body : { ...body, target_actor: seat };
       const result = await fetchReviewStream(requestBody, notify, url, pending.timings, pending.controller.signal);
+      if (pending.controller.signal.aborted) throw new DOMException("分析请求已取消", "AbortError");
       requireTrustedReview(result);
       if (!matchesReview(result, seat)) throw new Error("分析结果的玩家座位不匹配，请重试。");
       const entry = reviewCache.get(sourceKey) || { defaultSeat: null, seats: new Map(), sizes: new Map() };
@@ -163,9 +184,22 @@ async function getReview(source, seat, onProgress = () => {}, timings = null, si
     pending.promise.catch(() => {});
   }
   pending.listeners.add(onProgress);
+  const detachSubscriber = () => {
+    pending.listeners.delete(onProgress);
+    if (!pending.listeners.size && !pending.settled) {
+      // Detach immediately, before another view can subscribe to an aborted job.
+      // An already-running inference still owns its server-side permit.
+      pending.controller.abort();
+      if (requests.get(seat) === pending) requests.delete(seat);
+      if (!requests.size && pendingReviews.get(sourceKey) === requests) pendingReviews.delete(sourceKey);
+    }
+  };
   let onAbort = null;
   const aborted = signal ? new Promise((_, reject) => {
-    onAbort = () => reject(new DOMException("分析请求已取消", "AbortError"));
+    onAbort = () => {
+      detachSubscriber();
+      reject(new DOMException("分析请求已取消", "AbortError"));
+    };
     if (signal.aborted) onAbort();
     else signal.addEventListener("abort", onAbort, { once: true });
   }) : null;
@@ -185,13 +219,7 @@ async function getReview(source, seat, onProgress = () => {}, timings = null, si
     return result;
   } finally {
     if (signal && onAbort) signal.removeEventListener("abort", onAbort);
-    pending.listeners.delete(onProgress);
-    if (!pending.listeners.size && !pending.settled) {
-      // An already-running inference keeps ownership of its server-side permit.
-      pending.controller.abort();
-      if (requests.get(seat) === pending) requests.delete(seat);
-      if (!requests.size && pendingReviews.get(sourceKey) === requests) pendingReviews.delete(sourceKey);
-    }
+    detachSubscriber();
   }
 }
 
@@ -294,14 +322,14 @@ async function startAnalysisFromInput(rawInput, seat = null) {
       }, timings, viewController.signal),
       loadReplayAssets(),
     ]);
-    if (version !== analysisViewVersion) return;
+    if (version !== analysisViewVersion || viewController.signal.aborted) return;
     currentReviewSource = source;
     applyPerspective(result, false);
     showTier(2);
     // The initial analysis completed while the replay was hidden, so recompute
     // recommendation bar geometry after the board has entered layout.
     requestAnimationFrame(() => {
-      if (version === analysisViewVersion && state.reviewData === result) setStep(state.stepIdx);
+      if (version === analysisViewVersion && state.reviewData === result) setStep(state.stepIdx, { renderOnly: true });
     });
     // Review navigation stays in memory; refreshing must not reopen a paipu.
     showToast(`分析完成：共检讨 ${result.kyokus?.length || 0} 局`, "success");
@@ -309,19 +337,23 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     logReviewViewCompletion(timings, version);
   } catch (err) {
     if (version !== analysisViewVersion || viewController.signal.aborted || err?.name === "AbortError") return;
-    showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, seat));
+    showAnalysisError(`分析失败：${err.message}`, () => {
+      if (version === analysisViewVersion) startAnalysisFromInput(rawInput, seat);
+    });
+  } finally {
+    finishViewRequest(viewController);
   }
 }
 
 async function switchSeatPerspective(newSeat) {
   if (!state.reviewData || !currentReviewSource) return;
-  const version = ++analysisViewVersion;
-  const source = currentReviewSource;
   if (newSeat === state.targetActor) {
-    setLoading(false);
+    cancelAnalysisWait(false);
     return;
   }
+  const source = currentReviewSource;
   const viewController = beginViewRequest();
+  const version = ++analysisViewVersion;
   const seatName = getPlayerDisplayName(newSeat);
   setPerspectiveLoading(`正在分析 ${seatName} 的 AI 检讨`);
   const timings = {};
@@ -329,13 +361,17 @@ async function switchSeatPerspective(newSeat) {
     const result = await getReview(source, newSeat, (pct, msg) => {
       if (version === analysisViewVersion) updateAnalysisProgress(pct, msg);
     }, timings, viewController.signal);
-    if (version !== analysisViewVersion || currentReviewSource !== source) return;
+    if (version !== analysisViewVersion || currentReviewSource !== source || viewController.signal.aborted) return;
     applyPerspective(result, true);
     setLoading(false);
     logReviewViewCompletion(timings, version);
   } catch (err) {
     if (version !== analysisViewVersion || currentReviewSource !== source || viewController.signal.aborted || err?.name === "AbortError") return;
     setLoading(false);
-    showAnalysisError(`切换视角失败：${err.message}`, () => switchSeatPerspective(newSeat));
+    showAnalysisError(`切换视角失败：${err.message}`, () => {
+      if (version === analysisViewVersion && currentReviewSource === source) switchSeatPerspective(newSeat);
+    });
+  } finally {
+    finishViewRequest(viewController);
   }
 }

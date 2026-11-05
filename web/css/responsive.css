@@ -857,8 +857,84 @@
   text-align: right !important;
 }
 
-/* Improve small-screen touch accuracy without changing Mahjong tile geometry. */
+/* Phone header follows the board width. Keep these overrides after the desktop
+   sidebar's important rules so the four perspective tabs stay on one row. */
 @media (max-width: 768px) {
+  .left-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px 8px;
+    width: calc(var(--zoom) * 655px);
+    max-width: 100%;
+    min-width: 0;
+    margin-top: 0;
+  }
+  .left-panel .kd-back-btn {
+    width: fit-content;
+    max-width: 100%;
+    justify-self: start;
+    padding: 6px 10px !important;
+    letter-spacing: normal;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .left-panel .kd-demo-label {
+    grid-column: 2;
+    padding: 4px 8px;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+  .left-panel .kd-match-badge {
+    grid-column: 1 / -1;
+    min-width: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 2px 12px;
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+    text-align: left;
+    white-space: normal !important;
+  }
+  .left-panel .kd-badge-item {
+    display: block;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .left-panel .kd-seat-tabs {
+    grid-column: 1 / -1;
+    display: grid !important;
+    flex-direction: row !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px !important;
+    padding: 4px !important;
+    min-width: 0;
+    border-radius: 10px !important;
+  }
+  .left-panel .kd-tab {
+    min-width: 0;
+    padding: 8px 4px !important;
+    font-size: 12px !important;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .left-panel .kd-tab.active {
+    background: #0a84ff !important;
+    border-color: #0a84ff !important;
+  }
+  .left-panel .kd-tab:focus-visible,
+  .left-panel .kd-back-btn:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+  }
+
+  /* Touch accuracy without changing Mahjong tile geometry. */
   .controls > * { min-height: 44px !important; touch-action: manipulation; }
   .kd-seat-tabs .kd-tab { min-height: 44px; touch-action: manipulation; }
   .left-panel .kd-back-btn { min-height: 44px; touch-action: manipulation; }

@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from server.logger import log_debug, log_info, log_warning
 from server.majsoul.client import MajsoulClient, MajsoulError, MajsoulTokenInvalid
+from server.majsoul.errors import MajsoulDetailError
 from server.paipu_performance import get_value, increment, measure, set_value
 from .runtime_state import ms_client, _ms_client_lock
 
@@ -271,6 +272,12 @@ async def _fetch_record_with_failover_inner(
                     attempted.add(key)
                     await client.close()
             continue
+
+        if isinstance(failure, MajsoulDetailError):
+            # A successful RPC followed by a bad HTTP body needs neither a
+            # gateway change nor a different account, including after RPC retry.
+            set_value("最近雀魂失败类型", "牌谱正文获取失败")
+            raise HTTPException(status_code=503, detail=str(failure)) from failure
 
         key = _account_pool_key(account)
         code = getattr(failure, "code", None)

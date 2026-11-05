@@ -11,6 +11,20 @@ from .proto import LiqiProto
 from .errors import MajsoulError
 
 
+def _decode_record_detail(proto: LiqiProto, data: bytes):
+    """Validate the outer envelope/container, not individual action semantics."""
+    if not data:
+        raise ValueError("empty game detail")
+    name, payload = proto.unwrap(data)
+    if name not in (".lq.GameDetailRecords", "lq.GameDetailRecords", "GameDetailRecords") or not payload:
+        raise ValueError("invalid game detail")
+    detail = proto.decode("GameDetailRecords", payload)
+    if not ((getattr(detail, "version", 0) < 210715 and detail.records)
+            or any(act.result for act in detail.actions)):
+        raise ValueError("empty game detail records")
+    return detail
+
+
 class RecordCodecMixin:
     def _get_record_proto(self, protocol_version: str):
         if self._record_proto is not None and self._record_proto[0] == protocol_version:
@@ -53,10 +67,7 @@ class RecordCodecMixin:
                 data = res.data or record.detail
                 if res.head.uuid != game_uuid or not data or (res.HasField("error") and res.error.code):
                     raise ValueError("invalid game response")
-                name, payload = proto.unwrap(data)
-                if name not in (".lq.GameDetailRecords", "lq.GameDetailRecords", "GameDetailRecords"):
-                    raise ValueError("invalid game detail")
-                detail = proto.decode(name, payload)
+                detail = _decode_record_detail(proto, data)
                 raw_records = (
                     detail.records
                     if getattr(detail, "version", 0) < 210715 and len(detail.records) > 0

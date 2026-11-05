@@ -11,6 +11,7 @@ function updateAnalysisProgress(percent, message) {
 }
 
 function setLoading(visible, title = "AI 牌谱智能检讨", sub = null) {
+  currentAnalysisRetryCb = null;
   const overlay = $("loadingOverlay");
   if (!overlay) return;
   overlay.style.pointerEvents = "";
@@ -170,7 +171,7 @@ function apiAuthHeaders() {
 // The stream reader loads independently of the ordered replay UI group.
 function loadReviewStreamClient() {
   if (typeof fetchReviewStreamImpl === "function") return Promise.resolve();
-  return loadClientResource("/js/review-stream.js?v=ee2e3b038876", "script",
+  return loadClientResource("/js/review-stream.js?v=0f6c82d736b5", "script",
     () => typeof fetchReviewStreamImpl === "function");
 }
 

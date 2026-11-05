@@ -1,6 +1,7 @@
 // RAF-based Step Debouncing & Scheduler to eliminate layout thrashing on key-hold
 let pendingTargetStep = null;
 let stepRafId = null;
+let stepNavigationVersion = 0;
 
 function scheduleStep(targetStep) {
   const kyoku = state.reviewData?.kyokus?.[state.kyokuIdx];
@@ -9,7 +10,9 @@ function scheduleStep(targetStep) {
 
   if (stepRafId !== null) return;
 
+  const version = stepNavigationVersion;
   stepRafId = requestAnimationFrame(() => {
+    if (version !== stepNavigationVersion) return;
     stepRafId = null;
     if (pendingTargetStep !== null) {
       const step = pendingTargetStep;
@@ -20,6 +23,7 @@ function scheduleStep(targetStep) {
 }
 
 function cancelScheduledStep() {
+  ++stepNavigationVersion;
   if (stepRafId !== null) {
     cancelAnimationFrame(stepRafId);
     stepRafId = null;
@@ -176,11 +180,13 @@ function toggleHandsVisibility() {
     textEl.textContent = state.openHands ? "明牌" : "暗牌";
   }
   if (state.reviewData) {
-    setStep(state.stepIdx);
+    setStep(state.stepIdx, { renderOnly: true });
   }
 }
 
-function setStep(stepIdx) {
+function setStep(stepIdx, { renderOnly = false } = {}) {
+  // An explicit navigation supersedes queued input; a repaint must not drop it.
+  if (!renderOnly) cancelScheduledStep();
   const res = state.reviewData;
   if (!res) return;
   const kyoku = res.kyokus[state.kyokuIdx];
@@ -219,11 +225,7 @@ function setStep(stepIdx) {
 function bindReplayEvents() {
   // Tier 2 Back to Home
   $("btnBackToHome")?.addEventListener("click", () => {
-    ++analysisViewVersion;
-    if (activeViewController) activeViewController.abort();
-    activeViewController = null;
-    setLoading(false);
-    if (state.isPlaying) togglePlay(false);
+    cancelAnalysisWait(false);
     showTier(1);
     const input = $("homePaipuInput");
     if (input) {

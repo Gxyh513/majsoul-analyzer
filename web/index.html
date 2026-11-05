@@ -7,7 +7,7 @@
   <meta name="description" content="使用 Mortal S42 ONNX 检讨雀魂牌谱，浏览四家视角、AI 决策与逐步回放。" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='4' y='2' width='24' height='28' rx='4' fill='%23ffffff' stroke='%2330d158' stroke-width='2'/><rect x='8' y='6' width='16' height='20' rx='2' fill='%231a7940'/></svg>" />
   <link rel="stylesheet" href="/css/variables.css?v=ae6c0b581ce2" />
-  <link rel="stylesheet" href="/css/landing.css?v=af49e7e9d720" />
+  <link rel="stylesheet" href="/css/landing.css?v=0a56e287e2e8" />
 </head>
 <body>
   <!-- ========================================================================
@@ -71,14 +71,14 @@
     <!-- Main Board & Sidebar -->
     <main>
       <div class="outer">
-        <!-- Left Panel: Back to Home, Game Summary & Vertical Perspective Selector -->
+        <!-- Review header: desktop sidebar, compact board-width rows on phones -->
         <div class="left-panel">
           <button id="btnBackToHome" class="kd-back-btn" title="返回首页重新输入牌谱">← 检讨新牌谱</button>
           <div id="demoReviewLabel" class="kd-demo-label hidden">演示牌谱</div>
           <div id="gameSummaryPill" class="kd-match-badge" title="模型一致率与综合评分">
             <span class="kd-badge-match">模型一致率: --%</span>
           </div>
-          <!-- 切换视角按钮放在左侧下方，竖着显示 -->
+          <!-- Desktop uses vertical tabs; phones use four equal-width tabs. -->
           <div id="seatTabs" class="kd-seat-tabs" role="tablist" aria-label="玩家视角"></div>
         </div>
 
@@ -283,6 +283,8 @@
             <div id="analysisProgressFill" class="kd-progress-fill" style="width: 0%;"></div>
           </div>
         </div>
+        <button id="btnCancelAnalysis" type="button" class="kd-close-btn kd-cancel-analysis-btn" aria-describedby="analysisCancelHint" title="取消等待 (Esc)">取消等待</button>
+        <p id="analysisCancelHint" class="kd-cancel-hint">仅停止本页等待；服务器已开始的推理可能仍会完成，不会自动重试。</p>
       </div>
 
       <!-- Dedicated Analysis Error Box -->
@@ -302,10 +304,10 @@
   <div id="toastContainer" class="kd-toast-wrap"></div>
 
   <script defer src="/js/replay-state.js?v=73df5d6d75ac"></script>
-  <script defer src="/js/resource-loader.js?v=bfb61ddcf483"></script>
-  <script defer src="/js/api.js?v=7e8c97cccb3f"></script>
-  <script defer src="/js/review.js?v=a1734f476591"></script>
-  <script defer src="/js/events.js?v=6f079e783cf1"></script>
+  <script defer src="/js/resource-loader.js?v=1c372b79e848"></script>
+  <script defer src="/js/api.js?v=6746b80105b5"></script>
+  <script defer src="/js/review.js?v=6641ca27c081"></script>
+  <script defer src="/js/events.js?v=18071897ad58"></script>
   <script defer src="/app.js?v=33dab06fcc89"></script>
 </body>
 </html>

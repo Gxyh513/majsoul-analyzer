@@ -7,13 +7,14 @@ import re
 import threading
 import uuid
 from collections import OrderedDict
+from contextvars import copy_context
 from typing import Any
 
 from fastapi import HTTPException
 
 from .majsoul.client import LOCAL_PROTOCOL_SHA256, MajsoulError, parse_paipu, parse_paipu_seat
 from .majsoul.convert import ConvertError, game_meta, to_mjai
-from .record_store import CorruptRecordError, RawRecord, RecordStorageError
+from .record_store import CorruptRecordError, RawRecord, RecordDownloadBusyError, RecordStorageError
 from .runtime_state import DEMO_PATH, RECORDS_DIR, LEGACY_RECORDS_DIRS, ms_client
 from .admin_accounts import manager as admin_manager
 from .app_config import load_config
@@ -32,7 +33,7 @@ _PREPROCESS_QUEUE_TIMEOUT_SECONDS = 90.0
 _preprocess_cache: OrderedDict[str, tuple[list[dict], dict, int, int]] = OrderedDict()
 _preprocess_cache_bytes = 0
 _preprocess_cache_lock = threading.RLock()
-_preprocess_inflight: dict[str, asyncio.Task] = {}
+_preprocess_inflight: dict[str, dict[str, Any]] = {}
 _preprocess_semaphore = asyncio.Semaphore(_PREPROCESS_MAX_ACTIVE)
 _preprocess_waiters = 0
 _demo_cache_lock = threading.Lock()
@@ -91,36 +92,60 @@ def _decode_convert_raw_record(stored: RawRecord, game_uuid: str, cache_key: str
     return events, meta, events_size
 
 
-async def _prepare_raw_record_owner(stored: RawRecord, game_uuid: str, cache_key: str):
+async def _prepare_raw_record_owner(stored: RawRecord, game_uuid: str, cache_key: str,
+                                    entry: dict[str, Any]):
     global _preprocess_waiters
-    acquired = False
-    if _preprocess_semaphore.locked():
-        if _preprocess_waiters >= _PREPROCESS_MAX_WAITERS:
-            raise HTTPException(status_code=429, detail="牌谱预处理队列已满，请稍后重试。")
-        _preprocess_waiters += 1
-        try:
-            with _measure("牌谱预处理排队等待"):
-                try:
-                    await asyncio.wait_for(
-                        _preprocess_semaphore.acquire(),
-                        timeout=_PREPROCESS_QUEUE_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError as exc:
-                    raise HTTPException(status_code=503, detail="牌谱预处理等待超时，请稍后重试。") from exc
-            acquired = True
-        finally:
-            _preprocess_waiters -= 1
-    else:
-        with _measure("牌谱预处理排队等待"):
-            await _preprocess_semaphore.acquire()
-        acquired = True
+    semaphore = _preprocess_semaphore
+
+    async def acquire_permit() -> None:
+        await semaphore.acquire()
+        # Publish ownership in the acquiring coroutine, before wait_for resumes
+        # its caller, so disconnects cannot mistake an acquired job for a waiter.
+        entry["acquired"] = True
 
     try:
+        if semaphore.locked():
+            if _preprocess_waiters >= _PREPROCESS_MAX_WAITERS:
+                raise HTTPException(status_code=429, detail="牌谱预处理队列已满，请稍后重试。")
+            _preprocess_waiters += 1
+            try:
+                with _measure("牌谱预处理排队等待"):
+                    try:
+                        await asyncio.wait_for(
+                            acquire_permit(),
+                            timeout=_PREPROCESS_QUEUE_TIMEOUT_SECONDS,
+                        )
+                    except TimeoutError as exc:
+                        raise HTTPException(status_code=503, detail="牌谱预处理等待超时，请稍后重试。") from exc
+            finally:
+                _preprocess_waiters -= 1
+        else:
+            with _measure("牌谱预处理排队等待"):
+                await acquire_permit()
+
         with _measure("牌谱预处理"):
-            return await asyncio.to_thread(_decode_convert_raw_record, stored, game_uuid, cache_key)
+            # An executor future is not cancelled with the wrapper task. Retain
+            # the permit until the actual thread finishes, preserving to_thread's
+            # context propagation for request-scoped performance measurements.
+            future = asyncio.get_running_loop().run_in_executor(
+                None, copy_context().run, _decode_convert_raw_record, stored, game_uuid, cache_key,
+            )
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(future)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if future.done():
+                        result = future.result()
+                        break
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
     finally:
-        if acquired:
-            _preprocess_semaphore.release()
+        if entry["acquired"]:
+            semaphore.release()
 
 
 async def _prepare_raw_record(stored: RawRecord, game_uuid: str, source_digest: str):
@@ -131,21 +156,40 @@ async def _prepare_raw_record(stored: RawRecord, game_uuid: str, source_digest: 
             _preprocess_cache.move_to_end(cache_key)
             return cached[:3]
 
-    task = _preprocess_inflight.get(cache_key)
-    if task is None:
-        task = asyncio.create_task(_prepare_raw_record_owner(stored, game_uuid, cache_key))
-        _preprocess_inflight[cache_key] = task
+    entry = _preprocess_inflight.get(cache_key)
+    if entry is not None and (entry["task"].cancelled() or entry["task"].cancelling()):
+        # A cancelled wrapper can still be draining its thread. New callers
+        # must queue behind its permit rather than inherit its cancellation.
+        _preprocess_inflight.pop(cache_key, None)
+        entry = None
+    if entry is None:
+        entry = {"subscribers": 0, "acquired": False}
+        task = asyncio.create_task(_prepare_raw_record_owner(stored, game_uuid, cache_key, entry))
+        entry["task"] = task
+        _preprocess_inflight[cache_key] = entry
 
         def forget_finished(done: asyncio.Task):
-            if _preprocess_inflight.get(cache_key) is done:
+            # Includes cancellation before the owner's first coroutine step.
+            if _preprocess_inflight.get(cache_key) is entry:
                 _preprocess_inflight.pop(cache_key, None)
             if not done.cancelled():
                 done.exception()
 
         task.add_done_callback(forget_finished)
 
-    # A seat switch or concurrent request shares one decode/conversion task.
-    return await asyncio.shield(task)
+    task = entry["task"]
+    entry["subscribers"] += 1
+    try:
+        # A seat switch or concurrent request shares one decode/conversion task.
+        return await asyncio.shield(task)
+    finally:
+        entry["subscribers"] -= 1
+        if entry["subscribers"] == 0 and not entry["acquired"] and not task.done():
+            # Cancel only unstarted work, and detach before another caller can
+            # join the doomed owner. Acquired jobs finish and populate the LRU.
+            if _preprocess_inflight.get(cache_key) is entry:
+                _preprocess_inflight.pop(cache_key, None)
+            task.cancel()
 
 
 
@@ -180,6 +224,8 @@ async def get_or_download_record(game_uuid: str) -> RawRecord | dict:
         return await _get_or_download_record(
             game_uuid, RECORDS_DIR, fetch_record_with_failover, legacy_dirs=LEGACY_RECORDS_DIRS
         )
+    except RecordDownloadBusyError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except RecordStorageError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except OSError as exc:
