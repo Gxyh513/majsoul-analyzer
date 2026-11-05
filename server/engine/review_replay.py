@@ -285,6 +285,14 @@ def build_replay(
                 if actual_ev is not None and actual_ev.get("type") == "dahai":
                     obs_4, mask_4 = encode_observation(4)
                     if int(mask_4.sum()) > 1:
+                        actual_label = event_to_label(actual_ev)
+                        if not mask_4[actual_label]:
+                            alt = tid(actual_ev["pai"])
+                            if mask_4[alt]:
+                                actual_label = alt
+                            else:
+                                _increment("观测编码后跳过次数")
+                                continue
                         obs_m = obs_4 if obs_version == 4 else encode_observation(obs_version)[0]
                         # Separate the riichi declaration from its discard choice,
                         # so both decisions have an independently navigable step.
@@ -301,6 +309,7 @@ def build_replay(
                                 "context_tile": last_tile,
                                 "last_actor": last_actor,
                                 "actual_ev": actual_ev,
+                                "actual_label": actual_label,
                                 "mask": mask_4,
                                 "akas_in_hand": list(ps.akas_in_hand),
                                 "ankan_cands": ps.ankan_candidates(),
@@ -475,8 +484,10 @@ def build_replay(
                 if mask_4[alt]:
                     actual_label = alt
                 else:
+                    _increment("观测编码后跳过次数")
                     continue
             else:
+                _increment("观测编码后跳过次数")
                 continue
 
         obs_m = obs_4 if obs_version == 4 else encode_observation(obs_version)[0]

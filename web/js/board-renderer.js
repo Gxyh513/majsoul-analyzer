@@ -21,26 +21,37 @@ function renderBoard(kyoku, snap, activeDecision) {
   const honbaCount = snap.honba ?? 0;
   const kyotakuCount = snap.kyotaku ?? 0;
   if (btnRound) {
+    let roundHtml;
+    let roundDescription;
     if (honbaCount > 0 || kyotakuCount > 0) {
-      btnRound.innerHTML = `
+      roundHtml = `
         <span class="info-round-title">${escapeHtml(roundName)}</span>
         <span class="info-round-sub">
           ${honbaCount > 0 ? `<span class="info-tag-honba">${honbaCount}本</span>` : ""}
           ${kyotakuCount > 0 ? `<span class="info-tag-kyotaku"><span class="riichi-stick-mini"></span>${kyotakuCount}</span>` : ""}
         </span>
       `;
-      const roundDescription = `${roundName}${honbaCount > 0 ? ` ${honbaCount}本场` : ""}${kyotakuCount > 0 ? ` · 立直供托 ${kyotakuCount}根 (${kyotakuCount * 1000}点)` : ""} · 点击查看局数得点表`;
+      roundDescription = `${roundName}${honbaCount > 0 ? ` ${honbaCount}本场` : ""}${kyotakuCount > 0 ? ` · 立直供托 ${kyotakuCount}根 (${kyotakuCount * 1000}点)` : ""} · 点击查看局数得点表`;
+    } else {
+      roundHtml = `<span class="info-round-title only">${escapeHtml(roundName)}</span>`;
+      roundDescription = `${roundName} · 点击查看局数得点表`;
+    }
+    updateBoardMarkup(btnRound, roundHtml);
+    if (btnRound.__roundDesc !== roundDescription) {
       btnRound.title = roundDescription;
       btnRound.setAttribute("aria-label", roundDescription);
-    } else {
-      btnRound.innerHTML = `<span class="info-round-title only">${escapeHtml(roundName)}</span>`;
-      btnRound.title = `${roundName} · 点击查看局数得点表`;
-      btnRound.setAttribute("aria-label", btnRound.title);
+      btnRound.__roundDesc = roundDescription;
     }
   }
 
   const tilesLeftEl = $("centerTilesLeft");
-  if (tilesLeftEl) tilesLeftEl.textContent = `x${snap.tiles_left ?? 70}`;
+  if (tilesLeftEl) {
+    const tilesLeftText = `x${snap.tiles_left ?? 70}`;
+    if (tilesLeftEl.__tilesLeftText !== tilesLeftText) {
+      tilesLeftEl.textContent = tilesLeftText;
+      tilesLeftEl.__tilesLeftText = tilesLeftText;
+    }
+  }
 
   const honbaEl = $("centerHonba");
   if (honbaEl) honbaEl.style.display = "none";
@@ -134,7 +145,7 @@ function renderBoard(kyoku, snap, activeDecision) {
 function findRonSource(kyoku, snap, targetActor) {
   const steps = kyoku?.steps;
   if (!Array.isArray(steps)) return null;
-  const currentIndex = steps.indexOf(snap);
+  const currentIndex = steps[state.stepIdx] === snap ? state.stepIdx : steps.indexOf(snap);
   if (currentIndex < 0) return null;
   let robbingKan = false;
   for (let index = currentIndex - 1; index >= 0; index--) {
@@ -165,6 +176,13 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
   const isLastDiscardActor = snap.event?.type === "dahai" && snap.event?.actor === seat;
   const isRonTarget = isRon && seat === targetActor;
 
+  const stateKey = `${state.gameId}:${state.kyokuIdx}:${state.targetActor}:${seat}:${isLastDiscardActor ? 1 : 0}:${isRonTarget ? 1 : 0}`;
+  if (container.__riverRef === river && container.__riverStateKey === stateKey) {
+    return;
+  }
+  container.__riverRef = river;
+  container.__riverStateKey = stateKey;
+
   // Include every tile and its flags: length plus the final tile is not unique
   // across rounds, seats or rewound replay states.
   let riverSignature = riverSignatureCache.get(river);
@@ -172,8 +190,7 @@ function renderPlayerRiver(pos, seat, snap, isRon = false, targetActor = null) {
     riverSignature = JSON.stringify(river);
     riverSignatureCache.set(river, riverSignature);
   }
-  const sig = JSON.stringify([state.gameId, state.kyokuIdx, state.targetActor, seat,
-    riverSignature, isLastDiscardActor, isRonTarget]);
+  const sig = `${stateKey}:${riverSignature}`;
   if (container.dataset.riverSig === sig) {
     return;
   }
@@ -331,7 +348,7 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
     const barKeys = Object.keys(tileBars);
     const hasAnyBars = barKeys.some((k) => (tileBars[k]?.prob || 0) > 0);
     if (!hasAnyBars) {
-      if (svgEl.innerHTML !== "") svgEl.innerHTML = "";
+      updateBoardMarkup(svgEl, "");
     } else {
       let svgHtml = "";
       const renderedTiles = closedWrap.querySelectorAll(".tileDiv");
@@ -360,7 +377,11 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
       if (svgRect.width > 0) {
         // Use the rendered SVG height as well as its width so scaling the
         // board does not shift bars away from the DOM-measured tiles.
-        svgEl.setAttribute("viewBox", `0 0 ${svgRect.width} ${barAreaHeight}`);
+        const viewBox = `0 0 ${svgRect.width} ${barAreaHeight}`;
+        if (svgEl.__viewBox !== viewBox) {
+          svgEl.setAttribute("viewBox", viewBox);
+          svgEl.__viewBox = viewBox;
+        }
       }
       const seenPai = new Set();
       renderedTiles.forEach((tileEl, idx) => {
@@ -378,17 +399,21 @@ function renderHeroHand(seat, snap, activeDecision, agariTile = null, winActor =
           }
         }
       });
-      svgEl.innerHTML = svgHtml;
+      updateBoardMarkup(svgEl, svgHtml);
     }
   }
 
   // 3. Render Calls: Direct tiles, newest on left towards closed hand, earliest on far right
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
-    const markup = renderCallsHtml(melds, seat, 0);
-    if (callsWrap.__lastCallsMarkup !== markup) {
-      updateBoardMarkup(callsWrap, markup);
-      callsWrap.__lastCallsMarkup = markup;
+    if (callsWrap.__lastMeldsRef !== melds || callsWrap.__lastMeldsSeat !== seat) {
+      callsWrap.__lastMeldsRef = melds;
+      callsWrap.__lastMeldsSeat = seat;
+      const markup = renderCallsHtml(melds, seat, 0);
+      if (callsWrap.__lastCallsMarkup !== markup) {
+        updateBoardMarkup(callsWrap, markup);
+        callsWrap.__lastCallsMarkup = markup;
+      }
     }
   }
 }
@@ -449,10 +474,15 @@ function renderOpponentHand(pos, seat, snap, agariTile = null, winActor = null, 
   if (callsWrap) {
     const melds = snap.melds[seat] || [];
     const povSeat = pos === "Right" ? 1 : (pos === "Top" ? 2 : 3);
-    const markup = renderCallsHtml(melds, seat, povSeat);
-    if (callsWrap.__lastCallsMarkup !== markup) {
-      updateBoardMarkup(callsWrap, markup);
-      callsWrap.__lastCallsMarkup = markup;
+    if (callsWrap.__lastMeldsRef !== melds || callsWrap.__lastMeldsSeat !== seat || callsWrap.__lastMeldsPov !== povSeat) {
+      callsWrap.__lastMeldsRef = melds;
+      callsWrap.__lastMeldsSeat = seat;
+      callsWrap.__lastMeldsPov = povSeat;
+      const markup = renderCallsHtml(melds, seat, povSeat);
+      if (callsWrap.__lastCallsMarkup !== markup) {
+        updateBoardMarkup(callsWrap, markup);
+        callsWrap.__lastCallsMarkup = markup;
+      }
     }
   }
 }

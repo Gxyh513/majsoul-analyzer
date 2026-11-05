@@ -159,6 +159,7 @@ async function getReview(source, seat, onProgress = () => {}, timings = null, si
       if (requests.get(seat) === pending) requests.delete(seat);
       if (!requests.size && pendingReviews.get(sourceKey) === requests) pendingReviews.delete(sourceKey);
     });
+    pending.promise.catch(() => {});
   }
   pending.listeners.add(onProgress);
   let onAbort = null;
@@ -306,7 +307,7 @@ async function startAnalysisFromInput(rawInput, seat = null) {
     setLoading(false);
     logReviewViewCompletion(timings, version);
   } catch (err) {
-    if (version !== analysisViewVersion) return;
+    if (version !== analysisViewVersion || viewController.signal.aborted || err?.name === "AbortError") return;
     showAnalysisError(`分析失败：${err.message}`, () => startAnalysisFromInput(rawInput, seat));
   }
 }
@@ -332,7 +333,7 @@ async function switchSeatPerspective(newSeat) {
     setLoading(false);
     logReviewViewCompletion(timings, version);
   } catch (err) {
-    if (version !== analysisViewVersion || currentReviewSource !== source) return;
+    if (version !== analysisViewVersion || currentReviewSource !== source || viewController.signal.aborted || err?.name === "AbortError") return;
     setLoading(false);
     showAnalysisError(`切换视角失败：${err.message}`, () => switchSeatPerspective(newSeat));
   }

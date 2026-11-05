@@ -4,6 +4,24 @@
 /index.html
   Cache-Control: no-cache
 
+/admin
+  Cache-Control: no-cache
+
+/admin/
+  Cache-Control: no-cache
+
+/admin/index.html
+  Cache-Control: no-cache
+
+/app.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/admin/*.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/admin/*.css
+  Cache-Control: public, max-age=31536000, immutable
+
 /tiles/*
   Cache-Control: public, max-age=31536000, immutable
 
