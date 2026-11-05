@@ -44,8 +44,8 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     return ["visible", "hidden", "prerender", "unloaded"].includes(value) ? value : "unknown";
   };
   const displayVisibility = (value) => ({ visible: "可见", hidden: "隐藏", prerender: "预渲染", unloaded: "已卸载" }[value] || "未知");
-  const initialVisibility = visibility();
   const detailedDiagnostics = isDetailedDiagnosticMode();
+  const initialVisibility = detailedDiagnostics ? visibility() : "unknown";
   const wallOrigin = performance.timeOrigin || (Date.now() - performance.now());
   const monitorStarted = performance.now();
   let monitorEnded = Infinity;
@@ -176,7 +176,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       首分块接收时间_Unix_ms: roundMs(wallOrigin + item.firstAt) } : null;
   }
   function reportDiagnostics() {
-    if (!monitorFinished || !streamFinished || summaryLogged) return;
+    if (!detailedDiagnostics || !monitorFinished || !streamFinished || summaryLogged) return;
     summaryLogged = true;
     const debugMode = isDetailedDiagnosticMode();
     const sortedWaits = [...readWaits].sort((a, b) => a - b);
@@ -333,7 +333,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     safeLog("[Paipu SSE Browser] 浏览器SSE性能", logEntries);
   }
   function stopMonitoring() {
-    if (monitorEnded !== Infinity) return;
+    if (!detailedDiagnostics || monitorEnded !== Infinity) return;
     monitorEnded = performance.now();
     // Preserve the immediate timing snapshot expected by existing callers;
     // long-task records and the final stream summary may finish asynchronously.
@@ -358,7 +358,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", visibilityChanged);
     reportDiagnostics();
   }
-  if (typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
+  if (detailedDiagnostics && typeof PerformanceObserver !== "undefined" && PerformanceObserver.supportedEntryTypes?.includes("longtask")) {
     try {
       observer = new PerformanceObserver((list) => recordLongTasks(list.getEntries()));
       observer.observe({ type: "longtask", buffered: false });
@@ -367,7 +367,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
       observer = null;
     }
   }
-  if (typeof document !== "undefined") document.addEventListener("visibilitychange", visibilityChanged);
+  if (detailedDiagnostics && typeof document !== "undefined") document.addEventListener("visibilitychange", visibilityChanged);
 
   function measureChunk(chunk, index, receivedAt) {
     let offset = 0;
@@ -531,6 +531,10 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
         serverRequestId = eventRequestId;
         timings.serverRequestId = serverRequestId;
       }
+      if (!detailedDiagnostics) {
+        performanceLogged = true;
+        return;
+      }
       const rawStatus = ev.performance["状态"];
       if (rawStatus && typeof rawStatus === "object" && !Array.isArray(rawStatus)) {
         serverBusinessStatus = {
@@ -637,6 +641,19 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
 
   let readFailed = false;
   async function measuredRead() {
+    if (!detailedDiagnostics) {
+      try {
+        const packet = await reader.read();
+        if (!packet.done) {
+          chunkCount++;
+          totalBytes += packet.value.byteLength;
+        }
+        return { ...packet, readFinished: performance.now() };
+      } catch (error) {
+        readFailed = true;
+        throw error;
+      }
+    }
     const readStarted = performance.now();
     // These two legacy metrics cover reads from the first complete frame byte
     // through complete parsing, not the optional diagnostic tail.
@@ -739,7 +756,7 @@ async function fetchReviewStreamImpl(postBody, onProgress, url = buildApiUrl(get
         ended = true;
         break;
       }
-      measureChunk(value, chunkCount, readFinished);
+      if (detailedDiagnostics) measureChunk(value, chunkCount, readFinished);
       tailText = processText(decoder.decode(value, { stream: true }), true);
       if (completionEvent) break;
     }

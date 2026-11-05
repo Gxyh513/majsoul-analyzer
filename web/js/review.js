@@ -23,7 +23,7 @@ const REVIEW_SCHEMA = "mortal-onnx-2f7ad48-v1";
 const MODEL_REVISION = "2f7ad48bc29dadd9805b1897f3c5b97b76c0d41a";
 const MODEL_SHA256 = "30381bf21389e2d25d3edf48fed11bf772336ef3daeee67d1bdae7fb9dd30cb4";
 
-const MODEL_STATUS_MAX_AGE_MS = 5000;
+const MODEL_STATUS_MAX_AGE_MS = 30000;
 
 function isTrustedModelStatus(status) {
   const engine = status?.engine;
@@ -44,9 +44,10 @@ function isTrustedReview(result) {
 async function requireModelStatus() {
   const status = await refreshServerStatus({
     maxAgeMs: isTrustedModelStatus(state.serverStatus) ? MODEL_STATUS_MAX_AGE_MS : 0,
+    revalidate: true,
   });
   if (!isTrustedModelStatus(status)) {
-    throw new Error("无法验证 Mortal S42 ONNX，请检查模型状态和后端版本。");
+    throw new Error(status?.timedOut ? "模型状态检查超时，请稍后重试。" : "无法验证 Mortal S42 ONNX，请检查模型状态和后端版本。");
   }
 }
 

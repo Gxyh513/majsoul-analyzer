@@ -170,7 +170,7 @@ function apiAuthHeaders() {
 // The stream reader loads independently of the ordered replay UI group.
 function loadReviewStreamClient() {
   if (typeof fetchReviewStreamImpl === "function") return Promise.resolve();
-  return loadClientResource("/js/review-stream.js?v=4a26c0cfbe1b", "script",
+  return loadClientResource("/js/review-stream.js?v=ee2e3b038876", "script",
     () => typeof fetchReviewStreamImpl === "function");
 }
 
@@ -298,7 +298,9 @@ function isBackendOnline() {
 let serverStatusCache = null;
 let serverStatusRequest = null;
 
-async function refreshServerStatus({ maxAgeMs = 0 } = {}) {
+const SERVER_STATUS_TIMEOUT_MS = 8000;
+
+async function refreshServerStatus({ maxAgeMs = 0, revalidate = false, background = false } = {}) {
   let url;
   try {
     url = buildApiUrl(getBackendUrl(), "/api/status");
@@ -310,23 +312,37 @@ async function refreshServerStatus({ maxAgeMs = 0 } = {}) {
     updateTopbarStatus(state.serverStatus);
     return state.serverStatus;
   }
-  if (serverStatusRequest?.url === url) return serverStatusRequest.promise;
   if (maxAgeMs > 0 && serverStatusCache?.url === url &&
       serverStatusCache.status === state.serverStatus &&
       serverStatusCache.status.ok === true &&
       performance.now() - serverStatusCache.checkedAt < maxAgeMs) {
-    return serverStatusCache.status;
+    const cachedStatus = serverStatusCache.status;
+    if (revalidate && performance.now() - serverStatusCache.checkedAt >= 5000) {
+      void refreshServerStatus({ background: true });
+    }
+    return cachedStatus;
   }
+  if (serverStatusRequest?.url === url) return serverStatusRequest.promise;
 
   const request = { url, promise: null };
   serverStatusRequest = request;
   request.promise = (async () => {
     let status;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SERVER_STATUS_TIMEOUT_MS);
     try {
-      status = { ok: true, ...await apiFetch(url) };
+      status = { ok: true, ...await apiFetch(url, { signal: controller.signal }) };
     } catch (err) {
-      console.warn("Backend offline or unreachable:", err);
-      status = { ok: false, offline: true };
+      // A failed background refresh must not extend or erase a still-valid
+      // attestation. The next expired request will have to verify it afresh.
+      if (background && serverStatusCache?.url === url &&
+          serverStatusCache.status === state.serverStatus &&
+          performance.now() - serverStatusCache.checkedAt < MODEL_STATUS_MAX_AGE_MS) {
+        return serverStatusCache.status;
+      }
+      status = { ok: false, offline: true, timedOut: controller.signal.aborted };
+    } finally {
+      clearTimeout(timer);
     }
     // A slower response from a previously selected backend must not replace
     // the status requested more recently for another backend.
@@ -347,7 +363,9 @@ function updateEngineStatusDisplay() {
   const eng = state.serverStatus?.engine || {};
   const ready = eng.has_mortal_weights === true && eng.active_engine === "mortal";
   const device = typeof eng.device === "string" && eng.device ? eng.device : "未知";
-  const label = `${ready ? "READY" : "NOT READY"} · ${device}`;
+  const shortDevice = ({ cpuexecutionprovider: "CPU", cudaexecutionprovider: "CUDA",
+    dmlexecutionprovider: "DirectML", coremlexecutionprovider: "CoreML" })[device.toLowerCase()] || device;
+  const label = `${ready ? "READY" : "NOT READY"} · ${shortDevice}`;
   const topbar = $("engineStatusText");
   if (topbar) topbar.textContent = `Mortal S42 ONNX · ${label}`;
   const landing = $("landingModelDevice");

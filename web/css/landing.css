@@ -638,12 +638,20 @@
   }
 }
 
-@media (max-width: 380px) {
+@media (max-width: 480px) {
   .kd-single-model-card {
-    flex-direction: column !important;
-    align-items: flex-start !important;
-    gap: 8px !important;
+    flex-wrap: wrap;
+    gap: 8px;
   }
+  .kd-single-model-left { flex-shrink: 0; max-width: 100%; }
+  .kd-single-model-badge {
+    max-width: 100%;
+    box-sizing: border-box;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .kd-single-model-dot { flex-shrink: 0; }
+  .kd-demo-submit, .kd-landing-github-link { min-height: 44px; min-width: 44px; }
 }
 
 .kd-landing-actions {
