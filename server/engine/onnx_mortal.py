@@ -162,7 +162,10 @@ class OnnxMortal:
                 _increment("ONNX推理调用次数")
                 with _measure("ONNX实际推理耗时"):
                     result = self.session.run(["q"], {"obs": obs, "mask": mask})
+                with _measure("ONNX结果校验耗时"):
+                    checked = _check_output(result, mask)
             else:
                 result = self.session.run(["q"], {"obs": obs, "mask": mask})
-            outputs.append(_check_output(result, mask))
+                checked = _check_output(result, mask)
+            outputs.append(checked)
         return outputs[0] if len(outputs) == 1 else np.concatenate(outputs, axis=0)

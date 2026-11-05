@@ -67,7 +67,7 @@ function applyHidePlayerId() {
   document.body.classList.add("hide-player-ids");
 }
 
-const TILE_ASSET_VERSION = "20261104-svg-repair-1";
+const TILE_ASSET_VERSION = "5b8d4ac5202d";
 
 function tileAssetSrc(pai) {
   return `/tiles/${encodeURIComponent(pai)}.svg?v=${TILE_ASSET_VERSION}`;

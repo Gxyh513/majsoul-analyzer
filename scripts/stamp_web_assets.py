@@ -13,7 +13,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
-STATIC_LINK = re.compile(r"(?P<path>/(?:js|css)/[A-Za-z0-9_./-]+\.(?:js|css))\?v=[A-Za-z0-9_.-]+")
+STATIC_LINK = re.compile(r"(?P<path>/(?:(?:js|css|admin)/[A-Za-z0-9_./-]+|app)\.(?:js|css))\?v=[A-Za-z0-9_.-]+")
 TILE_VERSION = re.compile(r'(const TILE_ASSET_VERSION = ")[^\"]+(";)')
 
 
@@ -32,7 +32,7 @@ def stamp_links(file: Path) -> None:
 
     updated = STATIC_LINK.sub(replace, original)
     if updated != original:
-        file.write_text(updated, encoding="utf8")
+        file.write_text(updated, encoding="utf8", newline="\n")
 
 
 def main() -> None:
@@ -49,10 +49,15 @@ def main() -> None:
     if count != 1:
         raise RuntimeError("TILE_ASSET_VERSION declaration not found")
     if updated != original:
-        state_file.write_text(updated, encoding="utf8")
+        state_file.write_text(updated, encoding="utf8", newline="\n")
 
     # Leaf modules are immutable; stamp consumers before stamping the HTML.
-    for file in (WEB / "js" / "resource-loader.js", WEB / "js" / "api.js", WEB / "index.html"):
+    for file in (
+        WEB / "js" / "resource-loader.js",
+        WEB / "js" / "api.js",
+        WEB / "index.html",
+        WEB / "admin" / "index.html",
+    ):
         stamp_links(file)
 
 

@@ -82,7 +82,16 @@ async def protect_api_and_log(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store"
         response.headers.add_vary_header("Authorization")
         response.headers.add_vary_header("X-Api-Token")
-    if path.startswith("/tiles/"):
+    if path in ("/", "/index.html", "/admin", "/admin/", "/admin/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    elif path.startswith("/tiles/") or (
+        "v" in request.query_params
+        and (
+            path == "/app.js"
+            or path.startswith(("/js/", "/css/"))
+            or (path.startswith("/admin/") and path.endswith((".js", ".css")))
+        )
+    ):
         response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     if is_biz:
         cost_ms = (time.time() - t0) * 1000

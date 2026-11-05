@@ -102,7 +102,10 @@ def review_game(
                         or mortal_q_batch.shape != (len(pending_decisions), ACTION_SPACE)
                         or mortal_q_batch.dtype != np.float32):
                     raise RuntimeError("Mortal S42 ONNX 输出与待评决策数不匹配")
-                if pending_decisions:
+                # OnnxMortal.eval_batch already validates finite legal Q values
+                # and -inf masked entries for every chunk; keep the fallback
+                # scan only for non-OnnxMortal test stubs.
+                if pending_decisions and not isinstance(mortal, OnnxMortal):
                     legal_masks = np.stack([item["mask"] for item in pending_decisions])
                     if not np.isfinite(mortal_q_batch[legal_masks]).all():
                         raise RuntimeError("Mortal S42 ONNX 合法动作输出无效")

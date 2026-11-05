@@ -48,18 +48,18 @@ function loadClientResource(url, kind, isReady = null, ordered = false) {
 function loadReplayAssets() {
   if (!replayAssetsLoader) {
     const styles = [
-      "/css/board.css?v=20261104-demand-replay-1",
-      "/css/decision.css?v=20261104-css-parallel-1",
-      "/css/modal.css?v=20261104-demand-replay-1",
-      "/css/responsive.css?v=20261105-touch-opt-1",
+      "/css/board.css?v=e5743d9e3a78",
+      "/css/decision.css?v=ac60719195ba",
+      "/css/modal.css?v=9acfaeb269ab",
+      "/css/responsive.css?v=fb6a7d50c226",
     ];
     const scripts = [
-      ["/js/summary-renderer.js?v=20261105-render-opt-1", () => typeof renderSummaryDashboard === "function"],
-      ["/js/replay-controls.js?v=20261105-abort-1", () => typeof bindReplayEvents === "function"],
-      ["/js/board-renderer.js?v=20261105-render-opt-1", () => typeof renderBoard === "function"],
-      ["/js/decision-renderer.js?v=20261105-render-opt-1", () => typeof renderDecisionCard === "function"],
-      ["/js/replay-navigation.js?v=20261101-refresh-home-1", () => typeof jumpNextDecision === "function"],
-      ["/js/modal-manager.js?v=20261104-demand-replay-1", () => typeof openRoundScoresModal === "function"],
+      ["/js/summary-renderer.js?v=91f7e4703197", () => typeof renderSummaryDashboard === "function"],
+      ["/js/replay-controls.js?v=9906cf8d0837", () => typeof bindReplayEvents === "function"],
+      ["/js/board-renderer.js?v=87539caa2cc3", () => typeof renderBoard === "function"],
+      ["/js/decision-renderer.js?v=e08c0aa27669", () => typeof renderDecisionCard === "function"],
+      ["/js/replay-navigation.js?v=73a5c7d89c27", () => typeof jumpNextDecision === "function"],
+      ["/js/modal-manager.js?v=d40b9c01bf6e", () => typeof openRoundScoresModal === "function"],
     ];
     replayAssetsLoader = Promise.all([
       ...styles.map((url) => loadClientResource(url, "style")),

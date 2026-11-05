@@ -35,6 +35,25 @@ _preprocess_cache_lock = threading.RLock()
 _preprocess_inflight: dict[str, asyncio.Task] = {}
 _preprocess_semaphore = asyncio.Semaphore(_PREPROCESS_MAX_ACTIVE)
 _preprocess_waiters = 0
+_demo_cache_lock = threading.Lock()
+_demo_cache: tuple[tuple[int, int], list[dict], int] | None = None
+
+
+def _load_demo_events() -> tuple[list[dict], int]:
+    global _demo_cache
+    stat = DEMO_PATH.stat()
+    identity = (stat.st_size, stat.st_mtime_ns)
+    with _demo_cache_lock:
+        if _demo_cache is not None and _demo_cache[0] == identity:
+            return _demo_cache[1], _demo_cache[2]
+    text = DEMO_PATH.read_text(encoding="utf8")
+    with _measure("JSON解析"):
+        events = json.loads(text)
+    with _measure("MJAI数据大小计算"):
+        size_bytes = len(json.dumps(events, ensure_ascii=False, separators=(",", ":")).encode("utf8"))
+    with _demo_cache_lock:
+        _demo_cache = (identity, events, size_bytes)
+    return events, size_bytes
 
 
 def _decode_convert_raw_record(stored: RawRecord, game_uuid: str, cache_key: str):
@@ -174,12 +193,10 @@ async def resolve_game_data(
     if content is None and (not raw_input or raw_input == "demo" or raw_input.startswith("demo-")):
         if not DEMO_PATH.is_file():
             raise HTTPException(status_code=404, detail="内置演示牌谱文件不存在")
-        text = await asyncio.to_thread(DEMO_PATH.read_text, encoding="utf8")
-        with _measure("JSON解析"):
-            events = await asyncio.to_thread(json.loads, text)
+        events, demo_size = await asyncio.to_thread(_load_demo_events)
         meta = {"uuid": "demo-241024-majsoul-4p", "names": ["一姬 (演示)", "二阶堂美树", "八木唯", "斋藤治"],
                 "room": "玉之间·四人南 (内置演示)", "start_time": 1729760000}
-        await _record_mjai_size(events)
+        await _record_mjai_size(events, demo_size)
         return "demo", events, meta, select_game_seat(meta, target_actor)
 
     if content is not None:
