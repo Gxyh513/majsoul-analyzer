@@ -81,7 +81,7 @@ def _public_raw_review_key(game_id: str, source_digest: str, seat: int,
 
 
 def _load_fast_public_review(paipu: str | None, target_actor: int | None,
-                             engine: str, temperature: float) -> dict | None:
+                             engine: str, temperature: float, *, compact: bool = False) -> dict | None:
     """Try an existing public record without decoding protobuf or converting MJAI.
 
     All data comes from the permanent raw-record store, never private JSON. A
@@ -115,7 +115,7 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
             key = _public_raw_review_key(game_id, source_digest, seat, engine, temperature)
             if not (REVIEWS_DIR / f"{key}.json").is_file():
                 continue
-            cached = review_cache.load(REVIEWS_DIR, key, game_id, seat)
+            cached = review_cache.load(REVIEWS_DIR, key, game_id, seat, compact=compact)
             if not isinstance(cached, dict) or not isinstance(cached.get("meta"), dict):
                 continue
             selected = select_game_seat(
@@ -129,9 +129,9 @@ def _load_fast_public_review(paipu: str | None, target_actor: int | None,
 
 
 async def _try_fast_public_review(paipu: str | None, target_actor: int | None,
-                                  engine: str, temperature: float) -> dict | None:
+                                  engine: str, temperature: float, *, compact: bool = False) -> dict | None:
     _increment("公开牌谱缓存检查次数")
-    cached = await asyncio.to_thread(_load_fast_public_review, paipu, target_actor, engine, temperature)
+    cached = await asyncio.to_thread(_load_fast_public_review, paipu, target_actor, engine, temperature, compact=compact)
     if cached is not None:
         _increment("公开牌谱缓存命中次数")
         _set_performance_value("mode", "公开牌谱缓存快速命中")

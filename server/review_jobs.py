@@ -35,11 +35,61 @@ _review_waiters = 0
 # Coalesce simultaneous jobs; completed results persist only for public paipu links.
 # Internal JSON and demonstration inputs must never enter the disk review cache.
 _review_inflight: dict[str, dict[str, Any]] = {}
+# At most two results are retained for optional writeback. No permanent worker
+# or unbounded queue; a slow/unavailable disk must not stall inference responses.
+_REVIEW_MAX_WRITEBACKS = 2
+_review_writebacks: dict[str, dict[str, Any]] = {}
+
+
+def _schedule_review_writeback(key: str, result: dict) -> None:
+    if key in _review_writebacks or len(_review_writebacks) >= _REVIEW_MAX_WRITEBACKS:
+        return
+    entry = {"result": result}
+
+    async def writeback():
+        # Cancellation cannot stop a thread already in fsync/replace. Keep the
+        # slot until the actual write ends, including during graceful shutdown.
+        work = asyncio.create_task(asyncio.to_thread(
+            review_cache.save, REVIEWS_DIR, key, _public_review_result(result)))
+        try:
+            while True:
+                try:
+                    await asyncio.shield(work)
+                    break
+                except asyncio.CancelledError:
+                    if work.done():
+                        work.result()
+                        break
+        except Exception:
+            log_warning(事件="检讨结果缓存写入失败", 原因="缓存目录不可用")
+        finally:
+            if _review_writebacks.get(key) is entry:
+                _review_writebacks.pop(key, None)
+
+    task = asyncio.create_task(writeback())
+    entry["task"] = task
+    _review_writebacks[key] = entry
+
+    def finished(done):
+        # A task cancelled before its first turn never enters its finally block.
+        if _review_writebacks.get(key) is entry:
+            _review_writebacks.pop(key, None)
+        if not done.cancelled():
+            done.exception()
+
+    task.add_done_callback(finished)
+
+
+async def drain_review_writebacks() -> None:
+    while _review_writebacks:
+        await asyncio.gather(*(asyncio.shield(entry["task"])
+                               for entry in tuple(_review_writebacks.values())),
+                             return_exceptions=True)
 
 
 async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict, seat: int,
                             engine: str, temperature: float, progress_callback=None,
-                            cache_public: bool = False) -> asyncio.Task:
+                            cache_public: bool = False, compact_cache: bool = False) -> asyncio.Task:
     # A persistent cache is allowed only for URL-based paipu analysis, never
     # for demo or internal JSON conversion.
     stats = _performance.get()
@@ -59,7 +109,12 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             )
     if cache_public:
         _increment("检讨结果缓存检查次数")
-        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat)
+        writing = _review_writebacks.get(key)
+        if writing is not None:
+            _set_performance_value("分析结果缓存", "复用待写回结果")
+            return asyncio.create_task(asyncio.sleep(0, result=writing["result"]))
+        cached = await asyncio.to_thread(review_cache.load, REVIEWS_DIR, key, game_id, seat,
+                                         compact=compact_cache)
         # Unversioned legacy entries have an unknown producer pipeline. Do not
         # rebuild their old full-event key or promote them into a new raw key.
         if cached is not None:
@@ -70,6 +125,10 @@ async def _start_review_job(*, game_id: str, mjai_events: list[dict], meta: dict
             return asyncio.create_task(asyncio.sleep(0, result=cached))
         _increment("检讨结果缓存未命中次数")
         _set_performance_value("分析结果缓存", "未命中")
+        # A shared inference can finish while the disk lookup awaits its thread.
+        writing = _review_writebacks.get(key)
+        if writing is not None:
+            return asyncio.create_task(asyncio.sleep(0, result=writing["result"]))
     entry = _review_inflight.get(key)
     if entry is not None:
         # A directly cancelled shared job remains alive until its inference
@@ -214,11 +273,7 @@ async def _start_review_job_owned(*, game_id: str, mjai_events: list[dict], meta
             # Free the CPU lane before performing the optional disk write.
             release_once()
             if cache_key is not None:
-                try:
-                    await asyncio.to_thread(review_cache.save, REVIEWS_DIR, cache_key,
-                                            _public_review_result(result))
-                except Exception:
-                    log_warning(事件="检讨结果缓存写入失败", 原因="缓存目录不可用")
+                _schedule_review_writeback(cache_key, result)
             return result
         finally:
             release_once()

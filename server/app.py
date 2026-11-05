@@ -119,6 +119,7 @@ async def lifespan(app: FastAPI):
         await stop_manager()
         while _review_tasks:
             await asyncio.gather(*(asyncio.shield(task) for task in tuple(_review_tasks)), return_exceptions=True)
+        await _review_jobs.drain_review_writebacks()
 
 
 app = FastAPI(title="雀魂牌谱 AI 检讨系统 (NAGA / Mortal 风格)", lifespan=lifespan)

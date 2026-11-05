@@ -1,8 +1,8 @@
 """Compact, opt-in SSE representation of immutable replay snapshots.
 
-The canonical review, on-disk cache, and non-stream API keep their previous
-schema. A compact result replaces repeated snapshot fields with references to
-per-round tables. Indexes are expanded by the browser into shared JS arrays.
+The canonical review and non-stream API keep their previous
+schema at the API boundary. A compact result replaces repeated snapshot fields
+with references to per-round tables, also used by the versioned disk cache.
 """
 from __future__ import annotations
 
@@ -68,3 +68,44 @@ def compact_review_snapshots(result: dict[str, Any]) -> dict[str, Any]:
             steps.append(compact_step)
         rounds.append({**kyoku, "steps": steps, "snapshot_tables": tables})
     return {**result, "kyokus": rounds, "transport_version": 2}
+
+
+def validate_compact_review(result: dict[str, Any]) -> None:
+    """Validate all references before a cached V2 result can reach a client."""
+    if type(result.get("transport_version")) is not int or result["transport_version"] != 2:
+        raise ValueError("unsupported compact review")
+    rounds = result.get("kyokus")
+    if not isinstance(rounds, list):
+        raise ValueError("invalid compact rounds")
+    for kyoku in rounds:
+        if not isinstance(kyoku, dict) or not isinstance(kyoku.get("steps"), list):
+            raise ValueError("invalid compact round")
+        tables = kyoku.get("snapshot_tables")
+        if not isinstance(tables, dict):
+            raise ValueError("missing snapshot tables")
+        for field in SNAPSHOT_FIELDS:
+            table = tables.get(field)
+            if not isinstance(table, list) or any(not isinstance(value, list) for value in table):
+                raise ValueError("invalid snapshot table")
+            for step in kyoku["steps"]:
+                index = step.get(field) if isinstance(step, dict) else None
+                if type(index) is not int or not 0 <= index < len(table):
+                    raise ValueError("invalid snapshot index")
+
+
+def expand_review_snapshots(result: dict[str, Any]) -> dict[str, Any]:
+    """Restore the legacy API shape, sharing arrays without mutating the cache."""
+    if "transport_version" not in result:
+        return result
+    validate_compact_review(result)
+    rounds = []
+    for kyoku in result["kyokus"]:
+        tables = kyoku["snapshot_tables"]
+        expanded = {key: value for key, value in kyoku.items() if key != "snapshot_tables"}
+        expanded["steps"] = [
+            {**step, **{field: tables[field][step[field]] for field in SNAPSHOT_FIELDS}}
+            for step in kyoku["steps"]
+        ]
+        rounds.append(expanded)
+    return {**{key: value for key, value in result.items() if key != "transport_version"},
+            "kyokus": rounds}

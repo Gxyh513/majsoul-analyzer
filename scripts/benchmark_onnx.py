@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 from pathlib import Path
 import statistics
 import time
@@ -98,6 +100,7 @@ def benchmark(model: Path, threads: list[int], batches: list[int], runs: int,
 
     reference_by_batch = {}
     reference_by_state = {}
+    full_reference = None
     sessions = []
     for configuration, intra_threads, inter_op_threads in configurations:
         options = create_session_options(intra_op_threads=intra_threads,
@@ -136,21 +139,50 @@ def benchmark(model: Path, threads: list[int], batches: list[int], runs: int,
                 pred = _check_output(result, mask_batch)
                 _check_policy_equivalence(pred, reference_by_batch[batch])
             median_ms = statistics.median(durations)
+            # Cover every captured decision once, including the final partial
+            # batch. A tiny repeated prefix cannot choose a whole-review batch.
+            full_inputs = [
+                {"obs": np.stack([obs for obs, _ in samples[start:start + batch]]),
+                 "mask": np.stack([mask for _, mask in samples[start:start + batch]])}
+                for start in range(0, len(samples), batch)
+            ]
+            full_durations = []
+            for run in range(runs + 1):
+                elapsed = 0.0
+                outputs = []
+                for inputs in full_inputs:
+                    started = time.perf_counter()
+                    result = session.run(["q"], inputs)
+                    elapsed += (time.perf_counter() - started) * 1000
+                    outputs.append(_check_output(result, inputs["mask"]))
+                pred = np.concatenate(outputs, axis=0)
+                if full_reference is None:
+                    full_reference = pred.copy()
+                _check_policy_equivalence(pred, full_reference)
+                if run:
+                    full_durations.append(elapsed)
             batch_results.append({"batch": batch,
                                   "warmup_ms": round(warmup_ms, 2),
                                   "median_ms": round(median_ms, 2),
-                                  "ms_per_decision": round(median_ms / batch, 3)})
+                                  "ms_per_decision": round(median_ms / batch, 3),
+                                  "full_pass": {"decisions": len(samples),
+                                                "calls": len(full_inputs),
+                                                "median_ms": round(statistics.median(full_durations), 2),
+                                                "runs_ms": [round(ms, 2) for ms in full_durations]}})
         sessions.append({"configuration": configuration,
                          "intra_op_threads": intra_threads,
                          "inter_op_threads": inter_op_threads,
                          "session_init_ms": round(session_init_ms, 2),
                          "batches": batch_results})
         del session
-    return {"model_sha256": MODEL_SHA256,
+    return {"environment": {"os": platform.platform(), "processor": platform.processor(),
+                            "logical_cpus": os.cpu_count(), "python": platform.python_version(),
+                            "onnxruntime": ort.__version__, "numpy": np.__version__},
+            "model_sha256": MODEL_SHA256,
             "provider": "CPUExecutionProvider",
             "state_source": "real_demo_mjai" if real_demo else "synthetic_start_hand",
             "source_state_count": len(samples),
-            "batch_sampling": "cyclic_from_start",
+            "batch_sampling": "cyclic_from_start; full_pass visits every captured decision once",
             "runs_per_batch": runs,
             "q_tolerance": {"atol": 1e-4, "rtol": 1e-4},
             "policy_equivalence": "q_values_and_argmax_across_configurations_and_batches",

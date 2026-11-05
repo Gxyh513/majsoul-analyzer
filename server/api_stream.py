@@ -60,7 +60,7 @@ def _complete_review_event(result: dict[str, Any], transport_version: int = 1) -
             public_result = _public_review_result(result)
             if transport_version == 2:
                 public_result = compact_review_snapshots(public_result)
-            result_json = json.dumps(public_result, ensure_ascii=False)
+            result_json = json.dumps(public_result, ensure_ascii=False, separators=(",", ":"))
             result_bytes = result_json.encode("utf8")
         _set_performance_value("原始complete事件字节数", len(raw_prefix) + len(result_bytes) + len("}\n\n"))
         _set_performance_value("原始检讨JSON字节数", len(result_bytes))
@@ -115,7 +115,8 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
 
             # Reuse a verified raw-source cache entry without repeating protobuf
             # decode or MJAI conversion; the stream framing remains unchanged.
-            cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature)
+            cached = await _try_fast_public_review(req.paipu, req.target_actor, req.engine, req.temperature,
+                                                   compact=req.transport_version == 2)
             if cached is not None:
                 stats["mode"] = "公开牌谱缓存快速命中"
                 completed_at = time.perf_counter()
@@ -191,6 +192,7 @@ async def api_analyze_stream(req: AnalyzeStreamReq, request: Request = None):
                     game_id=game_id, mjai_events=mjai_events, meta=meta, seat=seat,
                     engine=req.engine, temperature=req.temperature, progress_callback=on_progress,
                     cache_public=(req.content is None and game_id != "demo" and bool(req.paipu)),
+                    compact_cache=req.transport_version == 2,
                 ))
                 async with aclosing(wait_for_phase(start_task, "queued", 5, "服务器正忙，当前正在排队中")) as updates:
                     async for update in updates:

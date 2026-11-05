@@ -19,9 +19,11 @@ import threading
 import time
 
 from .engine.model_policy import MODEL_SHA256, REVIEW_SCHEMA, valid_review_source
+from .review_transport import compact_review_snapshots, expand_review_snapshots, validate_compact_review
 
 
-CACHE_FORMAT_VERSION = 2
+CACHE_FORMAT_VERSION = 3
+LEGACY_CACHE_FORMAT_VERSION = 2
 CACHE_TTL_SECONDS = 24 * 3600
 CACHE_BUDGET_BYTES = 256 * 1024 * 1024  # Hard safety ceiling.
 CACHE_SOFT_BUDGET_BYTES = int(CACHE_BUDGET_BYTES * 0.85)
@@ -40,7 +42,7 @@ def _cache_path(directory: Path, key: str) -> Path:
     return Path(directory) / f"{key}.json"
 
 
-def load(directory: Path, key: str, game_id: str, seat: int):
+def load(directory: Path, key: str, game_id: str, seat: int, *, compact: bool = False):
     """Return a verified, unexpired review, never following symbolic links."""
     path = _cache_path(directory, key)
     _maybe_cleanup(directory)
@@ -68,15 +70,24 @@ def load(directory: Path, key: str, game_id: str, seat: int):
         # misplaced cache file for a different temperature or source could be
         # accepted just because its game UUID and seat happen to match.
         result = (envelope.get("result") if isinstance(envelope, dict)
-                  and envelope.get("version") == CACHE_FORMAT_VERSION
+                  and envelope.get("version") in (LEGACY_CACHE_FORMAT_VERSION, CACHE_FORMAT_VERSION)
                   and envelope.get("key") == key else None)
         if (not valid_review_source(result, MODEL_SHA256)
                 or result.get("game_id") != game_id
                 or type(result.get("target_actor")) is not int
                 or result["target_actor"] != seat):
             return None
-        return result
-    except (OSError, EOFError, ValueError, UnicodeError, TypeError, AttributeError):
+        if envelope["version"] == CACHE_FORMAT_VERSION:
+            if result.get("transport_version") != 2:
+                return None
+            if compact:
+                validate_compact_review(result)
+                return result
+            return expand_review_snapshots(result)
+        if "transport_version" in result:
+            return None
+        return compact_review_snapshots(result) if compact else result
+    except (OSError, EOFError, ValueError, UnicodeError, TypeError, AttributeError, KeyError, IndexError):
         return None
 
 
@@ -85,7 +96,9 @@ def save(directory: Path, key: str, result: dict) -> bool:
     path = _cache_path(directory, key)
     if not valid_review_source(result, MODEL_SHA256):
         return False
-    payload = json.dumps({"version": CACHE_FORMAT_VERSION, "key": key, "result": result},
+    compact_result = compact_review_snapshots(result)
+    validate_compact_review(compact_result)
+    payload = json.dumps({"version": CACHE_FORMAT_VERSION, "key": key, "result": compact_result},
                          ensure_ascii=False, separators=(",", ":")).encode("utf8")
     if len(payload) > CACHE_ENTRY_LIMIT_BYTES:
         return False
